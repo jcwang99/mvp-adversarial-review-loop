@@ -45,14 +45,16 @@ description: 对已经完成 MVP 的代码库执行可审计的多代理对抗�
 默认按角色列表逐个启动子代理，为每个子代理提供同一份基线和只读约束，但不要透露其他代理的结论。每个代理返回并记录后，主代理再启动下一个；不要把所有角色一次性发出。若用户明确授权并发，仍须确保所有代理只读且不共享可变临时资源。
 
 **评审代理必须为每个 finding 创建目录并写入 reproduction 代码**：
-- 创建 `.review-evidence/round-[N]/[finding_id]/` 目录
+- 创建 `.review-evidence/round-[N]/[临时_id]/` 目录（临时 ID 如 `SEC-001`、`FUNC-001`）
 - 写入完整可运行的 `reproduce.test.[ext]`、`reproduce.sh` 或 `manual-steps.md`
 - 写入 `counterexample.md` 包含前提、步骤、期望/实际的文字描述
+
+**注意**：评审代理使用简单的临时 ID（如 `SEC-001`），主代理裁决时会重命名为标准 ID（如 `R1-F001-SEC`）并分配全局序号，避免跨角色、跨轮次的编号冲突。
 
 要求每个候选意见严格使用以下字段：
 
 ```text
-finding_id: 稳定编号
+finding_id: 临时 ID（如 SEC-001，主代理裁决时会重新分配标准 ID）
 severity: P0 | P1 | P2 | P3
 claim: 一句话描述可观察的缺陷
 location: 文件、符号或行号
@@ -69,21 +71,39 @@ kind: defect | spec-gap | risk | preference
 
 ### 2. 反例审查与主代理裁决
 
-主代理先合并重复意见，再逐条做裁决。**裁决前必须验证 reproduction 代码**：
+主代理先合并重复意见，再逐条做裁决。**裁决分两个阶段**：
 
-1. 检查 `.review-evidence/round-[N]/[finding_id]/` 目录是否存在
-2. 检查是否有 `reproduce.test.*`、`reproduce.sh` 或 `manual-steps.md`
-3. **实际运行 reproduction 代码**，观察是否能复现问题
-4. 在裁决记录中填写 `reproduction_path` 和 `counterexample_replayed`
+#### 阶段 1：反例合理性检查（在运行代码前）
 
-裁决状态只能是：
+检查反例的合理性，包括：
+1. **前提检查**：前提条件是否明确、可验证、符合 MVP 范围、不与其他 finding 冲突
+2. **期望行为检查**：期望是否有验收标准、契约或规范支持，是否合理
+3. **影响评估**：严重性与实际影响是否匹配，影响是否是可观察后果
+4. **reproduction 代码检查**：语法正确性、依赖存在性、断言一致性
 
-- `accepted`：当前实现确实违反验收标准、契约或安全/可靠性要求，reproduction 代码成功重放，进入 TDD。
-- `needs-evidence`：方向合理但 reproduction 代码不存在/不可运行，或影响、规范依据不足；派一个挑战代理补强，仍不足则关闭。
-- `rejected`：代码、测试或规范证明意见不成立，或 reproduction 代码运行后未能复现问题，记录反驳证据。
+不合理的反例不运行，直接标记为 `needs-evidence`，要求补充依据或修正。
+
+#### 阶段 2：分配标准 ID 并验证 reproduction 代码
+
+通过合理性检查后：
+
+1. **分配标准 ID**：`R[轮次]-F[全局序号]-[类别]`（序号全局递增，跨轮次不重置）
+2. **重命名目录**：将评审代理的临时 ID 目录重命名为标准 ID
+3. **记录原始 ID**：在 `original-id.txt` 中保存评审代理的临时 ID
+4. **运行 reproduction 代码**：实际执行，确认能复现问题
+5. **写入裁决记录**：在 `adjudication.md` 中记录完整的合理性检查和验证过程
+6. **更新索引**：在 `findings-index.md` 中添加记录
+
+详细的合理性检查标准和裁决流程见 [references/evidence-structure.md](references/evidence-structure.md)。
+
+#### 裁决状态
+
+- `accepted`：通过合理性检查，reproduction 代码成功重放，违反验收标准或契约，进入 TDD。
+- `needs-evidence`：合理性检查不通过，或 reproduction 代码不存在/不可运行；派挑战代理补强，仍不足则关闭。
+- `rejected`：合理性检查通过但 reproduction 代码运行后未能复现问题，或代码/测试/规范证明意见不成立，记录反驳证据。
 - `deferred`：真实但明确超出本次 MVP 范围；记录风险、理由和后续触发条件，不能假装已修复。
 
-裁决清单至少写明：是否重放反例、reproduction 代码路径、依据哪些代码/测试/规范、严重性是否调整、是否存在重复或副作用。主代理不得让提出意见的代理单独决定自己的意见是否成立。
+主代理不得让提出意见的代理单独决定自己的意见是否成立。
 
 #### 挑战代理触发规则
 
@@ -101,13 +121,13 @@ kind: defect | spec-gap | risk | preference
 
 挑战代理要尝试推翻反例、证明它是规范允许的行为，或构造更小的失败样例。**挑战代理首先运行 `.review-evidence/` 中的原始 reproduction 代码，验证问题是否真实存在。** 它只能返回 `supports`、`disputes` 或 `inconclusive` 及证据。挑战结果不替代主代理裁决，但 `disputes` 必须重新调查，不能直接交给实现代理。
 
-对每个 `accepted` finding，生成一份短的实现任务，包含现状、反例、**原始 reproduction 代码路径**（`.review-evidence/round-[N]/[finding_id]/reproduce.*`）、验收断言、允许改动范围、必须运行的命令和禁止触碰的文件。优先处理 P0，再 P1，最后按风险/成本处理 P2。P3 通常只记录，不为风格偏好消耗循环。
+对每个 `accepted` finding，生成一份短的实现任务，包含现状、反例、**原始 reproduction 代码路径**（`.review-evidence/round-[N]/R[N]-F[XXX]-[CAT]/reproduce.*`，使用主代理分配的标准 ID）、验收断言、允许改动范围、必须运行的命令和禁止触碰的文件。优先处理 P0，再 P1，最后按风险/成本处理 P2。P3 通常只记录，不为风格偏好消耗循环。
 
 ### 3. 串行 TDD 修复并提交
 
 启动一个实现子代理，逐个处理已接受意见。它必须遵循 [references/tdd-and-commit.md](references/tdd-and-commit.md)：
 
-1. **优先使用原始 reproduction 代码**：检查 `.review-evidence/round-[N]/[finding_id]/` 目录，运行其中的 reproduction 代码验证问题存在（RED）
+1. **优先使用原始 reproduction 代码**：检查 `.review-evidence/round-[N]/R[N]-F[XXX]-[CAT]/` 目录（使用主代理分配的标准 ID），运行其中的 reproduction 代码验证问题存在（RED）
 2. 如需调整为项目标准测试格式，保留原始文件，在项目测试目录创建改编版本
 3. 实施最小修复（GREEN）
 4. 运行原始 reproduction 代码验证修复成功
@@ -128,7 +148,7 @@ kind: defect | spec-gap | risk | preference
 
 每个修复提交后，启动不参与实现的验证子代理。给它：
 - 原始 finding 和 counterexample
-- **原始 reproduction 代码路径**（`.review-evidence/round-[N]/[finding_id]/reproduce.*`）
+- **原始 reproduction 代码路径**（`.review-evidence/round-[N]/R[N]-F[XXX]-[CAT]/reproduce.*`，使用标准 ID）
 - **修复后的测试路径**（项目测试套件中的路径）
 - commit diff 和运行入口
 
@@ -188,11 +208,12 @@ kind: defect | spec-gap | risk | preference
 推荐使用以下状态表，避免只给散文结论：
 
 ```text
-| ID | 严重性 | 状态 | 反例路径 | 修复测试 | commit | 终审 |
-|----|--------|------|----------|----------|--------|------|
+| Finding ID | 原始 ID | 严重性 | 状态 | 反例路径 | 修复测试 | commit | 终审 |
+|------------|---------|--------|------|----------|----------|--------|------|
+| R1-F001-SEC | SEC-001 | P0 | verified | .review-evidence/round-1/R1-F001-SEC/ | tests/auth.test.js | a1b2c3d | PASS |
 ```
 
-反例路径指向 `.review-evidence/` 目录中保存的 reproduction 代码，确保可审计和可重放。
+反例路径指向 `.review-evidence/` 目录中保存的 reproduction 代码，使用主代理分配的标准 ID（格式 `R[轮次]-F[序号]-[类别]`），确保可审计和可重放。
 
 ## 证据目录结构
 

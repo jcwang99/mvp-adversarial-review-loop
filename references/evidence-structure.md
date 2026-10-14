@@ -7,23 +7,194 @@
 ```
 .review-evidence/
 ├── README.md                          # 本次评审的元信息和索引
+├── baseline.md                        # 评审基线：范围、技术栈、测试命令
 ├── round-1/
-│   ├── SEC-001/
+│   ├── R1-F001-SEC/                   # 主代理分配的标准 ID
+│   │   ├── original-id.txt            # 评审代理的原始 ID（如 SEC-001）
 │   │   ├── reproduce.test.js          # 评审代理提供的原始反例代码
 │   │   ├── counterexample.md          # 文字描述：前提、步骤、期望/实际
+│   │   ├── adjudication.md            # 主代理的裁决记录（合理性检查 + 验证结果）
 │   │   ├── challenge-result.md        # 挑战代理的验证结果（如有）
 │   │   └── verification-result.md     # 终审代理的验证结果
-│   ├── FUNC-002/
+│   ├── R1-F002-FUNC/
+│   │   ├── original-id.txt            # FUNC-001
 │   │   ├── reproduce.sh               # 脚本形式的反例
 │   │   ├── counterexample.md          # 文字描述
+│   │   ├── adjudication.md            # 裁决记录
 │   │   └── output.log                 # 实际运行输出
-│   └── UX-003/
+│   └── R1-F003-UX/
+│       ├── original-id.txt            # UX-001
 │       ├── manual-steps.md            # 手工复现步骤
+│       ├── adjudication.md            # 裁决记录
 │       ├── expected-screenshot.png    # 期望行为截图（描述）
 │       └── actual-screenshot.png      # 实际行为截图（描述）
 ├── round-2/
+│   ├── R2-F004-PERF/                  # 序号全局递增
 │   └── ...
-└── baseline.md                        # 评审基线：范围、技术栈、测试命令
+└── findings-index.md                  # 全局 finding 索引表
+```
+
+## finding_id 命名规则
+
+**主代理统一分配 finding_id**，避免跨角色、跨轮次的编号冲突。
+
+### 格式
+
+```
+R[轮次]-F[序号]-[类别]
+```
+
+- **R[轮次]**：评审轮次，从 1 开始
+- **F[序号]**：全局递增序号，从 001 开始，跨轮次不重置
+- **[类别]**：3-4 字母的类别代码（见下表）
+
+### 类别代码
+
+| 代码 | 含义 | 示例 |
+|------|------|------|
+| `SEC` | 安全与隐私 | R1-F001-SEC |
+| `FUNC` | 功能与边界 | R1-F002-FUNC |
+| `REL` | 可靠性与一致性 | R1-F003-REL |
+| `API` | API 与兼容性 | R1-F004-API |
+| `PERF` | 性能与资源 | R1-F005-PERF |
+| `UX` | UX 与可访问性 | R1-F006-UX |
+| `OPS` | 测试与运维 | R1-F007-OPS |
+| `PROD` | 产品与契约 | R1-F008-PROD |
+
+### ID 分配流程
+
+1. **评审代理**：可以使用临时 ID（如 `SEC-001`、`FUNC-001`），保存文件时使用临时 ID 作为目录名
+2. **主代理裁决时**：
+   - 分配标准 ID（如 `R1-F001-SEC`）
+   - 将评审代理的目录从 `SEC-001/` 重命名为 `R1-F001-SEC/`
+   - 在 `original-id.txt` 中记录原始 ID 以便追溯
+   - 更新 `findings-index.md` 索引表
+
+3. **去重时**：如果发现重复，使用最早分配的 ID，其他 finding 在 `adjudication.md` 中记录 `deduplicated_with: R1-F001-SEC`
+
+### 示例：ID 分配和重命名
+
+```bash
+# 评审代理创建（使用临时 ID）
+.review-evidence/round-1/SEC-001/reproduce.test.js
+.review-evidence/round-1/FUNC-001/reproduce.sh
+
+# 主代理裁决后重命名
+.review-evidence/round-1/R1-F001-SEC/           # 重命名自 SEC-001
+.review-evidence/round-1/R1-F001-SEC/original-id.txt  # 内容: SEC-001
+.review-evidence/round-1/R1-F002-FUNC/          # 重命名自 FUNC-001
+.review-evidence/round-1/R1-F002-FUNC/original-id.txt # 内容: FUNC-001
+```
+
+## 主代理裁决流程
+
+主代理在裁决每个 finding 时，按以下顺序执行：
+
+### 1. 反例合理性检查
+
+**在运行 reproduction 代码前**，先检查反例的合理性：
+
+#### 前提检查
+- ✅ 前提条件明确且可验证（用户角色、数据状态、环境配置）
+- ✅ 前提符合 MVP 范围内的合理场景
+- ✅ 前提与其他 finding 不冲突
+- ❌ "在生产环境高并发下"（MVP 可能还没上生产）
+- ❌ "假设数据库已有 100 万条记录"（超出 MVP 测试数据规模）
+
+#### 期望行为检查
+- ✅ 期望行为有明确的验收标准、契约或规范支持
+- ✅ 引用了具体的文档、测试或代码位置
+- ✅ 期望合理，不是过度防御或超出 MVP 承诺
+- ❌ "应该在 10ms 内返回"（没有性能 SLA 文档支持）
+- ❌ "应该支持 OAuth2.0"（如果 MVP 只承诺基础认证）
+
+#### 影响评估
+- ✅ 声明的严重性与实际影响匹配
+- ✅ 影响是可观察的后果，不是推测
+- ❌ "可能导致数据库崩溃"（推测而非可观察后果）
+- ❌ P0 标记在非核心功能上（严重性夸大）
+
+#### reproduction 代码检查
+- ✅ 代码语法正确（不要求运行，只检查明显错误）
+- ✅ 依赖的库、模块、API 存在于项目中
+- ✅ 测试断言与 expected_vs_actual 描述一致
+- ❌ 调用了项目不存在的函数或模块
+- ❌ 断言写反了（期望失败但实际测试会通过）
+
+#### 合理性检查不通过的处理
+- 标记为 `needs-evidence`
+- 在 `adjudication.md` 中记录哪部分不合理
+- 不运行 reproduction 代码（避免浪费时间）
+- 要求评审代理补充依据或修正反例
+
+### 2. 分配标准 ID
+
+通过合理性检查后：
+
+1. 分配标准 ID：`R[轮次]-F[全局序号]-[类别]`
+2. 将目录从临时 ID 重命名为标准 ID
+   ```bash
+   mv .review-evidence/round-1/SEC-001 .review-evidence/round-1/R1-F001-SEC
+   ```
+3. 创建 `original-id.txt` 记录原始 ID
+   ```bash
+   echo "SEC-001" > .review-evidence/round-1/R1-F001-SEC/original-id.txt
+   ```
+
+### 3. 运行 reproduction 代码验证
+
+1. 检查 `.review-evidence/round-[N]/R[N]-F[XXX]-[CAT]/` 目录中的 reproduction 代码
+2. 实际运行该代码，确认能复现问题
+3. 观察实际输出是否与 `expected_vs_actual` 描述一致
+4. 如果无法复现，标记为 `rejected` 或 `needs-evidence`
+
+### 4. 写入裁决记录
+
+在 `adjudication.md` 中记录完整的裁决过程：
+
+```markdown
+# 裁决记录：R1-F001-SEC
+
+## 原始信息
+- 原始 ID: SEC-001
+- 评审代理: security-reviewer
+- 提交时间: 2026-10-14 14:30
+
+## 合理性检查
+- 前提检查: ✅ 通过 - 未认证用户访问，符合 MVP 范围
+- 期望行为检查: ✅ 通过 - 引用了 API 设计文档第 3.2 节
+- 影响评估: ✅ 通过 - P0 标记合理，影响核心数据安全
+- reproduction 代码检查: ✅ 通过 - 语法正确，依赖存在
+
+## 验证结果
+- reproduction_path: .review-evidence/round-1/R1-F001-SEC/reproduce.test.js
+- 运行命令: `node .review-evidence/round-1/R1-F001-SEC/reproduce.test.js`
+- 运行结果: ❌ 测试失败，成功复现问题
+- 实际输出:
+  ```
+  Expected: 401 Unauthorized
+  Actual: 200 OK with admin user data
+  ```
+- counterexample_replayed: yes
+
+## 裁决
+- finding_id: R1-F001-SEC
+- decision: accepted
+- severity_after_review: P0
+- scope_check: in-scope
+- reasoning: 当前实现确实允许未认证用户获取管理员数据，违反安全契约
+- next_action: TDD 修复
+```
+
+### 5. 更新索引
+
+在 `findings-index.md` 中添加记录：
+
+```markdown
+| Finding ID | 原始 ID | 类别 | 严重性 | 状态 | 轮次 |
+|------------|---------|------|--------|------|------|
+| R1-F001-SEC | SEC-001 | 安全与隐私 | P0 | accepted | 1 |
+| R1-F002-FUNC | FUNC-001 | 功能与边界 | P1 | accepted | 1 |
 ```
 
 ## 文件命名规范
@@ -36,6 +207,8 @@
 - **手工步骤**：`manual-steps.md`
 
 ### 辅助文件
+- **原始 ID**：`original-id.txt`（评审代理的临时 ID，如 SEC-001）
+- **裁决记录**：`adjudication.md`（主代理的完整裁决过程）
 - **文字描述**：`counterexample.md`（必须包含：preconditions、steps、expected、actual）
 - **挑战结果**：`challenge-result.md`（挑战代理的验证）
 - **验证结果**：`verification-result.md`（终审代理的验证）
@@ -45,7 +218,14 @@
 ## 评审代理职责
 
 ### 1. 创建 finding 目录
-评审代理为每个 finding 创建 `round-[N]/[finding_id]/` 目录。
+评审代理为每个 finding 创建 `round-[N]/[临时_id]/` 目录。**使用简单的临时 ID**（如 `SEC-001`、`FUNC-001`），主代理裁决时会重命名为标准 ID。
+
+临时 ID 格式建议：`[类别前缀]-[三位数字]`，例如：
+- `SEC-001`, `SEC-002` - 安全相关
+- `FUNC-001`, `FUNC-002` - 功能相关
+- `PERF-001` - 性能相关
+
+**注意**：临时 ID 只需要在同一个评审代理的输出中唯一即可，不需要担心跨代理冲突（主代理裁决时会统一分配标准 ID）。
 
 ### 2. 写入 reproduction 代码
 根据问题类型选择合适的格式：

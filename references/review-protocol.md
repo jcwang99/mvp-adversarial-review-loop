@@ -77,7 +77,8 @@ P0/P1 和任何建议改代码的 P2 没有可执行 reproduction 就不要提�
 主代理为每条候选意见填写以下记录，不能留空：
 
 ```text
-finding_id:
+finding_id: (主代理统一分配，格式见下方)
+original_id: (评审代理提供的原始 ID，仅作参考)
 deduplicated_with:
 decision: accepted | needs-evidence | rejected | deferred
 severity_after_review:
@@ -89,11 +90,74 @@ scope_check: in-scope | out-of-scope
 next_action: TDD 修复 | 挑战代理补证据 | 关闭 | 记录风险
 ```
 
-**裁决时必须验证 reproduction 代码**：
-1. 检查 `.review-evidence/round-[N]/[finding_id]/` 目录是否存在完整可运行的代码
+### finding_id 命名规则
+
+**主代理统一分配 finding_id**，避免跨角色、跨轮次的编号冲突。格式：
+
+```
+R[轮次]-F[序号]-[类别]
+```
+
+示例：
+- `R1-F001-SEC`：第 1 轮第 1 个 finding，安全类
+- `R1-F002-FUNC`：第 1 轮第 2 个 finding，功能类
+- `R2-F003-PERF`：第 2 轮第 3 个 finding（全局序号递增），性能类
+
+类别代码：
+- `SEC` - 安全与隐私
+- `FUNC` - 功能与边界
+- `REL` - 可靠性与一致性
+- `API` - API 与兼容性
+- `PERF` - 性能与资源
+- `UX` - UX 与可访问性
+- `OPS` - 测试与运维
+- `PROD` - 产品与契约
+
+序号全局递增，跨轮次不重置。评审代理可以提供自己的临时 ID（如 `SEC-001`），但主代理裁决时重新分配标准 ID。
+
+### 裁决前的反例合理性检查
+
+**在运行 reproduction 代码前**，主代理必须先检查反例的合理性：
+
+1. **前提检查**：
+   - 前提条件是否明确且可验证（用户角色、数据状态、环境配置）
+   - 前提是否符合 MVP 范围内的合理场景
+   - 前提是否与其他 finding 冲突（如同时假设”数据库为空”和”已有 100 条记录”）
+
+2. **期望行为检查**：
+   - 期望行为是否有明确的验收标准、契约或规范支持
+   - 是否引用了具体的文档、测试或代码位置
+   - 期望是否合理（不是过度防御或超出 MVP 承诺）
+
+3. **影响评估**：
+   - 声明的严重性与实际影响是否匹配
+   - 是否夸大影响或混淆”可能”与”必然”
+
+4. **reproduction 代码检查**：
+   - 代码语法是否正确（不要求运行，只检查明显错误）
+   - 依赖的库、模块、API 是否存在于项目中
+   - 测试断言是否与 expected_vs_actual 描述一致
+
+**不合理的反例示例**：
+- ❌ 前提：”在生产环境高并发下”（MVP 可能还没上生产）
+- ❌ 期望：”应该在 10ms 内返回”（没有性能 SLA 文档支持）
+- ❌ 影响：”可能导致数据库崩溃”（推测而非可观察后果）
+- ❌ reproduction 代码调用了项目不存在的 `getUserByIdWithPermissionCheck()` 函数
+
+**合理性检查不通过的处理**：
+- 标记为 `needs-evidence`，要求评审代理补充依据或修正反例
+- 在 reasoning 字段明确说明哪部分不合理
+- 不运行 reproduction 代码（避免浪费时间在错误的测试上）
+
+### 运行 reproduction 代码验证
+
+**只有通过合理性检查后**，才实际运行 reproduction 代码：
+
+1. 检查 `.review-evidence/round-[N]/[original_id]/` 目录是否存在完整可运行的代码
 2. 实际运行该 reproduction 代码，确认能复现问题
-3. 如果 reproduction 不存在或不可运行，标记为 `needs-evidence` 而非直接 `accepted`
-4. 在 `reproduction_path` 字段记录验证过的文件路径，供实现代理和终审代理使用
+3. 观察实际输出是否与 `expected_vs_actual` 描述一致
+4. 如果 reproduction 不存在、不可运行、或无法复现问题，标记为 `needs-evidence` 或 `rejected`
+5. 在 `reproduction_path` 字段记录验证过的文件路径（使用主代理分配的新 ID）
 
 当意见依赖未定义的产品决策时，先标 `needs-evidence`，由主代理从现有材料确认；不能让实现代理自行发明验收标准。
 
