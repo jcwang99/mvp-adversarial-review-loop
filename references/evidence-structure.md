@@ -171,7 +171,7 @@ screening-log.md 按轮次记录全部原始评审报告及其去重/筛查结�
 - challenge-result.md：触发挑战时的短结论和证据路径。
 - reinforce-result.md：需要补强时的修改摘要和运行结果。
 - implementation-result.md：RED/GREEN、回归、差异、提交和未解决项。
-- verification-result.md：独立验证命令、结果、变体和阻塞。
+- verification-result.md：验证命令、结果、执行者、变体和阻塞。
 - output.log：完整且脱敏的命令输出；体积较大时可按阶段分文件。
 
 ## Final audit records

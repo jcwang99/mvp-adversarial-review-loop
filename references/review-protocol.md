@@ -134,7 +134,7 @@ kind: defect | spec-gap | risk | preference
 - 脚本错误、依赖缺失、服务不可用或观察不充分：needs-evidence，不得伪称为缺陷不存在。
 - 缺陷真实但仅在 MVP 范围外的场景触发：deferred，记录触发条件、风险和复查条件。
 
-decision 只取 accepted、needs-evidence、rejected 或 deferred。独立修复验证另记 verification 状态；inconclusive 是一次代理的结果，不是 finding decision。
+decision 只取 accepted、needs-evidence、rejected 或 deferred。修复验证另记 verification 状态；inconclusive 是一次验证的结果，不是 finding decision。
 
 ### 3. 裁决记录字段
 
@@ -200,7 +200,7 @@ verification: not-applicable | pending | pass | fail | inconclusive
 - cannot-fix：保留 needs-evidence，说明未解决部分；不能仅因代理补强失败而 rejected。
 - 如果补强结果证明原假设错误，再由主代理基于该证据裁决 rejected。
 
-## 独立修复验证代理
+## 修复验证
 
 每个修复提交后，使用未参与该 finding 实现的验证代理。提供当前 HEAD、commit、原始 finding、原始 reproduction 路径、修复后的项目测试路径和必要的运行入口。不要把实现代理的结论当作验证结果。
 
@@ -212,7 +212,7 @@ Finding：[标准 ID、原始 claim、验收契约和前提]
 原始证据：[reproduce.* 或 manual-steps.md 的准确路径]
 修复测试：[项目测试套件路径及命令]
 
-先检查 implementation-result.md 中修复前的 RED 证据，确认它覆盖原始 claim 和同一验收断言；再在当前 HEAD 运行原始反例，确认修复后通过。除非提供可安全检查的修复前 commit/worktree，不得声称验证代理亲自重现了修复前状态。手工 finding 则独立执行步骤并记录当前观察。
+先检查 implementation-result.md 中修复前的 RED 证据，确认它覆盖原始 claim 和同一验收断言；再在当前 HEAD 运行原始反例，确认修复后通过。除非提供可安全检查的修复前 commit/worktree，不得声称验证执行者亲自重现了修复前状态。手工 finding 则独立执行步骤并记录当前观察。
 运行相关项目测试，尝试至少一个相邻变体，并检查回归、兼容性和权限/数据副作用。
 只在临时 fixture/数据库上运行；若验证会改写持久数据或调用真实外部服务，停止并返回 inconclusive。
 把完整记录写入该 finding 的 verification-result.md，必要的完整输出写入 output.log。
@@ -280,7 +280,7 @@ counterexample_coverage = 已由主代理或独立执行者重放并留证的 re
 
 终审代理的回复同样只返回状态、finding ID、命令/退出状态摘要、证据路径和阻塞项；完整记录保存在证据文件。
 
-任一终审阶段发现的每个具体问题都必须由主代理以 `final-audit-attempt-[K]` 作为 role-slug 记录到 screening-log.md，并进入普通去重、ID 分配、筛查、重放和裁决流程。它不能停留在终审报告之外，也不能被直接放入 accepted 清单。若成为 accepted，修复并独立验证后，当前终审失效；必须启动新的常规评审轮，由相关互补角色检查受影响区域和修复回归，再由新的终审代理重跑两阶段审计。**终审发现触发的新常规评审轮计入 5 轮上限；若此时已达第 5 轮上限，报告 INCOMPLETE 并列出未完成修复的终审发现。**终审发现的 P1/P2 即使出现在原本第 3-5 轮的时间点，也不能因常规扫描优先级限制而被丢弃；若轮次上限不允许完成后续互补复核和新终审，报告 INCOMPLETE。若终审发现仍为 needs-evidence，整体不得报告 CONVERGED；若因明确反证而 rejected 或真实范围外而 deferred，则记录后可继续第二阶段终审。
+任一终审阶段发现的每个具体问题都必须由主代理以 `final-audit-attempt-[K]` 作为 role-slug 记录到 screening-log.md，并进入普通去重、ID 分配、筛查、重放和裁决流程。它不能停留在终审报告之外，也不能被直接放入 accepted 清单。若成为 accepted，修复并验证通过后，当前终审失效；必须启动新的常规评审轮，由相关互补角色检查受影响区域和修复回归，再由新的终审代理重跑两阶段审计。**终审发现触发的新常规评审轮计入 5 轮上限；若此时已达第 5 轮上限，报告 INCOMPLETE 并列出未完成修复的终审发现。**终审发现的 P1/P2 即使出现在原本第 3-5 轮的时间点，也不能因常规扫描优先级限制而被丢弃；若轮次上限不允许完成后续互补复核和新终审，报告 INCOMPLETE。若终审发现仍为 needs-evidence，整体不得报告 CONVERGED；若因明确反证而 rejected 或真实范围外而 deferred，则记录后可继续第二阶段终审。
 
 只有同时满足以下条件才报告 CONVERGED：
 
