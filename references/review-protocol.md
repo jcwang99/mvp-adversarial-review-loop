@@ -21,6 +21,8 @@
 
 主代理按 finding 委派独立复现审查，避免在主上下文中展开所有命令输出。该代理必须与提交原始候选的评审员不同，一次只读取一个标准 finding 目录及必要的基线/契约；只报告重放观察，不裁决范围、严重性或最终 decision。主代理仍负责检查证据并作出所有 finding 决定。
 
+若所有可用独立代理都已提交过相关候选，主代理必须亲自复现；P0/P1 及权限/数据完整性类 finding 若由主代理单独复现，需在 adjudication.md 中明确记录并标注为高风险项，在最终报告中单独披露。
+
 ## 严重性与证据门槛
 
 | 级别 | 判断依据 |
@@ -31,6 +33,8 @@
 | P3 | 轻微体验、文档、风格或可选改进 |
 
 严重性按可重复影响定级，不按最坏想象。除纯偏好和仅文档措辞的 P3 外，候选意见必须描述具体前提、执行路径和可观察的期望/实际差异。优先提交可运行 reproduction；只有确认无法自动化时才提交手工步骤，并说明原因、环境、操作和观察点。
+
+**偏好类建议 (kind: preference)** 不进入修复流程，但收集在 screening-log.md 作为 screened_out_preference。达到收敛条件或轮次上限后，主代理将所有 preference 建议汇总交给用户决定是否采纳。
 
 每条候选 finding 包含：
 
@@ -116,7 +120,7 @@ kind: defect | spec-gap | risk | preference
 
 - 仅要求新增明确不在 MVP 承诺内的功能，或把没有契约依据的偏好当成验收失败，且没有指出当前行为的具体损害：记为 `screened_out_scope` 或 `screened_out_contract`，写明依据；不分配标准 ID、不进入 findings-index.md 或覆盖率分母，也无需运行反例。此规则不能用于否认当前行为造成的具体损害；若现存行为可能影响已承诺边界、数据、权限或用户，继续调查其实际影响和适用契约。
 - 不得仅因某条功能不在 MVP 承诺内，就拒绝检查该功能当前已存在的行为。若该行为可能影响已承诺边界、数据、权限或用户，可验证时继续筛查和重放；只有确认问题真实且仅在 MVP 范围外场景触发后，才可标 deferred。
-- 纯偏好或仅措辞建议：标记为 screened_out_preference，写入 screening-log.md；不分配标准 finding ID、不进入 findings-index.md，也不进入修复队列或反例覆盖率分母。
+- 纯偏好或仅措辞建议 (kind: preference)：标记为 screened_out_preference，写入 screening-log.md；不分配标准 finding ID、不进入 findings-index.md，也不进入修复队列或反例覆盖率分母。所有 preference 建议汇总后在达到收敛或轮次上限时交给用户决策。
 - 有具体后果但依赖未定产品决策、缺少必要前提或尚未确定的契约解释：decision 为 needs-evidence，列出需要的证据。不能只因契约没有明说就把具体、可观察的现有行为风险 rejected。
 - 反例有小的可修正缺陷：decision 暂为 needs-evidence，可派补强代理。
 - 根本无法运行但仍有合理方向：保留 needs-evidence；补强代理不能修正本身不证明问题不存在。
@@ -200,6 +204,8 @@ verification: not-applicable | pending | pass | fail | inconclusive
 
 每个修复提交后，使用未参与该 finding 实现的验证代理。提供当前 HEAD、commit、原始 finding、原始 reproduction 路径、修复后的项目测试路径和必要的运行入口。不要把实现代理的结论当作验证结果。
 
+若所有可用代理都已参与该 finding 的实现，由主代理执行验证；此类情况必须在 verification-result.md 中标注 verified_by: main-agent，并在最终报告中披露缺少独立复核的 finding 清单。
+
 ~~~text
 你是独立修复验证员。只读检查当前 HEAD 和 commit [hash]，不要编辑或提交。
 Finding：[标准 ID、原始 claim、验收契约和前提]
@@ -225,11 +231,14 @@ counterexample_coverage = 已由主代理或独立执行者重放并留证的 re
 
 ## 轮次上限与优先级
 
-- 默认最多 5 轮，每轮最多 6 个评审角色。
+- 默认最多 5 轮常规评审，每轮最多 6 个评审角色。**轮次计数只包含常规评审轮；最终审计不计入轮次，但其发现的问题如需修复会触发新的常规评审轮。**
 - 第 1、2 轮的常规扫描覆盖 P0-P2；第 3 轮的常规扫描只寻找新 P0。此限制不取消此前已 accepted finding 的修复，也不屏蔽强制终审扫描发现的问题；后者仍须进入普通裁决和修复流程。
 - 第 4、5 轮的常规扫描只检查此前修复引入的回归。终审发现的新候选仍须裁决；若修复后已没有轮次完成所需的互补复核和新终审，则报告 INCOMPLETE。
-- 连续 2 轮没有新的、范围内且仍未解决的 P0/P1，也没有新 accepted P2，可在完成第 2 或第 3 轮后提前停止常规扫描；仍须完成最终审计。
-- 范围内 P0/P1 的 accepted 未修复或 needs-evidence 都是未解决项，阻止收敛。范围外且已证实的 deferred 风险应披露，但本身不阻止收敛。达到轮次上限仍有未解决的范围内 P0/P1、accepted finding 验证阻塞或覆盖率不足时，标记 INCOMPLETE。不要为了达到轮数而继续提交低优先级改动。
+- 连续 2 轮没有新的、范围内且仍未解决的 P0/P1，也没有新 accepted P2，可在完成第 2 轮后提前停止常规扫描；仍须完成最终审计。**第 3 轮后不适用此条件（第 3 轮本身只找 P0，"没有新 accepted P2"已不是有效判断标准）。**
+- 范围内 P0/P1 的 accepted 未修复或 needs-evidence 都是未解决项，阻止收敛。**P2 needs-evidence 按以下规则处理**：
+  - 若该 P2 的前提、触发路径和潜在影响已明确记录，仅缺少运行环境或外部依赖，可作为残余风险披露而不阻止收敛
+  - 若 claim、范围或契约解释本身不明确，阻止收敛
+- 范围外且已证实的 deferred 风险应披露，但本身不阻止收敛。达到轮次上限仍有未解决的范围内 P0/P1、accepted finding 验证阻塞或覆盖率不足时，标记 INCOMPLETE。不要为了达到轮数而继续提交低优先级改动。
 
 ### 回归 finding
 
@@ -271,13 +280,13 @@ counterexample_coverage = 已由主代理或独立执行者重放并留证的 re
 
 终审代理的回复同样只返回状态、finding ID、命令/退出状态摘要、证据路径和阻塞项；完整记录保存在证据文件。
 
-任一终审阶段发现的每个具体问题都必须由主代理以 `final-audit-attempt-[K]` 作为 role-slug 记录到 screening-log.md，并进入普通去重、ID 分配、筛查、重放和裁决流程。它不能停留在终审报告之外，也不能被直接放入 accepted 清单。若成为 accepted，修复并独立验证后，当前终审失效；必须在下一轮由相关互补角色检查受影响区域和修复回归，并由新的终审代理重跑两阶段审计。终审发现的 P1/P2 即使出现在第 3-5 轮，也不能因常规扫描优先级限制而被丢弃；若轮次上限或该轮扫描范围不允许完成后续互补复核和新终审，报告 INCOMPLETE。若仍为 needs-evidence，整体不得报告 CONVERGED；若因明确反证而 rejected 或真实范围外而 deferred，则记录后可继续第二阶段终审。终审新发现计入轮次上限；达到上限时报告 INCOMPLETE。
+任一终审阶段发现的每个具体问题都必须由主代理以 `final-audit-attempt-[K]` 作为 role-slug 记录到 screening-log.md，并进入普通去重、ID 分配、筛查、重放和裁决流程。它不能停留在终审报告之外，也不能被直接放入 accepted 清单。若成为 accepted，修复并独立验证后，当前终审失效；必须启动新的常规评审轮，由相关互补角色检查受影响区域和修复回归，再由新的终审代理重跑两阶段审计。**终审发现触发的新常规评审轮计入 5 轮上限；若此时已达第 5 轮上限，报告 INCOMPLETE 并列出未完成修复的终审发现。**终审发现的 P1/P2 即使出现在原本第 3-5 轮的时间点，也不能因常规扫描优先级限制而被丢弃；若轮次上限不允许完成后续互补复核和新终审，报告 INCOMPLETE。若终审发现仍为 needs-evidence，整体不得报告 CONVERGED；若因明确反证而 rejected 或真实范围外而 deferred，则记录后可继续第二阶段终审。
 
 只有同时满足以下条件才报告 CONVERGED：
 
-1. 达到可提前结束条件的一整轮独立评审，或完成规定的最后回归轮；没有未解决的范围内 P0/P1，也没有未解决 accepted P2。范围外且已证实的 deferred 不阻止收敛，但必须列为残余风险。
+1. 达到可提前结束条件的一整轮独立评审（第 2 轮后连续 2 轮无新 P0/P1 且无新 accepted P2），或完成规定的最后回归轮；没有未解决的范围内 P0/P1，也没有未解决 accepted P2。范围外且已证实的 deferred 不阻止收敛，但必须列为残余风险。
 2. 所有历史 accepted finding 均由独立代理 pass；没有 fail 或 inconclusive 被当作通过。
-3. 反例覆盖率至少 80%；若分母为 0，按前述规则报告 N/A，且每个原始候选均有 screening-log 结果。所有进入 finding 生命周期的候选均有当前 decision，所有筛除项/重复项均有筛查记录。范围内 P0/P1 needs-evidence 阻止收敛；有明确边界的非关键 P2 needs-evidence 可作为残余风险披露。
+3. 反例覆盖率至少 80%；若分母为 0，按前述规则报告 N/A，且每个原始候选均有 screening-log 结果。所有进入 finding 生命周期的候选均有当前 decision，所有筛除项/重复项均有筛查记录。范围内 P0/P1 needs-evidence 阻止收敛；P2 needs-evidence 按其明确性处理：前提和影响已明确但缺环境的可作残余风险，claim 或契约解释本身不明确的阻止收敛。
 4. 最终审计两阶段完成，盲扫中的候选均已裁决且没有 needs-evidence；完整测试/构建结果和所有 rejected、deferred、needs-evidence 风险均有记录。
 
-最终报告包含每轮 finding 状态、关键证据路径、测试/提交、遗留风险、覆盖率和 CONVERGED/INCOMPLETE。CONVERGED 只表示本流程达到约定条件，不代表形式化证明或生产安全保证。
+最终报告包含每轮 finding 状态、关键证据路径、测试/提交、遗留风险、覆盖率和 CONVERGED/INCOMPLETE。**如果收敛或达到上限，附上所有 screened_out_preference 建议的汇总清单供用户决策。** CONVERGED 只表示本流程达到约定条件，不代表形式化证明或生产安全保证。

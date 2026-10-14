@@ -134,11 +134,10 @@ Decision 取 accepted、needs-evidence、rejected 或 deferred。独立验证结
 
 screening-log.md 按轮次记录全部原始评审报告及其去重/筛查结果，包括 ID 分配前筛除的意见。每条至少包含角色、临时 ID、处理结果、理由，以及 duplicate 时对应的 canonical ID。
 
-- preference 或仅措辞建议：记录为 screened_out_preference，不分配标准 finding ID，不进入 findings-index.md，也不进入反例覆盖率分母。
+- preference 或仅措辞建议 (kind: preference)：记录为 screened_out_preference，不分配标准 finding ID，不进入 findings-index.md，也不进入反例覆盖率分母。所有 preference 建议汇总后在达到收敛或轮次上限时交给用户决策。
 - 明确要求增加未承诺功能，或仅把无契约依据的偏好当成验收失败，且没有指出当前行为的具体损害：记录为 screened_out_scope 或 screened_out_contract，不分配标准 ID、不进入 findings-index.md，也不进入覆盖率分母。若其描述的是现有行为的具体风险，则不得仅据此筛出，必须按 finding 审查。
 - 重复报告：记录为 duplicate，并指向 canonical ID；原始 inbox 文件保留。
 - 进入 finding 生命周期的候选：记录 canonical ID 和证据目录路径。
-- 纯偏好、仅措辞建议，以及明确不构成现存风险的 scope/contract 请求不分配标准 ID、不进入 findings-index.md；分别记录筛查结果。
 
 这样 raw_candidates 的计数可审计，同时 findings-index.md 只维护实际进入 finding 生命周期的唯一候选。
 
@@ -166,5 +165,7 @@ screening-log.md 按轮次记录全部原始评审报告及其去重/筛查结�
 ## 审计材料的 Git 生命周期
 
 审计材料应纳入版本控制以保持追溯。可在每轮评审结束时单独提交证据记录；实现修复提交只包含当前 finding 的产品代码、可行的项目回归测试及必要配置，不包含 .review-evidence/。若无法安全区分用户已有改动，不提交并在 run-state.md 记录阻塞。
+
+**证据与代码的历史一致性**：修复 commit 引用的证据路径在该 commit 快照中不存在（证据在独立的评审 commit 中）。这是有意的设计取舍：避免混淆审计证据与产品代码边界。在 commit message 中使用相对引用（如"证据见前一次评审 commit 的 .review-evidence/round-1/R1-F001-SEC/"）帮助定位。checkout 旧修复 commit 时，需同时参考时间上相邻的评审 commit 获取完整证据。
 
 评审取消时保留已有证据，除非用户明确要求清理。证据目录不应被全局忽略。
