@@ -60,7 +60,7 @@ P0/P1 和任何建议改代码的 P2 没有可执行 reproduction 就不要提�
 - **代码可运行**：reproduction 字段必须包含完整可执行的测试代码、脚本或命令，不是对已有测试的引用。
   - ✅ 好：完整的测试函数（含导入、setup、断言）或完整的 curl 命令
   - ❌ 差：”运行 `npm test`”、”调用 getUserById(null)”、”参考测试文件第 42 行”
-- **证据已保存**：reproduction 代码已写入 `.review-evidence/round-[N]/[finding_id]/` 目录，主代理和后续代理可直接运行
+- **证据已保存**：reproduction 代码已写入 `.review-evidence/round-[N]/[临时_id]/` 目录（评审代理使用临时 ID 如 SEC-001，主代理裁决时重命名为标准 ID 如 R1-F001-SEC），主代理和后续代理可直接运行
 - **影响成比例**：严重性来自可重复影响，不来自最坏想象。能绕过且无数据/权限影响的问题通常不应标 P0/P1。
 
 依赖外部服务时提供 fixture/mock 方案和未验证部分。反例可以是负面测试，也可以是性质违反的模型/不变量。纯粹”未来可能需要”的风险没有当前反例时保持 `needs-evidence` 或 `deferred`。
@@ -79,13 +79,13 @@ P0/P1 和任何建议改代码的 P2 没有可执行 reproduction 就不要提�
 主代理为每条候选意见填写以下记录，不能留空：
 
 ```text
-finding_id: (主代理统一分配，格式见下方)
+finding_id: (评审代理提供临时 ID 如 SEC-001，主代理裁决时分配标准 ID 如 R1-F001-SEC)
 original_id: (评审代理提供的原始 ID，仅作参考)
 deduplicated_with:
 decision: accepted | needs-evidence | rejected | deferred
 severity_after_review:
 counterexample_replayed: yes | no | partial
-reproduction_path: .review-evidence/round-[N]/[finding_id]/reproduce.* (主代理验证过的路径)
+reproduction_path: .review-evidence/round-[N]/R[N]-F[XXX]-[CAT]/reproduce.* (主代理验证过的路径，使用标准 ID)
 evidence: 代码位置、测试输出、规范或反例结果
 reasoning: 为什么该实现违反或没有违反要求
 scope_check: in-scope | out-of-scope
