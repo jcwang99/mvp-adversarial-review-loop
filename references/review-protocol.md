@@ -1,346 +1,283 @@
-# 评审协议
+# 评审、裁决与收敛协议
+
+本文件是评审角色、finding 状态、证据裁决和轮次边界的权威定义。完整记录格式见 evidence-structure.md；实现和提交规则见 tdd-and-commit.md。
 
 ## 角色选择
 
-只启动与项目风险相关的角色，保持每个角色的任务互不重叠。推荐从下表选 3 到 6 个：
+按项目实际风险选择 3 到 6 个互补角色，避免职责重复。至少覆盖产品/契约、功能/边界、安全/权限三个角度；对小型或不涉及某领域的 MVP，可说明为何某角色不适用。每轮至少安排一个角色作为反证视角，主动检查常见风险假设是否有正常行为或无效前提；仍不得向其透露其他角色的 findings。
 
-| 角色 | 重点问题 | 典型反例 |
-|------|----------|----------|
-| 产品与契约 | 用户故事、验收标准、非目标、错误提示是否兑现 | 合法流程无法完成，或非目标被误当成缺陷 |
-| 功能与边界 | 空值、极值、重复调用、非法状态、失败恢复 | 特定输入导致错误结果、崩溃或状态卡死 |
-| 安全与隐私 | 身份、授权、越权、注入、秘密、敏感数据、信任边界 | 低权限用户读取/修改不属于自己的资源 |
-| 可靠性与一致性 | 超时、重试、并发、幂等、事务、队列、部分失败 | 重试创建重复订单，或并发更新丢失 |
-| API 与兼容性 | schema、版本、序列化、错误码、客户端兼容 | 旧客户端收到无法解析的响应 |
-| 性能与资源 | 复杂度、查询、内存、连接、限流、启动时间 | 小数据通过但达到 MVP 规模就超时或耗尽资源 |
-| UX 与可访问性 | 键盘、读屏、焦点、移动布局、空/错/载状态 | 键盘用户无法提交表单或错误只显示颜色 |
-| 测试与运维 | 可观测性、部署、迁移、回滚、配置、测试盲区 | 线上失败没有日志/告警，或迁移无法回滚 |
+| 角色 | 检查重点 |
+|------|----------|
+| 产品与契约 | 用户故事、验收标准、非目标、错误提示 |
+| 功能与边界 | 空值、极值、重复调用、非法状态、失败恢复 |
+| 安全与隐私 | 身份、授权、注入、秘密、敏感数据、信任边界 |
+| 可靠性与一致性 | 超时、重试、并发、幂等、事务、部分失败 |
+| API 与兼容性 | schema、版本、序列化、错误码、旧客户端 |
+| 性能与资源 | 复杂度、查询、内存、连接、限流和 MVP 设计负载 |
+| UX 与可访问性 | 键盘、读屏、焦点、移动布局、空/错/载状态 |
+| 测试与运维 | 可观测性、部署、迁移、回滚、配置、测试盲区 |
 
-至少让一个角色尝试证明”当前实现没有该问题”，否则正反双方不会真正独立。
+默认一次只启动一个代理。每个评审角色有唯一的 role-slug，写入独立 inbox 子目录。不得把先前代理的发现或主代理预期告诉后续评审员。
 
-## 优先级定义
+主代理按 finding 委派独立复现审查，避免在主上下文中展开所有命令输出。该代理必须与提交原始候选的评审员不同，一次只读取一个标准 finding 目录及必要的基线/契约；只报告重放观察，不裁决范围、严重性或最终 decision。主代理仍负责检查证据并作出所有 finding 决定。
 
-| 优先级 | 定义 | 示例 |
-|--------|------|------|
-| P0 | 数据损坏、安全漏洞、核心功能完全无法使用 | SQL 注入、身份验证绕过、主流程崩溃 |
-| P1 | 重要功能在常见场景下失败、明确违反验收标准 | 边界条件下错误结果、授权检查缺失、数据一致性问题 |
-| P2 | 非核心功能缺陷、性能问题、可用性问题、测试盲区 | 次要功能错误、可访问性问题、明显的性能瓶颈 |
-| P3 | 改进建议、代码风格、文档措辞 | 变量命名、注释完善、非功能性优化 |
+## 严重性与证据门槛
 
-**注意**：除了纯偏好和只涉及文档措辞的 P3，所有优先级的意见都必须有可重放证据：优先使用可执行反例；仅当确认无法自动化时，才允许手工步骤作为例外。
+| 级别 | 判断依据 |
+|------|----------|
+| P0 | 数据破坏、重大安全事故、核心功能完全不可用 |
+| P1 | 核心验收路径失败、越权或广泛的崩溃/部署阻断 |
+| P2 | 有限条件下的非核心功能、性能、兼容性或可访问性缺陷 |
+| P3 | 轻微体验、文档、风格或可选改进 |
 
-## 子代理提示模板
+严重性按可重复影响定级，不按最坏想象。除纯偏好和仅文档措辞的 P3 外，候选意见必须描述具体前提、执行路径和可观察的期望/实际差异。优先提交可运行 reproduction；只有确认无法自动化时才提交手工步骤，并说明原因、环境、操作和观察点。
 
-为每个只读评审代理单独发送如下内容，并替换方括号字段。不要把其他代理的 finding 或主代理的预期答案放进提示。
+每条候选 finding 包含：
 
-```text
-你是 [角色] 评审员。请只读检查 [MVP 范围]，依据 [验收标准/契约] 和当前 HEAD。
-不要修改项目源代码、测试、配置，不要安装依赖、运行会写入真实外部系统的命令或提交。你可以只在 .review-evidence/round-[N]/[临时_id]/ 中创建反例和说明文件。
-先列出你实际检查过的入口、模块、测试和配置。
-只报告可观察的缺陷或可验证的规范缺口，不报告个人偏好。
+~~~text
+finding_id: [该角色内唯一临时 ID，如 SEC-001]
+severity: P0 | P1 | P2 | P3
+claim: [一句话描述可观察的问题]
+location: [文件、符号或行号]
+preconditions: [触发前提]
+counterexample: [输入/状态/时序/权限/环境及步骤]
+expected_vs_actual: [期望与实际]
+reproduction_path: [该角色 inbox 目录中的文件路径]
+impact: [对用户、数据、权限、可用性的实际影响]
+confidence: high | medium | low
+kind: defect | spec-gap | risk | preference
+~~~
 
-每条候选意见必须包含：
-- finding_id、severity、claim、location、preconditions
-- counterexample（文字描述：输入/状态/步骤/期望/实际）
-- expected_vs_actual、impact、confidence、kind
-- reproduction（可执行的完整代码/命令，或有无法自动化说明的精确手工步骤）
+## 评审代理提示模板
 
-**关键要求：优先提供可直接运行的 reproduction；仅当确认无法自动化时，才提供手工复现步骤**
-- 测试代码：完整的测试函数/文件内容，包含导入、fixture、断言
-- 脚本/命令：完整的 shell 命令、curl 请求、SQL 查询或可执行脚本
-- 手工步骤：说明为何无法自动化，给出精确的前提、操作序列、观察点和验证方法（可附截图）
-- 自动化反例不要只写"运行测试 X"或"调用函数 Y"，必须给出完整可运行的代码
+为每个代理替换 round、role-slug、范围和验收标准。第 4、5 轮还需提供待检查的修复提交/变更路径，但不提供历史 finding 或预期结论：
 
-将反例证据保存到约定路径：
-- 自动化反例：.review-evidence/round-[N]/[临时_id]/reproduce.test.[ext]
-- 脚本/命令：.review-evidence/round-[N]/[临时_id]/reproduce.sh 或 reproduce.md
-- 手工步骤：.review-evidence/round-[N]/[临时_id]/manual-steps.md
+~~~text
+你是 [role-slug] 评审员。只读检查 [MVP 范围]，依据 [验收标准/契约] 和当前 HEAD。
+本轮变更范围：[常规评审填 none；回归评审列出待检查的提交/文件路径，不提供历史 finding 或预期结论]
+不要修改项目源代码、测试、配置，不要安装依赖或提交。只用临时 fixture/数据库执行验证；若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告阻塞。
+只在 .review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/ 中创建本角色的证据。
+不要查看其他角色的 findings，也不要把个人偏好作为缺陷。
 
-**注意**：使用简单的临时 ID（如 SEC-001、FUNC-001）创建目录，主代理裁决时会重命名为标准 ID（如 R1-F001-SEC）。
+每条 finding 描述可观察的触发条件、期望/实际、影响、置信度和 kind。
+把完整 reproduction 或获准的 manual-steps.md、counterexample.md 写到该 finding 目录。
+最后只返回：检查范围摘要；每条 finding 的临时 ID、严重性、claim、kind、置信度和证据路径；无法验证的依赖/原因；未发现问题的关键路径。
+不要在回复中粘贴 reproduction 源码或完整命令输出。日志留在证据文件中，回复只给命令、退出状态和必要的短输出摘要。
+~~~
 
-P0/P1 和任何建议改代码的 P2 必须有可重放证据。手工证据只有在说明无法自动化、由主代理实际执行并记录结果后才算通过门槛；否则改列 needs-evidence。
-最后列出你没有发现风险的关键路径，以及无法验证的依赖和原因。
-```
+代理返回属于交接摘要，不是第二份证据副本。主代理只在裁决当前 finding 时读取其完整证据。
 
-## 反例质量门槛
+## Finding ID 与证据路径
 
-反例必须能让另一位代理在同一版本上复现。至少满足：
+每个代理只需在自身 role-slug 目录内保证临时 ID 唯一，例如：
 
-- **前提明确**：账号角色、输入、数据、时钟、并发度、网络或配置都写出，不依赖”正常情况下”。
-- **路径具体**：指出入口、调用顺序和关键分支，避免只说”可能出错”。
-- **结果可观察**：返回值、持久化状态、日志、权限、资源消耗或 UI 行为有明确期望/实际差异。
-- **证据可重放**：优先提供完整可执行的测试代码、脚本或命令，不是对已有测试的引用。只有确认无法自动化时，才允许精确的手工步骤，并要求主代理实际执行、记录结果。
-  - ✅ 好：完整的测试函数（含导入、setup、断言）或完整的 curl 命令
-  - ❌ 差：”运行项目测试套件”、”调用 getUserById(null)”、”参考测试文件第 42 行”
-- **证据已保存**：reproduction 或 `manual-steps.md` 已写入 `.review-evidence/round-[N]/[临时_id]/` 目录（主代理裁决时重命名为标准 ID）；手工复现还需保存主代理和独立验证代理的执行记录
-- **影响成比例**：严重性来自可重复影响，不来自最坏想象。能绕过且无数据/权限影响的问题通常不应标 P0/P1。
+~~~
+.review-evidence/round-1/inbox/security/SEC-001/
+.review-evidence/round-1/inbox/functionality/FUNC-001/
+~~~
 
-依赖外部服务时提供 fixture/mock 方案和未验证部分。反例可以是负面测试，也可以是性质违反的模型/不变量。纯粹”未来可能需要”的风险没有当前反例时保持 `needs-evidence`。MVP 范围外的场景才触发的真实问题，标记为 `deferred` 需通过验证并记录风险。每轮覆盖率按主代理已重放并留证的反例计算；手工复现单独计数。
+主代理先筛掉纯偏好和明确不构成现存风险的范围/契约请求，再对剩余候选去重并分配标准 ID；只有进入 finding 生命周期的候选有标准 ID 和索引行。将对应 inbox 目录移动为：
 
-## 严重性判定
+~~~
+.review-evidence/round-[N]/R[N]-F[全局序号]-[类别]/
+~~~
 
-- **P0**：数据丢失/破坏、远程未授权控制、重大安全或合规事故、核心流程完全不可用；应暂停低优先级修复。
-- **P1**：核心验收路径失败、越权读取/修改、不可恢复的一致性错误、广泛影响的崩溃或部署阻断。
-- **P2**：有限条件下的功能错误、可恢复的可靠性/兼容性/可访问性问题，或明确但非核心的契约缺口。
-- **P3**：文档、可观测性改进、轻微体验或低概率且有可靠缓解的风险；通常记录而不进入本轮代码修改。
+格式为 R[轮次]-F[全局递增序号]-[类别]，如 R1-F001-SEC。序号跨轮次递增。标准 ID 在实质裁决前分配，即使最终 decision 是 rejected、deferred 或 needs-evidence，也保留该 ID 和证据目录。original-id.txt 记录 role-slug 与临时 ID。
 
-如果影响、可触发性或证据不足以支持当前等级，向下调整而不是夸大。
+重复候选不另分标准 ID；保留其 inbox 目录，在 findings-index.md 中引用 canonical ID，并在 canonical adjudication.md 中记录来源及去重理由。不得覆盖、合并丢失或删除原始候选证据。
 
-## 主代理裁决模板
+类别代码：SEC 安全隐私；FUNC 功能边界；REL 可靠性一致性；API API兼容性；PERF 性能资源；UX 可访问性；OPS 测试运维；PROD 产品契约。
 
-主代理为每条候选意见填写以下记录，不能留空：
+## 独立复现审查
 
-```text
-finding_id: (评审代理提供临时 ID 如 SEC-001，主代理裁决时分配标准 ID 如 R1-F001-SEC)
-original_id: (评审代理提供的原始 ID，仅作参考)
+主代理完成去重、范围/契约初筛并分配标准 ID 后，对可复现候选指派一名未提交该候选的独立复现审查员。原评审员运行过的结果可作线索，但不能替代独立复现。挑战代理的独立重放可满足此要求；高风险或证据异常项还须由主代理加验或再委派第二个独立审查。
+
+~~~text
+你是独立复现审查员。只检查 [标准 finding ID] 的 counterexample.md 与指定复现文件、当前 HEAD，以及主代理提供的相关基线/契约。不要读取其他 finding、原评审结论、adjudication.md、challenge-result.md 或 verification-result.md。
+复现材料：[该 finding 目录内 reproduce.* 或 manual-steps.md 的准确路径]
+只读项目文件和测试；不要修改源代码、测试、配置或提交。只用临时 fixture/数据库执行验证；若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked。
+运行复现并记录精确命令/操作、环境、退出状态、观察结果和证据路径。完整输出写入该 finding 的 replay-review.md，必要时写入 output.log。
+只返回 reproduced、not-reproduced 或 blocked，附证据路径、命令/退出状态摘要和阻塞项；不要判断 scope、severity 或最终 decision，不要粘贴完整日志。
+~~~
+
+- `reproduced`：有效前提下观察到 claim 所述行为；是否违反承诺范围由主代理另行裁决。
+- `not-reproduced`：前提和断言有效、复现完整运行，但观察结果明确不符合 claim；记录具体反证。仅仅没有得到输出或结果模糊不算。
+- `blocked`：环境、依赖、前提、脚本或观察点不完整，无法判断 claim；保留 `needs-evidence`，不得据此 rejected。
+
+主代理审查 replay-review.md 和关键原始输出后，填写 adjudication。P0/P1、权限/数据完整性/公开 API、高影响 finding，以及结果互相矛盾或不寻常的证据，主代理必须亲自加验或再委派第二个独立审查。若没有独立代理可用，主代理亲自复现作为退路。
+
+## 主代理筛查与裁决
+
+对每条去重后的独立候选，主代理独立完成筛查、裁决和必要的复现。提出意见的代理不得单独决定自己的 finding 是否成立。
+
+### 1. 范围与契约筛查
+
+检查前提是否可能成立、意见是否针对 MVP 已承诺的功能、预期行为是否有验收标准/契约支持、影响是否与严重性相称。
+
+- 仅要求新增明确不在 MVP 承诺内的功能，或把没有契约依据的偏好当成验收失败，且没有指出当前行为的具体损害：记为 `screened_out_scope` 或 `screened_out_contract`，写明依据；不分配标准 ID、不进入 findings-index.md 或覆盖率分母，也无需运行反例。此规则不能用于否认当前行为造成的具体损害；若现存行为可能影响已承诺边界、数据、权限或用户，继续调查其实际影响和适用契约。
+- 不得仅因某条功能不在 MVP 承诺内，就拒绝检查该功能当前已存在的行为。若该行为可能影响已承诺边界、数据、权限或用户，可验证时继续筛查和重放；只有确认问题真实且仅在 MVP 范围外场景触发后，才可标 deferred。
+- 纯偏好或仅措辞建议：标记为 screened_out_preference，写入 screening-log.md；不分配标准 finding ID、不进入 findings-index.md，也不进入修复队列或反例覆盖率分母。
+- 有具体后果但依赖未定产品决策、缺少必要前提或尚未确定的契约解释：decision 为 needs-evidence，列出需要的证据。不能只因契约没有明说就把具体、可观察的现有行为风险 rejected。
+- 反例有小的可修正缺陷：decision 暂为 needs-evidence，可派补强代理。
+- 根本无法运行但仍有合理方向：保留 needs-evidence；补强代理不能修正本身不证明问题不存在。
+
+### 2. 复现与主代理裁决
+
+通过筛查的候选必须由独立复现审查员、挑战代理或主代理之一运行 reproduction；执行者必须与提出候选的评审员不同。手工步骤仅在已确认无法自动化时使用。记录精确命令/操作、环境、退出状态、观察结果及证据路径。主代理必须检查证据与 claim 相符，且在 adjudication.md 中注明复现者和证据路径；不要求主代理重复每条常规命令。
+
+- 重放观察到承诺范围内的缺陷：进入挑战判断。
+- 有效前提下未观察到所述缺陷，且断言与描述正确并有明确反证：rejected，记录反证。
+- 脚本错误、依赖缺失、服务不可用或观察不充分：needs-evidence，不得伪称为缺陷不存在。
+- 缺陷真实但仅在 MVP 范围外的场景触发：deferred，记录触发条件、风险和复查条件。
+
+decision 只取 accepted、needs-evidence、rejected 或 deferred。独立修复验证另记 verification 状态；inconclusive 是一次代理的结果，不是 finding decision。
+
+### 3. 裁决记录字段
+
+主代理在 adjudication.md 中记录：
+
+~~~text
+finding_id:
+original_id_and_role:
 deduplicated_with:
-decision: accepted | needs-evidence | rejected | deferred
+change_origin: pre-existing | regression | undetermined
 severity_after_review:
-counterexample_replayed: yes | no | partial
-reproduction_path: .review-evidence/round-[N]/R[N]-F[XXX]-[CAT]/ 中的 reproduce.* 或 manual-steps.md（主代理验证过的路径，使用标准 ID）
-evidence: 代码位置、测试输出、规范或反例结果
-reasoning: 为什么该实现违反或没有违反要求
-scope_check: in-scope | out-of-scope
-next_action: TDD 修复 | 挑战代理补证据 | 关闭 | 记录风险
-```
+scope_and_contract:
+evidence_screen:
+replay_status: reproduced | not-reproduced | blocked | not-required
+replay_reviewer: [role-slug 或 main-agent]
+replay_evidence_path: [replay-review.md 或其他完整证据路径]
+replay_command_or_steps:
+replay_result_and_evidence_path:
+challenge_result: not-triggered | supports | disputes | inconclusive
+decision: accepted | needs-evidence | rejected | deferred
+reasoning:
+next_action:
+verification: not-applicable | pending | pass | fail | inconclusive
+~~~
 
-### finding_id 命名规则
+### 4. 挑战代理
 
-**主代理统一分配 finding_id**，避免跨角色、跨轮次的编号冲突。格式：
+**必须挑战的触发条件**（在 accepted 前满足任一项即触发）：
 
-```
-R[轮次]-F[序号]-[类别]
-```
+- P0/P1 且 confidence 为 medium 或 low。
+- 涉及权限、数据完整性或公开 API 兼容性的 finding，即使 confidence 为 high。
 
-示例：
-- `R1-F001-SEC`：第 1 轮第 1 个 finding，安全类
-- `R1-F002-FUNC`：第 1 轮第 2 个 finding，功能类
-- `R2-F003-PERF`：第 2 轮第 3 个 finding（全局序号递增），性能类
+触发后不得因为主代理已成功重放、已有失败测试或生产日志而跳过挑战；这些只证明现象，不能替代独立的反证尝试。对同一根因可由一个挑战任务覆盖多个 finding，但主代理仍须逐条确认适用性和影响。
 
-类别代码：
-- `SEC` - 安全与隐私
-- `FUNC` - 功能与边界
-- `REL` - 可靠性与一致性
-- `API` - API 与兼容性
-- `PERF` - 性能与资源
-- `UX` - UX 与可访问性
-- `OPS` - 测试与运维
-- `PROD` - 产品与契约
+提示模板：
 
-序号全局递增，跨轮次不重置。评审代理可以提供自己的临时 ID（如 `SEC-001`），但主代理裁决时重新分配标准 ID。
+~~~text
+你是独立挑战代理。只读检查 [标准 ID] 及当前 HEAD，不要修改项目或提交。
+原始 finding：[claim、范围、契约和前提]
+只读文件：[counterexample.md 与 reproduce.* 或 manual-steps.md 的准确路径]
 
-### 裁决前的反例合理性检查
+先独立重放 reproduce；若明确无法自动化，执行 manual-steps.md。
+随后尝试证明 claim 不成立：查规范、检查前提、尝试反例变体、寻找符合契约的正常行为。
+不要读取 adjudication.md、replay-review.md、其他代理的结论或主代理的裁决理由。
+遵守评审代理相同的数据隔离要求；无法隔离持久数据或外部写入时，停止并返回 inconclusive。
+返回 supports、disputes 或 inconclusive；附证据路径、命令/退出状态和必要的短输出摘要。
+完整输出写入 challenge-result.md 或 output.log，不要粘贴完整代码和日志。
+~~~
 
-**在重放反例前**，主代理必须先检查反例的合理性：
+`supports` 表示挑战者有效重放了 claim，且未找到足以推翻它的证据。`disputes` 必须附具体反证，证明前提不成立、行为符合契约或影响/严重性需要修订；单纯重放失败、环境不可用或观察不确定不能标为 disputes，必须标 `inconclusive`。
 
-1. **前提检查**：
-   - 前提条件是否明确且可验证（用户角色、数据状态、环境配置）
-   - 前提是否与其他 finding 冲突（如同时假设”数据库为空”和”已有 100 条记录”）
-   - 不使用 MVP 不可能满足的前提（如”生产环境高并发”但 MVP 未部署）
+- supports：主代理确认挑战未推翻 finding 后，decision 可为 accepted。
+- disputes：主代理审查双方证据；证据充分时 rejected，影响较小则降级/修订后 accepted，争议未解决则 needs-evidence。若修订改变了 claim、触发条件或期望行为，且修订后仍满足挑战触发条件，须针对修订版重新挑战再 accepted。
+- inconclusive：不是自动接受。主代理基于已有重放证据作决定；证据仍不足则 needs-evidence。
 
-2. **范围检查**：
-   - 意见是否针对 MVP 明确包含的功能
-   - 不要求添加 MVP 不包含的功能（如 MVP 只做中文却要求多语言支持）
+挑战代理不得修改项目代码、测试或 finding 的原始 reproduction。
 
-3. **期望行为检查**：
-   - 期望行为是否有明确的验收标准、契约或规范支持
-   - 是否引用了具体的文档、测试或代码位置
-   - 期望是否合理（不是过度防御或超出 MVP 承诺）
+### 5. 补强代理
 
-4. **影响评估**：
-   - 声明的严重性与实际影响是否匹配
-   - 是否夸大影响或混淆”可能”与”必然”
+仅在反例思路合理但有小的执行瑕疵时使用。补强代理只修改标准 ID 目录内的 reproduction 或 counterexample.md，不改项目文件。返回 fixed 或 cannot-fix，并把完整结果写入 reinforce-result.md。
 
-5. **反例证据检查**：
-   - 自动化反例：代码语法、依赖和断言是否与 expected_vs_actual 一致
-   - 手工反例：是否说明无法自动化，且步骤、前提和观察点足够精确
+- fixed：主代理重新检查并重放；补强成功本身不等于 finding 成立。
+- cannot-fix：保留 needs-evidence，说明未解决部分；不能仅因代理补强失败而 rejected。
+- 如果补强结果证明原假设错误，再由主代理基于该证据裁决 rejected。
 
-**不合理的反例示例**：
-- ❌ 前提：”在生产环境高并发下”（MVP 可能还没上生产）
-- ❌ 范围：”应该支持多语言切换”（如果 MVP 明确只做中文）
-- ❌ 期望：”应该在 10ms 内返回”（没有性能 SLA 文档支持）
-- ❌ 影响：”可能导致数据库崩溃”（推测而非可观察后果）
-- ❌ reproduction 代码调用了项目不存在的 `getUserByIdWithPermissionCheck()` 函数
+## 独立修复验证代理
 
-**合理性检查不通过的处理**：
+每个修复提交后，使用未参与该 finding 实现的验证代理。提供当前 HEAD、commit、原始 finding、原始 reproduction 路径、修复后的项目测试路径和必要的运行入口。不要把实现代理的结论当作验证结果。
 
-评审代理提交意见后即终止，无法回来修正。主代理根据问题性质决策：
+~~~text
+你是独立修复验证员。只读检查当前 HEAD 和 commit [hash]，不要编辑或提交。
+Finding：[标准 ID、原始 claim、验收契约和前提]
+原始证据：[reproduce.* 或 manual-steps.md 的准确路径]
+修复测试：[项目测试套件路径及命令]
 
-1. **可补强的瑕疵**（反例思路合理但执行有小问题）：
-   - 标记为 `needs-evidence`
-   - 在 `adjudication.md` 中记录需要补强的部分（如"reproduction 代码调用了不存在的函数 X，需改为 Y"）
-   - 派**补强代理**修正 reproduction 代码或补充前提条件
-   - 补强代理成功后，重新进行阶段 2 验证；失败则转为 `rejected`
+先检查 implementation-result.md 中修复前的 RED 证据，确认它覆盖原始 claim 和同一验收断言；再在当前 HEAD 运行原始反例，确认修复后通过。除非提供可安全检查的修复前 commit/worktree，不得声称验证代理亲自重现了修复前状态。手工 finding 则独立执行步骤并记录当前观察。
+运行相关项目测试，尝试至少一个相邻变体，并检查回归、兼容性和权限/数据副作用。
+只在临时 fixture/数据库上运行；若验证会改写持久数据或调用真实外部服务，停止并返回 inconclusive。
+把完整记录写入该 finding 的 verification-result.md，必要的完整输出写入 output.log。
+只返回 pass、fail 或 inconclusive、命令/退出状态摘要、证据路径和阻塞项。不要粘贴完整日志。
+~~~
 
-2. **需要重新构造反例**（根本性错误，需要完全重写）：
-   - 标记为 `needs-evidence`，暂时搁置
-   - 可在下一轮重新评审时覆盖该问题
+- pass：主代理确认所有要求的检查均完成后，verification 记 pass，finding 可标 verified。
+- fail：verification 记 fail，保持未 verified，回到修复或创建新的回归 finding。
+- inconclusive：保持 accepted 但未 verified，记录环境/证据阻塞；不得把它作为 pass 或直接开始收敛终审。
 
-3. **完全不合理的意见**（以下情况直接 rejected）：
-   - 基于错误假设或误解
-   - 要求 MVP 明确不包含的功能
-   - 期望行为不合理或无规范支持
-   - 直接标记为 `rejected`
-   - 在 `adjudication.md` 中明确说明拒绝原因（如"前提假设生产环境高并发，但 MVP 尚未部署"）
-   - 无需派补强代理，避免浪费资源
+## 覆盖率与轮次记录
 
-不运行 reproduction 代码（避免浪费时间在错误的测试上）。
+每轮分别报告 raw_candidates、duplicates、screened_out（偏好/明确 scope 或 contract 非 finding）和 replay-eligible 独立 finding 数。被筛除的意见、重复项不进入反例覆盖率分母，但必须单独计数并写入 screening-log.md。进入 finding 生命周期的候选（包括 needs-evidence 及之后被 rejected/deferred 的候选）必须获得标准 ID 和索引行。
 
-**示例：可补强 vs 需重构 vs 完全不合理**
-- ✅ 可补强：reproduction 代码调用了 `getUser(null)` 但实际函数名是 `getUserById(null)` → needs-evidence，派补强代理修正
-- ⚠️ 需重构：reproduction 代码思路错误，需要从 API 层面而不是数据库层面测试 → needs-evidence，搁置到下一轮
-- ❌ 完全不合理：声称"在生产环境高并发下崩溃"但 MVP 还没上生产，没有监控数据 → rejected
-- ✅ 可补强：前提条件写"管理员登录"但没给具体 token → needs-evidence，派补强代理补充
-- ❌ 完全不合理：期望"API 应在 10ms 内返回"但没有任何性能 SLA 文档支持 → rejected
-- ❌ 完全不合理：要求"支持多语言切换"但 MVP 明确只做中文 → rejected
+counterexample_coverage = 已由主代理或独立执行者重放并留证的 replay-eligible 独立 finding 数 / replay-eligible 独立 finding 总数。缺少证据或环境阻塞的 finding 仍在分母内。自动化与手工复现分别报告。分母为 0 时报告 N/A，不视为自动通过；须确认每个原始候选都已在 screening-log.md 有明确处理结果，并完成要求的评审与终审。覆盖率低于 80% 时不得声称评审充分或收敛；补足证据或在最终报告中标记 INCOMPLETE。
 
-### 重放反例验证
+## 轮次上限与优先级
 
-**只有通过合理性检查后**，才重放反例：
+- 默认最多 5 轮，每轮最多 6 个评审角色。
+- 第 1、2 轮的常规扫描覆盖 P0-P2；第 3 轮的常规扫描只寻找新 P0。此限制不取消此前已 accepted finding 的修复，也不屏蔽强制终审扫描发现的问题；后者仍须进入普通裁决和修复流程。
+- 第 4、5 轮的常规扫描只检查此前修复引入的回归。终审发现的新候选仍须裁决；若修复后已没有轮次完成所需的互补复核和新终审，则报告 INCOMPLETE。
+- 连续 2 轮没有新的、范围内且仍未解决的 P0/P1，也没有新 accepted P2，可在完成第 2 或第 3 轮后提前停止常规扫描；仍须完成最终审计。
+- 范围内 P0/P1 的 accepted 未修复或 needs-evidence 都是未解决项，阻止收敛。范围外且已证实的 deferred 风险应披露，但本身不阻止收敛。达到轮次上限仍有未解决的范围内 P0/P1、accepted finding 验证阻塞或覆盖率不足时，标记 INCOMPLETE。不要为了达到轮数而继续提交低优先级改动。
 
-1. 检查 `.review-evidence/round-[N]/[original_id]/` 是否包含可运行的 reproduction 或获准的 `manual-steps.md`
-2. 运行 reproduction；若确认无法自动化，由主代理执行手工步骤并记录操作和结果
-3. 确认观察结果与 `expected_vs_actual` 描述一致
-4. 如果证据缺失或重放无法复现问题，标记为 `needs-evidence` 或 `rejected`
-5. 在 `reproduction_path` 字段记录验证过的文件路径（使用主代理分配的新 ID）
+### 回归 finding
 
-当意见依赖未定义的产品决策时，先标 `needs-evidence`，由主代理从现有材料确认；不能让实现代理自行发明验收标准。
+每条新 finding 在 adjudication.md 标记 `change_origin: regression | pre-existing | undetermined`。只有证据表明问题由本轮修复引入时才标 regression；无法确定时保持 undetermined，并将 decision 设为 needs-evidence。回归 finding 按实际影响评估严重性，不自动升高一级。
 
-每轮结束时，主代理按原始候选意见计数，不按去重后的 finding 计数：`counterexample_coverage = 已由主代理重放并留证的候选意见数 / 候选意见总数`。自动化和手工复现都可计入，须分别报告数量。纯偏好和文档措辞 P3 可以从分母剔除，但必须单独列出；覆盖率低于 80% 时，增加反例构造轮或把没有证据的意见降级，不能用”没有发现问题”填充分母。
+## 最终审计与收敛
 
-## 挑战代理触发规则
+最终审计由未参与前序评审或实现的新代理完成，分两阶段，防止历史结论锚定宽泛扫描。同一个终审代理先完成第一阶段，保存结果后，主代理才发送第二阶段材料。每次审计使用新目录 `.review-evidence/round-[N]/final-audit/attempt-[K]/`，不得覆盖之前轮次或尝试的结果：
 
-挑战代理的唯一职责是**对抗式验证**：尝试推翻已通过合理性检查的高优先级意见。
+1. **未提示历史的扫描**：只提供 MVP 范围、验收标准、当前 HEAD 和测试/构建命令。不给 finding 列表、adjudication、历史评审结论或修复清单；要求先完成并保存独立扫描。不要让审计员读取 .review-evidence/ 中的历史 finding 材料。
+2. **定向复核**：扫描结果已保存后，再提供所有 accepted finding、原始证据路径、修复测试路径和提交，要求逐项复核，并检查完整测试、构建、适用静态检查及遗留风险。
 
-**触发条件**（在 `accepted` 前）：
-- P0/P1 且 `confidence: medium` 或 `confidence: low`
-- 任何涉及权限、数据完整性或公开 API 变更的意见，即使 `confidence: high`
+主代理预先提供新的输出路径。第一阶段代理不得读取任何已有 `.review-evidence/` 内容，但可以把本阶段结果写入指定文件；完整候选证据写在 inbox，摘要只在 blind-scan.md 记录一次。
 
-**跳过挑战的条件**（满足任一即可跳过）：
-- 已有自动化测试失败证据（主代理已运行并观察到失败）
-- 主代理已成功重放反例，且代码路径、输入输出完全符合预期
-- 问题已在生产环境观察到，有日志或监控证据
+第一阶段提示：
 
-**批量挑战优化**：对同一根因的多个 finding（如同一安全漏洞的不同入口、同一边界条件在不同函数的重复），只需派一次挑战代理验证根因，其余 finding 引用该挑战结果。
+~~~text
+你是独立最终审计员。检查 [MVP 范围和验收标准] 在当前 HEAD 的整体行为。
+可运行的验证命令：[测试/构建/静态检查命令]
+不要读取 .review-evidence/ 中任何已有内容、历史 finding、修复清单或以前的裁决；不要编辑项目文件或提交。你只能写入本次指定的 `.review-evidence/round-[N]/final-audit/attempt-[K]/blind-scan.md` 和 `.review-evidence/round-[N]/inbox/final-audit-attempt-[K]/[临时_id]/`。只在临时 fixture/数据库上运行验证；若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止并记录阻塞。
+执行全新只读扫描和可用的整体验证。每条具体候选及完整反例写入对应 inbox 目录；在 blind-scan.md 中只写范围、命令摘要、候选临时 ID/证据路径和阻塞项，不重复完整反例。
+返回 SCAN_COMPLETE 或 BLOCKED、finding 摘要/证据路径、命令退出状态和阻塞项。此阶段不得判定整体 CONVERGED，也不要核验历史 finding。
+~~~
 
-## 补强代理触发规则
+第一阶段扫描已保存后，再给同一审计员第二阶段提示：
 
-补强代理的唯一职责是**修正证据不足的反例**：修正 reproduction 代码或补充前提条件，使其可以进入验证流程。
+~~~text
+现在执行定向复核。第一阶段扫描已保存，不要改写其结论。
+第一阶段记录：[.review-evidence/round-[N]/final-audit/attempt-[K]/blind-scan.md]
+已修复 finding 及其原始证据、项目测试、commit：[由主代理提供的列表]
+遗留 needs-evidence、rejected、deferred 风险：[由主代理提供的索引摘要]
+可以读取第一阶段记录和主代理提供的 finding 裁决/证据；不要改写 blind-scan.md。
+复核所有 accepted finding 和盲扫候选的最终裁决；运行每条 accepted finding 的原始反例和修复测试，再运行完整测试、构建和适用静态检查。
+沿用第一阶段的数据隔离要求；若验证会改写持久数据或调用真实外部服务，停止并记录阻塞。
+逐项处理 finding，只按需读取当前 finding 的证据并立即写入该项结果；不要一次性加载全部 reproduction 或日志。
+把逐项结果及风险检查写入 `.review-evidence/round-[N]/final-audit/attempt-[K]/targeted-verification.md`。
+只返回状态、finding ID、命令退出状态摘要、证据路径和阻塞项；不得编辑或提交。
+~~~
 
-**触发条件**（在合理性检查不通过时）：
-- reproduction 代码有明显小错误（如函数名拼写错误、导入路径错误、参数类型错误）
-- 前提条件基本完整但缺少具体参数（如缺少 token、用户 ID、配置值）
-- 反例思路合理但执行细节有瑕疵
+终审代理的回复同样只返回状态、finding ID、命令/退出状态摘要、证据路径和阻塞项；完整记录保存在证据文件。
 
-**不触发的情况**（直接 rejected 或 needs-evidence 搁置）：
-- reproduction 代码根本性错误，需要完全重写（搁置到下一轮）
-- 基于错误假设或超出 MVP 范围（直接 rejected）
-- 期望行为不合理或无规范支持（直接 rejected）
+任一终审阶段发现的每个具体问题都必须由主代理以 `final-audit-attempt-[K]` 作为 role-slug 记录到 screening-log.md，并进入普通去重、ID 分配、筛查、重放和裁决流程。它不能停留在终审报告之外，也不能被直接放入 accepted 清单。若成为 accepted，修复并独立验证后，当前终审失效；必须在下一轮由相关互补角色检查受影响区域和修复回归，并由新的终审代理重跑两阶段审计。终审发现的 P1/P2 即使出现在第 3-5 轮，也不能因常规扫描优先级限制而被丢弃；若轮次上限或该轮扫描范围不允许完成后续互补复核和新终审，报告 INCOMPLETE。若仍为 needs-evidence，整体不得报告 CONVERGED；若因明确反证而 rejected 或真实范围外而 deferred，则记录后可继续第二阶段终审。终审新发现计入轮次上限；达到上限时报告 INCOMPLETE。
 
-补强代理**只能编辑 `.review-evidence/` 目录中的反例文件**（reproduction 代码、counterexample.md），不得修改项目代码。它返回 `fixed`（成功补强，附修正后的代码和运行结果）或 `cannot-fix`（无法补强，附失败原因）。成功补强后，主代理重新进行验证；失败则转为 `rejected`。
+只有同时满足以下条件才报告 CONVERGED：
 
-## 挑战代理提示模板
+1. 达到可提前结束条件的一整轮独立评审，或完成规定的最后回归轮；没有未解决的范围内 P0/P1，也没有未解决 accepted P2。范围外且已证实的 deferred 不阻止收敛，但必须列为残余风险。
+2. 所有历史 accepted finding 均由独立代理 pass；没有 fail 或 inconclusive 被当作通过。
+3. 反例覆盖率至少 80%；若分母为 0，按前述规则报告 N/A，且每个原始候选均有 screening-log 结果。所有进入 finding 生命周期的候选均有当前 decision，所有筛除项/重复项均有筛查记录。范围内 P0/P1 needs-evidence 阻止收敛；有明确边界的非关键 P2 needs-evidence 可作为残余风险披露。
+4. 最终审计两阶段完成，盲扫中的候选均已裁决且没有 needs-evidence；完整测试/构建结果和所有 rejected、deferred、needs-evidence 风险均有记录。
 
-**对抗式验证（accepted 前）**
-```text
-你是独立挑战代理。只读检查这条候选意见及其反例，不要编辑或提交：
-[finding 与反例]
-原始反例证据路径：[.review-evidence/round-[N]/R[N]-F[XXX]-[CAT]/] 中的 reproduce.* 或 manual-steps.md（使用标准 ID）
-
-首先重放原始反例：运行 reproduction 代码；若该 finding 标记为无法自动化，则执行 manual-steps.md 并记录操作结果。确认问题存在后再尝试推翻。
-然后尝试在当前 HEAD 上寻找：
-- 规范允许该行为的依据
-- 反例前提不成立的地方
-- 更小且更确定的失败样例
-
-返回 supports、disputes 或 inconclusive，附实际命令、输出摘要和你检查过的代码/测试。
-不要因为原评审员或主代理已经倾向接受就默认成立。
-你的任务是尝试推翻这个意见，而不是证明它正确。
-```
-
-**挑战结果处理**（由主代理执行）：
-- **`supports`**：挑战失败，意见通过对抗式验证，转为 `accepted`
-- **`disputes`**（推翻成功）：主代理必须重新审查原意见和挑战证据
-  - 如果挑战证据充分（如证明反例前提不成立、行为符合规范、或提供了更小的正常样例），转为 `rejected`
-  - 如果挑战证据部分成立（如影响范围比原意见小、严重性被高估），降级处理（如 P1 降为 P2）或修正描述后转 `accepted`
-  - 如果挑战证据不足以推翻但引入新疑点，标记为 `needs-evidence` 并在 `adjudication.md` 中记录争议点
-- **`inconclusive`**：挑战代理无法确定，主代理基于现有证据做最终裁决（通常接受原意见，因为已通过阶段 2 验证）
-
-挑战结果保存在 `.review-evidence/round-[N]/R[N]-F[XXX]-[CAT]/challenge-result.md`。
-
-## 补强代理提示模板
-
-**修正证据不足的反例（needs-evidence）**
-```text
-你是补强代理。这条候选意见被标记为 needs-evidence，需要补强证据：
-[finding 与反例]
-原始反例证据路径：[.review-evidence/round-[N]/[临时_id]/ 中的 reproduce.* 或 manual-steps.md]（使用评审代理的临时 ID，如 SEC-001）
-需要补强的部分：[主代理在 adjudication.md 中指出的具体问题]
-
-你的任务：
-1. 如果是 reproduction 代码错误，修正并保存到同一路径
-2. 如果是前提条件缺失，补充到 counterexample.md
-3. 如果是依赖问题，添加必要的 setup 步骤
-4. 运行修正后的代码，确认能复现问题
-
-你只能编辑 .review-evidence/ 目录中的文件，不得修改项目代码。
-返回 fixed（成功补强）或 cannot-fix（无法补强），附修正后的代码和运行结果。
-```
-
-## 验证代理提示模板
-
-```text
-你是独立验证员。检查当前 HEAD 和以下已完成提交的 diff：[commit]
-原始目标和反例是：[只提供目标与反例]
-原始反例证据路径：[.review-evidence/round-[N]/R[N]-F[XXX]-[CAT]/] 中的 reproduce.* 或 manual-steps.md（使用标准 ID）
-修复后的测试路径：[项目测试套件中的路径]
-
-不要假设提交正确。执行以下验证：
-1. 运行原始 reproduction；若为手工 finding，独立执行 manual-steps.md 并记录结果，确认问题已修复
-2. 运行项目测试套件中的相关测试
-3. 构造至少一个相邻变体（边界条件、类似输入）
-4. 检查回归、接口兼容、权限/数据副作用
-
-只读执行，返回 pass、fail 或 inconclusive，每个结论附命令和实际输出摘要；
-不要编辑或提交。
-```
-
-## 终审代理提示模板
-
-```text
-你是最终审计员。所有修复已完成，现在需要对整体进行最终检查。
-
-评审轮次：[N] 轮
-已修复的 findings：[列出所有 accepted 并 verified 的 finding IDs]
-提交范围：[git log --oneline 输出]
-
-执行以下整体验证：
-1. 只核验上方清单中已修复且 verified 的 finding，不要用全目录 glob 扩大范围
-   - 对每个 finding，使用其 adjudication.md 记录的证据路径
-   - 运行自动化 reproduction；若标记为无法自动化，执行 manual-steps.md 并保存结果
-   - 这些已修复 finding 应通过。rejected、deferred、needs-evidence 不要求通过，按遗留风险清单检查其裁决和记录
-2. 运行项目完整测试套件
-   - [项目测试命令，如 npm test, pytest, cargo test 等]
-3. 运行构建命令验证可构建性
-   - [项目构建命令，如 npm run build, go build 等]
-4. 运行静态检查工具（如有）
-   - [lint/type-check 命令]
-5. 验证基线验收标准
-   - MVP 核心功能完整性
-   - 关键路径可用性
-   - 契约一致性
-
-只读执行，返回整体评估：
-- 状态：CONVERGED（收敛）或 INCOMPLETE（未收敛）
-- 每个已修复 finding 的自动化或手工复核结果
-- 完整测试套件结果
-- 构建和静态检查结果
-- 发现的任何新问题或遗留风险
-- rejected、deferred、needs-evidence 的数量及记录是否完整
-- 明确的收敛结论
-
-不要编辑或提交。
-```
-
-## 收敛判断
-
-“无新重大意见”必须有证据：一整轮互补角色在新 HEAD 上完成，0 个新 P0/P1，没有未解决 accepted P2，所有历史 accepted finding 均 verified，并通过一次不知晓历史 finding 的终审。只有 P3、明确 deferred 或没有反例的 needs-evidence 不阻止收敛，但必须出现在最终风险表中。
+最终报告包含每轮 finding 状态、关键证据路径、测试/提交、遗留风险、覆盖率和 CONVERGED/INCOMPLETE。CONVERGED 只表示本流程达到约定条件，不代表形式化证明或生产安全保证。

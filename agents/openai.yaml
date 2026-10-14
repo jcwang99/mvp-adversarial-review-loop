@@ -1,7 +1,7 @@
 interface:
   display_name: "MVP Adversarial Review Loop"
-  short_description: "Multi-agent counterexample review and TDD repair loop"
-  default_prompt: "Use $mvp-adversarial-review-loop to run adversarial MVP review, counterexample validation, TDD repairs, commits, and independent verification until no major issues remain."
+  short_description: "Bounded counterexample review and TDD repair loop"
+  default_prompt: "Use $mvp-adversarial-review-loop to run a bounded adversarial MVP review, validate counterexamples, make TDD repairs, commit isolated fixes, and independently verify them. Report INCOMPLETE if the workflow limit is reached before convergence."
 
 policy:
   allow_implicit_invocation: true
