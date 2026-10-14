@@ -231,11 +231,12 @@ R[轮次]-F[序号]-[类别]
 根据问题类型选择合适的格式：
 
 ```javascript
-// reproduce.test.js 示例
+// reproduce.test.js 示例（评审代理创建时使用临时 ID）
+// 主代理裁决后，此文件会位于 R1-F001-SEC/ 目录
 const { getUserById } = require('../src/user-service');
 
-describe('SEC-001: Unauthorized access', () => {
-  test('should reject null userId without authentication', async () => {
+describe('Unauthorized access to user data', () => {
+  test('should reject access without authentication', async () => {
     // Precondition: no auth token set
     process.env.AUTH_TOKEN = '';
     
@@ -250,9 +251,10 @@ describe('SEC-001: Unauthorized access', () => {
 ```
 
 ```bash
-# reproduce.sh 示例
+# reproduce.sh 示例（评审代理创建时使用临时 ID）
+# 主代理裁决后，此文件会位于 R1-F002-SEC/ 目录
 #!/bin/bash
-# SEC-002: SQL injection in search endpoint
+# SQL injection in search endpoint
 
 # Precondition: server running on localhost:3000
 # Input: malicious search query

@@ -3,10 +3,10 @@
 ## 实现代理任务模板
 
 ```text
-你是唯一的实现代理，只处理 finding [ID]。
+你是唯一的实现代理，只处理 finding [标准 ID，如 R1-F001-SEC]。
 现状与证据：[主代理裁决]
 必须重现的反例：[完整前提、步骤和期望/实际]
-原始 reproduction 代码路径：[.review-evidence/round-[N]/[finding_id]/reproduce.*]
+原始 reproduction 代码路径：[.review-evidence/round-[N]/R[N]-F[XXX]-[CAT]/reproduce.*]（使用主代理分配的标准 ID）
 验收断言：[可测试的行为]
 允许改动：[文件/模块]
 必须运行：[聚焦测试、回归、静态或安全检查]
@@ -18,7 +18,7 @@
 ## RED-GREEN-REFACTOR
 
 1. **RED**：读取当前 `git status --short`，确认没有新的外部写入。
-   - **优先使用评审代理提供的 reproduction 代码**：检查 `.review-evidence/round-[N]/[finding_id]/` 目录
+   - **优先使用评审代理提供的 reproduction 代码**：检查 `.review-evidence/round-[N]/R[N]-F[XXX]-[CAT]/` 目录（使用主代理分配的标准 ID）
    - 如果存在可运行的 reproduction 代码，直接运行它验证问题存在
    - 如果需要调整为项目标准测试格式（如迁移到项目测试套件、调整导入路径），先保留原始文件，在项目测试目录创建改编版本
    - 运行并保存”按预期失败”的输出

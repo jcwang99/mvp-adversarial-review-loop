@@ -88,8 +88,17 @@ kind: defect | spec-gap | risk | preference
 通过合理性检查后：
 
 1. **分配标准 ID**：`R[轮次]-F[全局序号]-[类别]`（序号全局递增，跨轮次不重置）
-2. **重命名目录**：将评审代理的临时 ID 目录重命名为标准 ID
-3. **记录原始 ID**：在 `original-id.txt` 中保存评审代理的临时 ID
+2. **重命名目录**：
+   ```bash
+   # 示例：将评审代理的临时 ID 目录重命名为标准 ID
+   mv .review-evidence/round-1/SEC-001 .review-evidence/round-1/R1-F001-SEC
+   mv .review-evidence/round-1/FUNC-001 .review-evidence/round-1/R1-F002-FUNC
+   ```
+3. **记录原始 ID**：
+   ```bash
+   # 在重命名后的目录中保存原始 ID，方便追溯
+   echo "SEC-001" > .review-evidence/round-1/R1-F001-SEC/original-id.txt
+   ```
 4. **运行 reproduction 代码**：实际执行，确认能复现问题
 5. **写入裁决记录**：在 `adjudication.md` 中记录完整的合理性检查和验证过程
 6. **更新索引**：在 `findings-index.md` 中添加记录
@@ -221,20 +230,36 @@ kind: defect | spec-gap | risk | preference
 
 ```
 .review-evidence/
+├── README.md                          # 本次评审的元信息和索引
+├── baseline.md                        # 评审基线：范围、技术栈、测试命令
+├── findings-index.md                  # 全局 finding 索引表
 ├── round-1/
-│   ├── SEC-001/
+│   ├── R1-F001-SEC/                   # 主代理分配的标准 ID（重命名自 SEC-001）
+│   │   ├── original-id.txt            # 内容: SEC-001
 │   │   ├── reproduce.test.js          # 评审代理提供的原始反例
 │   │   ├── counterexample.md          # 文字描述
-│   │   └── challenge-result.md        # 挑战代理的验证结果（如有）
-│   └── FUNC-002/
-│       ├── reproduce.sh               # 脚本形式的反例
-│       └── manual-steps.md            # 手工复现步骤
+│   │   ├── adjudication.md            # 主代理的裁决记录
+│   │   └── verification-result.md     # 终审代理的验证结果
+│   ├── R1-F002-FUNC/                  # 重命名自 FUNC-001
+│   │   ├── original-id.txt            # 内容: FUNC-001
+│   │   ├── reproduce.sh               # 脚本形式的反例
+│   │   ├── counterexample.md          # 文字描述
+│   │   ├── adjudication.md            # 裁决记录
+│   │   └── output.log                 # 实际运行输出
+│   └── R1-F003-UX/                    # 重命名自 UX-001
+│       ├── original-id.txt            # 内容: UX-001
+│       ├── manual-steps.md            # 手工复现步骤
+│       ├── adjudication.md            # 裁决记录
+│       └── actual-screenshot.png      # 实际行为截图
 ├── round-2/
+│   ├── R2-F004-PERF/                  # 全局序号递增（不是 R2-F001）
 │   └── ...
-└── README.md                          # 目录说明和索引
+└── ...
 ```
 
-主代理在每轮开始时创建对应的 `round-N/` 目录，评审代理将 reproduction 代码写入各自的 `[finding_id]/` 子目录。
+**重要**：评审代理使用临时 ID（如 `SEC-001`）创建目录，主代理裁决时立即重命名为标准 ID（如 `R1-F001-SEC`），并在 `original-id.txt` 中记录原始 ID。最终目录中只有标准 ID，确保全局唯一且可追溯。
+
+主代理在每轮开始时创建对应的 `round-N/` 目录，评审代理将 reproduction 代码写入各自的 `[临时_id]/` 子目录，主代理裁决后立即重命名为标准 ID。
 
 ## 工具与故障处理
 

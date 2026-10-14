@@ -40,9 +40,11 @@
 - 不要只写"运行测试 X"或"调用函数 Y"，要给出完整可运行的代码
 
 将 reproduction 代码保存到约定路径：
-- 自动化反例：.review-evidence/round-[N]/[finding_id]/reproduce.test.[ext]
-- 脚本/命令：.review-evidence/round-[N]/[finding_id]/reproduce.sh 或 reproduce.md
-- 手工步骤：.review-evidence/round-[N]/[finding_id]/manual-steps.md
+- 自动化反例：.review-evidence/round-[N]/[临时_id]/reproduce.test.[ext]
+- 脚本/命令：.review-evidence/round-[N]/[临时_id]/reproduce.sh 或 reproduce.md
+- 手工步骤：.review-evidence/round-[N]/[临时_id]/manual-steps.md
+
+**注意**：使用简单的临时 ID（如 SEC-001、FUNC-001）创建目录，主代理裁决时会重命名为标准 ID（如 R1-F001-SEC）。
 
 P0/P1 和任何建议改代码的 P2 没有可执行 reproduction 就不要提交为缺陷，改列 needs-evidence。
 最后列出你没有发现风险的关键路径，以及无法验证的依赖和原因。
@@ -211,10 +213,6 @@ R[轮次]-F[序号]-[类别]
 
 只读执行，返回 pass、fail 或 inconclusive，每个结论附命令和实际输出摘要；
 不要编辑或提交。
-```
-
-## 收敛判断
-每个结论附命令和实际输出摘要；不要编辑或提交。
 ```
 
 ## 收敛判断
