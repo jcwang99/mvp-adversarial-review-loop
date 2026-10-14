@@ -12,27 +12,52 @@ This directory is automatically created by the MVP Adversarial Review Loop skill
 
 ```
 .review-evidence/
+├── README.md                            # This file
 ├── baseline.md                          # Review baseline: scope, tech stack, test commands
+├── findings-index.md                    # Global index of all findings across rounds
 ├── round-1/
-│   ├── SEC-001/
+│   ├── R1-F001-SEC/                     # Standard ID (renamed from SEC-001)
+│   │   ├── original-id.txt              # Content: SEC-001
 │   │   ├── reproduce.test.js            # Original reproduction code from review agent
 │   │   ├── counterexample.md            # Text description: preconditions, steps, expected/actual
+│   │   ├── adjudication.md              # Main agent's adjudication record
 │   │   ├── challenge-result.md          # Challenge agent's verification (if triggered)
 │   │   └── verification-result.md       # Final verification agent's result
-│   └── FUNC-002/
+│   └── R1-F002-FUNC/                    # Renamed from FUNC-001
+│       ├── original-id.txt              # Content: FUNC-001
 │       ├── reproduce.sh                 # Script-based reproduction
+│       ├── counterexample.md            # Text description
+│       ├── adjudication.md              # Adjudication record
 │       └── output.log                   # Actual execution output
 └── round-2/
+    ├── R2-F003-PERF/                    # Global sequence continues (not R2-F001)
     └── ...
 ```
+
+## Finding ID Format
+
+All findings use the standard ID format: `R[round]-F[sequence]-[category]`
+
+- **R[round]**: Review round number (R1, R2, etc.)
+- **F[sequence]**: Global sequence number (001, 002, etc.) - increments across rounds
+- **[category]**: Category code (SEC, FUNC, REL, API, PERF, UX, OPS, PROD)
+
+Review agents initially create directories with temporary IDs (e.g., `SEC-001`), but the main agent immediately renames them to standard IDs during adjudication. The `original-id.txt` file preserves the review agent's temporary ID for traceability.
 
 ## Lifecycle
 
 1. **Main agent** creates `round-N/` directory at the start of each review round
-2. **Review agents** create `[finding_id]/` subdirectories and write reproduction code
-3. **Main agent** runs reproduction code during adjudication to verify the issue
-4. **Implementation agent** uses reproduction code for RED phase of TDD
-5. **Verification agent** re-runs reproduction code to confirm the fix
+2. **Review agents** create `[temporary_id]/` subdirectories (e.g., `SEC-001/`) and write reproduction code
+3. **Main agent** during adjudication:
+   - Performs rationality check on the counterexample
+   - Assigns standard ID (e.g., `R1-F001-SEC`)
+   - Renames directory from temporary ID to standard ID
+   - Saves original ID in `original-id.txt`
+   - Runs reproduction code to verify the issue
+   - Writes adjudication record in `adjudication.md`
+   - Updates `findings-index.md`
+4. **Implementation agent** uses reproduction code (via standard ID path) for RED phase of TDD
+5. **Verification agent** re-runs reproduction code (via standard ID path) to confirm the fix
 6. **User** can inspect any reproduction code to understand what was found and how it was verified
 
 ## Git Policy
@@ -44,8 +69,11 @@ This directory **should be committed** to version control to maintain an audit t
 To reproduce a finding manually:
 
 ```bash
-# Navigate to the finding directory
-cd .review-evidence/round-1/SEC-001/
+# Navigate to the finding directory (use standard ID)
+cd .review-evidence/round-1/R1-F001-SEC/
+
+# Check the original review agent's ID
+cat original-id.txt  # Shows: SEC-001
 
 # Run the reproduction (adjust command based on file type)
 node reproduce.test.js          # For JavaScript tests
