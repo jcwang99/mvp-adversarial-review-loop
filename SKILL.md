@@ -45,7 +45,7 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 
 ### 4. 独立复核
 
-由未参与该 finding 实现的验证代理复现原始问题、检查项目回归测试并尝试相邻变体。只有 pass 才标记 verified。fail 回到修复或新增 finding；inconclusive 保持 accepted 但未 verified，先解决阻塞再继续收敛判断。
+由未参与该 finding 实现的验证代理复现原始问题、检查项目回归测试并尝试相邻变体。只有按 review-protocol.md 完成验证并返回 pass 才标记 verified；主代理兜底时适用相同标准并记录执行者。fail 回到修复或新增 finding；inconclusive 保持 accepted 但未 verified，先解决阻塞再继续收敛判断。
 
 ### 5. 迭代、终审与报告
 

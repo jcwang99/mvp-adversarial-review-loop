@@ -144,7 +144,7 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 | R1-F001-SEC | SEC-001 | security | P1 | accepted | pending | round-1/R1-F001-SEC/ | tests/auth.test.js | - | - |
 ~~~
 
-Decision 取 accepted、needs-evidence、rejected 或 deferred。独立验证结果单独取 pending、pass、fail 或 inconclusive；只有 accepted 且 verification 为 pass 时，用户报告中才可称 verified。verification 为 inconclusive 时仍是 accepted、未 verified，不是新的 decision 值。
+Decision 取 accepted、needs-evidence、rejected 或 deferred。验证结果单独取 pending、pass、fail 或 inconclusive；只有 accepted 且 verification 为 pass 时，用户报告中才可称 verified。记录验证执行者；主代理兜底适用相同的检查标准。verification 为 inconclusive 时仍是 accepted、未 verified，不是新的 decision 值。
 
 索引应保持精简。裁决理由、命令、输出、挑战过程、补强过程和验证细节写在对应 finding 目录的记录中，并在索引中链接相对路径。
 

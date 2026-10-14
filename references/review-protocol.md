@@ -204,7 +204,7 @@ verification: not-applicable | pending | pass | fail | inconclusive
 
 每个修复提交后，使用未参与该 finding 实现的验证代理。提供当前 HEAD、commit、原始 finding、原始 reproduction 路径、修复后的项目测试路径和必要的运行入口。不要把实现代理的结论当作验证结果。
 
-若所有可用代理都已参与该 finding 的实现，由主代理执行验证；此类情况必须在 verification-result.md 中标注 verified_by: main-agent，并在最终报告中披露缺少独立复核的 finding 清单。
+若所有可用代理都已参与该 finding 的实现，由主代理执行验证，并在 verification-result.md 标注 verified_by: main-agent。主代理按相同的检查要求和证据标准判定 pass、fail 或 inconclusive；最终报告列明由主代理验证的 finding。
 
 ~~~text
 你是独立修复验证员。只读检查当前 HEAD 和 commit [hash]，不要编辑或提交。
@@ -219,7 +219,7 @@ Finding：[标准 ID、原始 claim、验收契约和前提]
 只返回 pass、fail 或 inconclusive、命令/退出状态摘要、证据路径和阻塞项。不要粘贴完整日志。
 ~~~
 
-- pass：主代理确认所有要求的检查均完成后，verification 记 pass，finding 可标 verified。
+- pass：验证执行者完成所有要求的检查，且主代理确认记录和证据后，verification 记 pass，finding 可标 verified。执行者为主代理时，按上述兜底规则记录。
 - fail：verification 记 fail，保持未 verified，回到修复或创建新的回归 finding。
 - inconclusive：保持 accepted 但未 verified，记录环境/证据阻塞；不得把它作为 pass 或直接开始收敛终审。
 
@@ -235,7 +235,7 @@ counterexample_coverage = 已由主代理或独立执行者重放并留证的 re
 - 第 1、2 轮的常规扫描覆盖 P0-P2；第 3 轮的常规扫描只寻找新 P0。此限制不取消此前已 accepted finding 的修复，也不屏蔽强制终审扫描发现的问题；后者仍须进入普通裁决和修复流程。
 - 第 4、5 轮的常规扫描只检查此前修复引入的回归。终审发现的新候选仍须裁决；若修复后已没有轮次完成所需的互补复核和新终审，则报告 INCOMPLETE。
 - 连续 2 轮没有新的、范围内且仍未解决的 P0/P1，也没有新 accepted P2，可在完成第 2 轮后提前停止常规扫描；仍须完成最终审计。**第 3 轮后不适用此条件（第 3 轮本身只找 P0，"没有新 accepted P2"已不是有效判断标准）。**
-- 范围内 P0/P1 的 accepted 未修复或 needs-evidence 都是未解决项，阻止收敛。**P2 needs-evidence 按以下规则处理**：
+- 范围内 P0/P1 的 accepted 未修复或 needs-evidence 都是未解决项，阻止收敛。**常规评审轮中的 P2 needs-evidence 按以下规则处理**：
   - 若该 P2 的前提、触发路径和潜在影响已明确记录，仅缺少运行环境或外部依赖，可作为残余风险披露而不阻止收敛
   - 若 claim、范围或契约解释本身不明确，阻止收敛
 - 范围外且已证实的 deferred 风险应披露，但本身不阻止收敛。达到轮次上限仍有未解决的范围内 P0/P1、accepted finding 验证阻塞或覆盖率不足时，标记 INCOMPLETE。不要为了达到轮数而继续提交低优先级改动。
@@ -259,7 +259,7 @@ counterexample_coverage = 已由主代理或独立执行者重放并留证的 re
 你是独立最终审计员。检查 [MVP 范围和验收标准] 在当前 HEAD 的整体行为。
 可运行的验证命令：[测试/构建/静态检查命令]
 不要读取 .review-evidence/ 中任何已有内容、历史 finding、修复清单或以前的裁决；不要编辑项目文件或提交。你只能写入本次指定的 `.review-evidence/round-[N]/final-audit/attempt-[K]/blind-scan.md` 和 `.review-evidence/round-[N]/inbox/final-audit-attempt-[K]/[临时_id]/`。只在临时 fixture/数据库上运行验证；若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止并记录阻塞。
-执行全新只读扫描和可用的整体验证。每条具体候选及完整反例写入对应 inbox 目录；在 blind-scan.md 中只写范围、命令摘要、候选临时 ID/证据路径和阻塞项，不重复完整反例。
+执行全新只读扫描和可用的整体验证。每条具体候选及完整反例写入对应 inbox 目录；在 blind-scan.md 中只写范围、命令摘要、候选临时 ID 和阻塞项，不记录 inbox 路径；主代理分配标准 ID 后在 screening-log.md 记录稳定的证据路径。
 返回 SCAN_COMPLETE 或 BLOCKED、finding 摘要/证据路径、命令退出状态和阻塞项。此阶段不得判定整体 CONVERGED，也不要核验历史 finding。
 ~~~
 
@@ -285,8 +285,8 @@ counterexample_coverage = 已由主代理或独立执行者重放并留证的 re
 只有同时满足以下条件才报告 CONVERGED：
 
 1. 达到可提前结束条件的一整轮独立评审（第 2 轮后连续 2 轮无新 P0/P1 且无新 accepted P2），或完成规定的最后回归轮；没有未解决的范围内 P0/P1，也没有未解决 accepted P2。范围外且已证实的 deferred 不阻止收敛，但必须列为残余风险。
-2. 所有历史 accepted finding 均由独立代理 pass；没有 fail 或 inconclusive 被当作通过。
-3. 反例覆盖率至少 80%；若分母为 0，按前述规则报告 N/A，且每个原始候选均有 screening-log 结果。所有进入 finding 生命周期的候选均有当前 decision，所有筛除项/重复项均有筛查记录。范围内 P0/P1 needs-evidence 阻止收敛；P2 needs-evidence 按其明确性处理：前提和影响已明确但缺环境的可作残余风险，claim 或契约解释本身不明确的阻止收敛。
+2. 所有历史 accepted finding 均按上述规则验证 pass；没有 fail 或 inconclusive 被当作通过。
+3. 反例覆盖率至少 80%；若分母为 0，按前述规则报告 N/A，且每个原始候选均有 screening-log 结果。所有进入 finding 生命周期的候选均有当前 decision，所有筛除项/重复项均有筛查记录。范围内 P0/P1 needs-evidence 阻止收敛；常规轮中的 P2 needs-evidence 按其明确性处理：前提和影响已明确但缺环境的可作残余风险，claim 或契约解释本身不明确的阻止收敛。
 4. 最终审计两阶段完成，盲扫中的候选均已裁决且没有 needs-evidence；完整测试/构建结果和所有 rejected、deferred、needs-evidence 风险均有记录。
 
 最终报告包含每轮 finding 状态、关键证据路径、测试/提交、遗留风险、覆盖率和 CONVERGED/INCOMPLETE。**如果收敛或达到上限，附上所有 screened_out_preference 建议的汇总清单供用户决策。** CONVERGED 只表示本流程达到约定条件，不代表形式化证明或生产安全保证。
