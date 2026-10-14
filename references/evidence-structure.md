@@ -387,7 +387,20 @@ High - 已在本地环境成功复现。
 ## 目录生命周期
 
 - **创建时机**：主代理启动第 N 轮评审前创建 `round-N/` 目录
-- **清理策略**：`.review-evidence/` 目录不纳入 `.gitignore`，应该提交到版本控制以保持审计追踪
+- **提交策略**：
+  - `.review-evidence/` 目录不纳入 `.gitignore`
+  - 应该在每轮评审完成后（或评审开始时）单独提交作为审计追踪
+  - 修复 commit 只包含源代码和项目测试，不包含 `.review-evidence/` 目录
+  - 建议在评审流程的关键节点提交证据目录：
+    ```bash
+    # 第 1 轮评审完成后
+    git add .review-evidence/round-1/
+    git commit -m "docs(review): round 1 evidence and adjudication records"
+    
+    # 第 1 轮修复完成后
+    git add [源代码和项目测试]
+    git commit -m "fix(security): R1-F001-SEC prevent SQL injection"
+    ```
 - **用户访问**：用户可以直接打开 `.review-evidence/` 查看所有反例代码和验证过程
 
 ## 示例工作流
@@ -419,14 +432,49 @@ node reproduce.test.js
 # 确认失败，写入 adjudication.md，更新 findings-index.md，标记为 accepted
 
 # 实现代理：修复（使用标准 ID）
-node .review-evidence/round-1/R1-F001-SEC/reproduce.test.js  # RED
-# 修改源代码
-node .review-evidence/round-1/R1-F001-SEC/reproduce.test.js  # GREEN
-git add [修改的文件]
-git commit -m "fix(security): R1-F001-SEC prevent SQL injection"
+# RED: 运行原始 reproduction 代码
+node .review-evidence/round-1/R1-F001-SEC/reproduce.test.js  # RED - 应该失败
+
+# 将 reproduction 代码迁移到项目测试套件
+# 假设项目使用 tests/ 目录和 Jest
+cat > tests/security/sql-injection.test.js << 'EOF'
+// R1-F001-SEC: Prevent SQL injection in user query
+const request = require('supertest');
+const app = require('../../src/app');
+
+test('should reject SQL injection in username field', async () => {
+  const response = await request(app)
+    .get('/api/users')
+    .query({ username: "admin' OR '1'='1" });
+  
+  expect(response.status).toBe(400);
+  expect(response.body.error).toMatch(/invalid input/i);
+});
+EOF
+
+# 运行项目测试（应该失败）
+npm test -- tests/security/sql-injection.test.js  # RED
+
+# 修改源代码（修复 SQL 注入）
+# [实际修复代码...]
+
+# 验证修复（GREEN）
+node .review-evidence/round-1/R1-F001-SEC/reproduce.test.js  # GREEN - 应该通过
+npm test -- tests/security/sql-injection.test.js  # GREEN
+npm test  # 运行完整测试套件
+
+# 提交修复（只包含源代码和项目测试）
+git add src/database/user-query.js tests/security/sql-injection.test.js
+git commit -m "fix(security): R1-F001-SEC prevent SQL injection
+
+Added parameterized query to prevent SQL injection in user search.
+Added test case to verify injection attempts are rejected.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 # 终审代理：验证（使用标准 ID）
 node .review-evidence/round-1/R1-F001-SEC/reproduce.test.js  # 应该通过
+npm test -- tests/security/sql-injection.test.js  # 应该通过
 # 测试变体
 cat > .review-evidence/round-1/R1-F001-SEC/verification-result.md << 'EOF'
 Status: PASS
