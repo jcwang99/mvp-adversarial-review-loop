@@ -29,6 +29,9 @@
        - Python: `test_security_R1_F001_SEC.py` 或 `test_auth.py` 中注释 `# R1-F001-SEC`
        - Go: `security_test.go` 中函数 `TestAuthR1F001SEC` 或注释 `// R1-F001-SEC`
        - Java: `AuthTest.java` 中方法 `testAuthR1F001SEC` 或注释 `// R1-F001-SEC`
+       - Rust: `tests/security_r1_f001_sec.rs` 或 `#[test] fn auth_r1_f001_sec()` 附注释 `// R1-F001-SEC`
+       - Ruby: `spec/security/auth_r1_f001_sec_spec.rb` 或在现有 spec 中注释 `# R1-F001-SEC`
+       - C#: `AuthTests.cs` 中方法 `[Test] public void TestAuth_R1F001SEC()` 或注释 `// R1-F001-SEC`
    - 自动化反例迁移为项目测试后，运行新测试并保存按预期失败的结果；手工 finding 保存修复前的复现记录
    - 对经确认无法自动化的手工 finding，执行 `manual-steps.md` 并记录环境、操作、结果和证据；尽量添加相邻可测行为的自动化回归测试。若等价测试也无法构造，记录原因，并要求独立验证代理在修复后重复手工步骤。没有 RED 证据不得改实现
 2. **GREEN**：实现满足验收断言的最小修复。沿用项目现有抽象和错误处理，避免顺手升级依赖、重排格式或重写不相关模块。修复后，新增测试和手工复测（如适用）应该通过。

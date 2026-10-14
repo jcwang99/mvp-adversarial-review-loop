@@ -17,15 +17,23 @@
     │   ├── security/
     │   │   └── SEC-001/
     │   │       ├── counterexample.md
-    │   │       └── reproduce.test.js
+    │   │       └── reproduce.test.js          # JavaScript/TypeScript 示例
     │   ├── functionality/
-    │       └── FUNC-001/
-    │           ├── counterexample.md
-    │           └── manual-steps.md
+    │   │   └── FUNC-001/
+    │   │       ├── counterexample.md
+    │   │       └── manual-steps.md
+    │   ├── reliability/
+    │   │   └── REL-001/
+    │   │       ├── counterexample.md
+    │   │       └── reproduce_test.py          # Python 示例
+    │   ├── api/
+    │   │   └── API-001/
+    │   │       ├── counterexample.md
+    │   │       └── reproduce_test.go          # Go 示例
     │   └── final-audit-attempt-1/
     │       └── SCAN-001/
     │           ├── counterexample.md
-    │           └── reproduce.test.js
+    │           └── TestAuthSecurity.java      # Java 示例
     ├── final-audit/
     │   └── attempt-1/
     │       ├── blind-scan.md
@@ -33,13 +41,23 @@
     └── R1-F001-SEC/
         ├── original-id.txt
         ├── counterexample.md
-        ├── reproduce.test.js
+        ├── reproduce.test.js                  # 或 .py, .go, .java, .rs 等，取决于项目语言
         ├── adjudication.md
         ├── replay-review.md
         ├── challenge-result.md
         ├── implementation-result.md
-        └── verification-result.md
+        ├── verification-result.md
+        └── output.log                         # 可选：完整命令输出
 ~~~
+
+**Reproduction 文件命名**：按项目语言和测试约定命名，常见格式：
+- JavaScript/TypeScript: `reproduce.test.js`, `reproduce.spec.ts`
+- Python: `reproduce_test.py`, `test_reproduce.py`
+- Go: `reproduce_test.go`
+- Java: `ReproduceTest.java`, 类名需匹配文件名
+- Rust: `reproduce.rs` 或在 `tests/` 下按项目约定
+- Ruby: `reproduce_spec.rb`
+- C#: `ReproduceTest.cs`
 
 每个评审角色使用唯一的 role-slug 目录，例如 security、functionality、api。临时 ID 只需在该角色目录内唯一。不同角色即使都使用 SEC-001，也不会写入同一路径。
 
