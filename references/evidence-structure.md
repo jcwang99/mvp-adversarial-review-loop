@@ -302,36 +302,52 @@ High - 已在本地环境成功复现。
 
 主代理在裁决时必须：
 
-1. **检查 reproduction 代码是否存在**
+1. **检查 reproduction 代码是否存在**（使用评审代理的临时 ID）
    ```bash
-   ls -la .review-evidence/round-1/[finding_id]/reproduce.*
+   ls -la .review-evidence/round-1/SEC-001/reproduce.*
    ```
 
-2. **运行 reproduction 代码**
+2. **进行合理性检查**（阶段 1，在运行代码前）
+   - 前提检查：是否明确、可验证、符合 MVP 范围
+   - 期望行为检查：是否有规范支持
+   - 影响评估：严重性是否匹配
+   - reproduction 代码检查：语法、依赖、断言一致性
+
+3. **分配标准 ID 并重命名**（通过合理性检查后）
    ```bash
-   cd .review-evidence/round-1/SEC-001
+   # 分配标准 ID: R1-F001-SEC
+   mv .review-evidence/round-1/SEC-001 .review-evidence/round-1/R1-F001-SEC
+   echo "SEC-001" > .review-evidence/round-1/R1-F001-SEC/original-id.txt
+   ```
+
+4. **运行 reproduction 代码**（阶段 2，使用标准 ID）
+   ```bash
+   cd .review-evidence/round-1/R1-F001-SEC
    node reproduce.test.js > output.log 2>&1
    ```
 
-3. **验证问题确实存在**
+5. **验证问题确实存在**
    - 检查输出是否与 counterexample.md 中的"Actual"一致
    - 确认不是测试本身的问题
 
-4. **记录验证结果**
-   在裁决记录中填写 `reproduction_path` 和 `counterexample_replayed`
+6. **写入裁决记录**
+   在 `adjudication.md` 中记录合理性检查、验证过程、`reproduction_path`（标准 ID 路径）和裁决结果
+
+7. **更新全局索引**
+   在 `findings-index.md` 中添加记录
 
 ## 实现代理职责
 
-实现代理在修复时：
+实现代理在修复时（使用主代理分配的标准 ID）：
 
 1. **读取原始 reproduction 代码**
    ```bash
-   cat .review-evidence/round-1/[finding_id]/reproduce.test.js
+   cat .review-evidence/round-1/R1-F001-SEC/reproduce.test.js
    ```
 
 2. **运行验证问题存在（RED）**
    ```bash
-   node .review-evidence/round-1/[finding_id]/reproduce.test.js
+   node .review-evidence/round-1/R1-F001-SEC/reproduce.test.js
    # 应该失败
    ```
 
@@ -342,18 +358,18 @@ High - 已在本地环境成功复现。
 
 4. **修复后验证（GREEN）**
    ```bash
-   node .review-evidence/round-1/[finding_id]/reproduce.test.js
+   node .review-evidence/round-1/R1-F001-SEC/reproduce.test.js
    # 应该通过
    npm test  # 运行项目完整测试套件
    ```
 
 ## 终审代理职责
 
-终审代理验证修复时：
+终审代理验证修复时（使用标准 ID）：
 
 1. **运行原始 reproduction 代码**
    ```bash
-   node .review-evidence/round-1/[finding_id]/reproduce.test.js
+   node .review-evidence/round-1/R1-F001-SEC/reproduce.test.js
    ```
 
 2. **运行项目测试套件中的相关测试**
@@ -366,7 +382,7 @@ High - 已在本地环境成功复现。
    - 类似场景（其他注入点）
 
 4. **写入验证结果**
-   `.review-evidence/round-1/[finding_id]/verification-result.md`
+   `.review-evidence/round-1/R1-F001-SEC/verification-result.md`
 
 ## 目录生命周期
 
@@ -380,7 +396,7 @@ High - 已在本地环境成功复现。
 # 主代理：创建第 1 轮目录
 mkdir -p .review-evidence/round-1
 
-# 评审代理：创建 finding 并写入 reproduction
+# 评审代理：创建 finding 并写入 reproduction（使用临时 ID）
 mkdir -p .review-evidence/round-1/SEC-001
 cat > .review-evidence/round-1/SEC-001/reproduce.test.js << 'EOF'
 [测试代码]
@@ -389,21 +405,30 @@ cat > .review-evidence/round-1/SEC-001/counterexample.md << 'EOF'
 [文字描述]
 EOF
 
+# 主代理：合理性检查（阶段 1）
+# 检查前提、期望、影响、代码合理性
+# 通过检查后...
+
+# 主代理：分配标准 ID 并重命名（阶段 2）
+mv .review-evidence/round-1/SEC-001 .review-evidence/round-1/R1-F001-SEC
+echo "SEC-001" > .review-evidence/round-1/R1-F001-SEC/original-id.txt
+
 # 主代理：验证
-cd .review-evidence/round-1/SEC-001
+cd .review-evidence/round-1/R1-F001-SEC
 node reproduce.test.js
-# 确认失败，标记为 accepted
+# 确认失败，写入 adjudication.md，更新 findings-index.md，标记为 accepted
 
-# 实现代理：修复
-node .review-evidence/round-1/SEC-001/reproduce.test.js  # RED
+# 实现代理：修复（使用标准 ID）
+node .review-evidence/round-1/R1-F001-SEC/reproduce.test.js  # RED
 # 修改源代码
-node .review-evidence/round-1/SEC-001/reproduce.test.js  # GREEN
-git commit -m "fix(security): SEC-001 prevent SQL injection"
+node .review-evidence/round-1/R1-F001-SEC/reproduce.test.js  # GREEN
+git add [修改的文件]
+git commit -m "fix(security): R1-F001-SEC prevent SQL injection"
 
-# 终审代理：验证
-node .review-evidence/round-1/SEC-001/reproduce.test.js  # 应该通过
+# 终审代理：验证（使用标准 ID）
+node .review-evidence/round-1/R1-F001-SEC/reproduce.test.js  # 应该通过
 # 测试变体
-cat > .review-evidence/round-1/SEC-001/verification-result.md << 'EOF'
+cat > .review-evidence/round-1/R1-F001-SEC/verification-result.md << 'EOF'
 Status: PASS
 - Original reproduction: PASS
 - Variant 1 (empty string): PASS
