@@ -68,6 +68,12 @@
   - 按代理类型和 finding ID 隔离：`[role-slug]/`、`replay-[id]/`、`challenge-[id]/`、`verify-[id]/`、`impl-[id]/`、`final-audit-attempt-[K]/`
   - 不包含项目依赖、编译环境、构建产物
   - 若项目测试本身已支持临时数据（如 SQLite `:memory:`、Jest 隔离），不需要此目录
+  - **清理规则**：
+    - 每轮评审完成后，可清理该轮的 `_testdata/` 目录
+    - 清理前确认所有证据文件已保存在 inbox/ 或标准 ID 目录
+    - 若需要复现验证失败的 finding，保留对应的 _testdata/ 子目录
+    - 最终审计通过且收敛后，可清理所有 _testdata/
+    - _testdata/ 应列入 .gitignore，不提交到版本控制
 
 **运行约定**：
 - 所有命令从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
