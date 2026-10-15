@@ -1,5 +1,9 @@
 # TDD、修复与提交协议
 
+## 实现代理串行约束
+
+**主代理一次只启动一个实现代理，处理一个 finding 的完整 RED-GREEN-REFACTOR 循环并提交。** 默认不同时启动多个实现代理（算力限制 + git 工作区冲突风险），除非用户明确授权并行且有独立的 git worktree 隔离机制。实现代理完成提交后，主代理再启动下一个实现代理处理下一个 finding。
+
 ## 实现代理任务模板
 
 ```text
@@ -17,7 +21,11 @@
 - 项目测试套件使用项目本身的测试配置和数据机制
 - 若需要验证修复前后状态对比的临时数据，可放在：.review-evidence/round-[N]/_testdata/impl-[finding-id]/
 
-把 RED/GREEN、测试输出、差异检查和提交记录写入对应 finding 目录的 implementation-result.md，完整输出按需保存在 output.log。返回修复摘要、命令与退出状态摘要、证据路径、提交哈希和未解决问题；不要粘贴完整日志，不要替其他 finding 改代码。
+## 输出约定
+- 完整实现报告写入：.review-evidence/round-[N]/[标准 ID]/implementation-result.md
+- 必要的完整命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log
+- 返回修复摘要、命令与退出状态摘要、证据路径、提交哈希和未解决问题
+- 不要在回复中粘贴完整日志，不要替其他 finding 改代码
 ```
 
 ## RED-GREEN-REFACTOR

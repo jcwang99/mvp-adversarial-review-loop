@@ -17,9 +17,11 @@
 | UX 与可访问性 | 键盘、读屏、焦点、移动布局、空/错/载状态 |
 | 测试与运维 | 可观测性、部署、迁移、回滚、配置、测试盲区 |
 
-默认一次只启动一个代理。每个评审角色有唯一的 role-slug，写入独立 inbox 子目录。不得把先前代理的发现或主代理预期告诉后续评审员。
+**默认串行策略（算力限制）**：默认一次只启动一个评审角色，串行完成所有角色的评审。用户明确授权并行时（例如"可以并行评审"），可同时启动多个评审角色。每个评审角色有唯一的 role-slug，写入独立 inbox 子目录。不得把先前代理的发现或主代理预期告诉后续评审员。
 
-主代理按 finding 委派独立复现审查员，避免在主上下文中展开所有命令输出。独立复现审查员必须与提交原始候选的评审员不同，一次只读取一个标准 finding 目录及必要的基线/契约；只报告重放观察，不裁决范围、严重性或最终 decision。主代理仍负责检查证据并作出所有 finding 决定。
+**复现审查采用单代理批量处理**：主代理启动一个独立复现审查员，一次性给它多个 findings（例如 3-5 个）的标准目录列表，让该代理依次复现每个 finding。默认不同时启动多个复现审查代理（算力限制），除非用户明确授权并行。每个 finding 的复现结果写入对应的标准目录，避免在主上下文中展开所有命令输出。
+
+独立复现审查员必须与提交原始候选的评审员不同，一次只读取一个标准 finding 目录及必要的基线/契约；只报告重放观察，不裁决范围、严重性或最终 decision。主代理仍负责检查证据并作出所有 finding 决定。
 
 若所有可用独立代理都已提交过相关候选，主代理必须亲自复现；P0/P1 及权限/数据完整性类 finding 若由主代理单独复现，需在 adjudication.md 中明确记录并标注为高风险项，在最终报告中单独披露。
 
@@ -192,8 +194,11 @@ kind: defect
 - 通过环境变量传递数据路径，或使用项目测试框架的临时数据机制
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
-运行复现并记录精确命令/操作、环境、退出状态、观察结果和证据路径。完整输出写入该 finding 的 replay-review.md，必要时写入 output.log。
-只返回 reproduced、not-reproduced 或 blocked，附证据路径、命令/退出状态摘要和阻塞项；不要判断 scope、severity 或最终 decision，不要粘贴完整日志。
+## 输出约定
+- 完整复现报告写入：.review-evidence/round-[N]/[标准 ID]/replay-review.md
+- 必要的完整命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log
+- 只返回 reproduced、not-reproduced 或 blocked，附证据路径、命令/退出状态摘要和阻塞项
+- 不要判断 scope、severity 或最终 decision，不要在回复中粘贴完整日志
 ~~~
 
 - `reproduced`：有效前提下观察到 claim 所述行为；是否违反承诺范围由主代理另行裁决。
@@ -219,7 +224,7 @@ kind: defect
 
 ### 2. 复现与主代理裁决
 
-通过筛查的候选必须由独立复现审查员、挑战代理或主代理之一运行 reproduction；执行者必须与提出候选的评审员不同。手工步骤仅在已确认无法自动化时使用。记录精确命令/操作、环境、退出状态、观察结果及证据路径。主代理必须检查证据与 claim 相符，且在 adjudication.md 中注明复现者和证据路径；不要求主代理重复每条常规命令。
+通过筛查的候选必须由独立复现审查员、挑战代理或主代理之一运行 reproduction；执行者必须与提出候选的评审员不同。**主代理启动一个复现审查代理，一次性给它多个 findings 的任务列表（推荐 3-5 个），由该代理依次处理；默认不同时启动多个复现审查代理（算力限制），除非用户明确授权并行。** 手工步骤仅在已确认无法自动化时使用。记录精确命令/操作、环境、退出状态、观察结果及证据路径。主代理必须检查证据与 claim 相符，且在 adjudication.md 中注明复现者和证据路径；不要求主代理重复每条常规命令。
 
 - 重放观察到承诺范围内的缺陷：进入挑战判断。
 - 有效前提下未观察到所述缺陷，且断言与描述正确并有明确反证：rejected，记录反证。
@@ -230,7 +235,7 @@ decision 只取 accepted、needs-evidence、rejected 或 deferred。修复验证
 
 ### 3. 裁决记录字段
 
-主代理在 adjudication.md 中记录：
+主代理在标准 ID 目录的 adjudication.md 中记录（完整路径：`.review-evidence/round-[N]/[标准 ID]/adjudication.md`）：
 
 ~~~text
 finding_id:
@@ -261,6 +266,8 @@ verification: not-applicable | pending | pass | fail | inconclusive
 
 触发后不得因为主代理已成功重放、已有失败测试或生产日志而跳过挑战；这些只证明现象，不能替代独立的反证尝试。对同一根因可由一个挑战任务覆盖多个 finding，但主代理仍须逐条确认适用性和影响。
 
+**挑战代理采用单代理批量处理**：主代理启动一个挑战代理，一次性给它多个需要挑战的 findings（推荐 2-4 个），由该代理依次挑战；默认不同时启动多个挑战代理（算力限制），除非用户明确授权并行。优先挑战最高严重性或最敏感领域的 findings。
+
 提示模板：
 
 ~~~text
@@ -277,8 +284,11 @@ verification: not-applicable | pending | pass | fail | inconclusive
 - 若需要隔离测试数据或尝试反例变体，可放在：.review-evidence/round-[N]/_testdata/challenge-[finding-id]/
 - 无法隔离持久数据或外部写入时，停止并返回 inconclusive
 
-返回 supports、disputes 或 inconclusive；附证据路径、命令/退出状态和必要的短输出摘要。
-完整输出写入 challenge-result.md 或 output.log，不要粘贴完整代码和日志。
+## 输出约定
+- 完整挑战报告写入：.review-evidence/round-[N]/[标准 ID]/challenge-result.md
+- 必要的完整命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log
+- 返回 supports、disputes 或 inconclusive；附证据路径、命令/退出状态和必要的短输出摘要
+- 不要在回复中粘贴完整代码和日志
 ~~~
 
 `supports` 表示挑战者有效重放了 claim，且未找到足以推翻它的证据。`disputes` 必须附具体反证，证明前提不成立、行为符合契约或影响/严重性需要修订；单纯重放失败、环境不可用或观察不确定不能标为 disputes，必须标 `inconclusive`。
@@ -291,7 +301,7 @@ verification: not-applicable | pending | pass | fail | inconclusive
 
 ### 5. 补强代理
 
-仅在反例思路合理但有小的执行瑕疵时使用。补强代理只修改标准 ID 目录内的 reproduction 或 counterexample.md，不改项目文件。返回 fixed 或 cannot-fix，并把完整结果写入 reinforce-result.md。
+仅在反例思路合理但有小的执行瑕疵时使用。**补强代理采用单代理批量处理**：主代理启动一个补强代理，一次性给它多个需要补强的 findings（推荐 2-3 个），由该代理依次处理；默认不同时启动多个补强代理（算力限制），除非用户明确授权并行。补强代理只修改标准 ID 目录内的 reproduction 或 counterexample.md，不改项目文件。返回 fixed 或 cannot-fix，并把完整结果写入 `.review-evidence/round-[N]/[标准 ID]/reinforce-result.md`。
 
 - fixed：主代理重新检查并重放；补强成功本身不等于 finding 成立。
 - cannot-fix：保留 needs-evidence，说明未解决部分；不能仅因代理补强失败而 rejected。
@@ -299,7 +309,7 @@ verification: not-applicable | pending | pass | fail | inconclusive
 
 ## 修复验证
 
-每个修复提交后，使用未参与该 finding 实现的验证代理。提供当前 HEAD、commit、原始 finding、原始 reproduction 路径、修复后的项目测试路径和必要的运行入口。不要把实现代理的结论当作验证结果。
+**验证代理采用单代理批量处理**：主代理启动一个验证代理，一次性给它多个修复提交的验证任务（推荐 3-5 个），由该代理依次验证；默认不同时启动多个验证代理（算力限制），除非用户明确授权并行。每个修复提交后，使用未参与该 finding 实现的验证代理。提供当前 HEAD、commit、原始 finding、原始 reproduction 路径、修复后的项目测试路径和必要的运行入口。不要把实现代理的结论当作验证结果。
 
 若所有可用代理都已参与该 finding 的实现，由主代理执行验证，并在 verification-result.md 标注 verified_by: main-agent。主代理按相同的检查要求和证据标准判定 pass、fail 或 inconclusive；最终报告列明由主代理验证的 finding。
 
@@ -309,7 +319,7 @@ Finding：[标准 ID、原始 claim、验收契约和前提]
 原始证据：[reproduce.* 或 manual-steps.md 的准确路径]
 修复测试：[项目测试套件路径及命令]
 
-先检查 implementation-result.md 中修复前的 RED 证据，确认它覆盖原始 claim 和同一验收断言；再在当前 HEAD 运行原始反例，确认修复后通过。除非提供可安全检查的修复前 commit/worktree，不得声称验证执行者亲自重现了修复前状态。手工 finding 则独立执行步骤并记录当前观察。
+先检查 implementation-result.md 中修复前的 RED 证据，确认它覆盖原始 claim 和同一验收断言；再在当前 HEAD（已修复）运行原始反例脚本，确认问题已被修复（原本会失败的测试现在应该通过）。若原始反例在修复后的代码上仍然失败，说明修复不成功。除非提供可安全检查的修复前 commit/worktree，不得声称验证执行者亲自重现了修复前状态。手工 finding 则独立执行步骤并记录当前观察。
 运行相关项目测试，尝试至少一个相邻变体，并检查回归、兼容性和权限/数据副作用。
 
 ## 运行约定
@@ -317,8 +327,11 @@ Finding：[标准 ID、原始 claim、验收契约和前提]
 - 若需要隔离测试数据或尝试变体，可放在：.review-evidence/round-[N]/_testdata/verify-[finding-id]/
 - 若验证会改写持久数据或调用真实外部服务，停止并返回 inconclusive
 
-把完整记录写入该 finding 的 verification-result.md，必要的完整输出写入 output.log。
-只返回 pass、fail 或 inconclusive、命令/退出状态摘要、证据路径和阻塞项。不要粘贴完整日志。
+## 输出约定
+- 完整验证报告写入：.review-evidence/round-[N]/[标准 ID]/verification-result.md
+- 必要的完整命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log
+- 只返回 pass、fail 或 inconclusive、命令/退出状态摘要、证据路径和阻塞项
+- 不要在回复中粘贴完整日志
 ~~~
 
 - pass：验证执行者完成所有要求的检查，且主代理确认记录和证据后，verification 记 pass，finding 可标 verified。执行者为主代理时，按上述兜底规则记录。
@@ -327,7 +340,7 @@ Finding：[标准 ID、原始 claim、验收契约和前提]
 
 ## 覆盖率与轮次记录
 
-每轮分别报告 raw_candidates、duplicates、screened_out（偏好/明确 scope 或 contract 非 finding）和 replay-eligible 独立 finding 数。被筛除的意见、重复项不进入反例覆盖率分母，但必须单独计数并写入 screening-log.md。进入 finding 生命周期的候选（包括 needs-evidence 及之后被 rejected/deferred 的候选）必须获得标准 ID 和索引行。
+每轮分别报告 raw_candidates、duplicates、screened_out（偏好/明确 scope 或 contract 非 finding）和 replay-eligible 独立 finding 数。被筛除的意见、重复项不进入反例覆盖率分母，但必须单独计数并写入 `.review-evidence/round-[N]/screening-log.md`。进入 finding 生命周期的候选（包括 needs-evidence 及之后被 rejected/deferred 的候选）必须获得标准 ID 和 `.review-evidence/round-[N]/findings-index.md` 中的索引行。
 
 counterexample_coverage = 已由主代理或独立执行者重放并留证的 replay-eligible 独立 finding 数 / replay-eligible 独立 finding 总数。缺少证据或环境阻塞的 finding 仍在分母内。自动化与手工复现分别报告。分母为 0 时报告 N/A，不视为自动通过；须确认每个原始候选都已在 screening-log.md 有明确处理结果，并完成要求的评审与终审。覆盖率低于 80% 时不得声称评审充分或收敛；补足证据或在最终报告中标记 INCOMPLETE。
 
