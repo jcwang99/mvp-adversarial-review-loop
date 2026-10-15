@@ -13,11 +13,21 @@
 ├── findings-index.md
 ├── screening-log.md
 └── round-1/
+    ├── _testdata/                          # 可选：需要隔离的测试数据
+    │   ├── security/                       # 评审角色的测试数据（如 SQLite DB、fixture）
+    │   │   ├── test.db
+    │   │   └── fixtures/
+    │   ├── replay-R1-F001-SEC/             # 独立复现审查的测试数据
+    │   ├── challenge-R1-F001-SEC/          # 挑战代理的反例变体数据
+    │   ├── verify-R1-F001-SEC/             # 修复验证的变体测试数据
+    │   ├── impl-R1-F001-SEC/               # 实现代理的修复前后对比数据
+    │   └── final-audit-attempt-1/          # 最终审计的测试数据
     ├── inbox/
     │   ├── security/
     │   │   └── SEC-001/
     │   │       ├── counterexample.md
-    │   │       └── reproduce.test.js          # JavaScript/TypeScript 示例
+    │   │       ├── reproduce.test.js       # JavaScript/TypeScript 示例
+    │   │       └── output.log              # 完整命令输出
     │   ├── functionality/
     │   │   └── FUNC-001/
     │   │       ├── counterexample.md
@@ -25,15 +35,15 @@
     │   ├── reliability/
     │   │   └── REL-001/
     │   │       ├── counterexample.md
-    │   │       └── reproduce_test.py          # Python 示例
+    │   │       └── reproduce_test.py       # Python 示例
     │   ├── api/
     │   │   └── API-001/
     │   │       ├── counterexample.md
-    │   │       └── reproduce_test.go          # Go 示例
+    │   │       └── reproduce_test.go       # Go 示例
     │   └── final-audit-attempt-1/
     │       └── SCAN-001/
     │           ├── counterexample.md
-    │           └── TestAuthSecurity.java      # Java 示例
+    │           └── TestAuthSecurity.java   # Java 示例
     ├── final-audit/
     │   └── attempt-1/
     │       ├── blind-scan.md
@@ -41,14 +51,38 @@
     └── R1-F001-SEC/
         ├── original-id.txt
         ├── counterexample.md
-        ├── reproduce.test.js                  # 或 .py, .go, .java, .rs 等，取决于项目语言
+        ├── reproduce.test.js               # 或 .py, .go, .java, .rs 等，取决于项目语言
         ├── adjudication.md
         ├── replay-review.md
         ├── challenge-result.md
         ├── implementation-result.md
         ├── verification-result.md
-        └── output.log                         # 可选：完整命令输出
+        └── output.log                      # 可选：完整命令输出
 ~~~
+
+**目录职责说明**：
+
+- **inbox/[role-slug]/[临时_id]/**：评审代理提交的候选证据，包含 counterexample.md、reproduction 脚本和完整输出
+- **R[N]-F[XXX]-[CAT]/**：主代理分配标准 ID 后的正式 finding 目录，包含裁决、复现审查、挑战、实现、验证等完整生命周期记录
+- **_testdata/**（可选）：仅当需要隔离测试数据时使用，存放测试数据库文件、fixture、反例变体等
+  - 按代理类型和 finding ID 隔离：`[role-slug]/`、`replay-[id]/`、`challenge-[id]/`、`verify-[id]/`、`impl-[id]/`、`final-audit-attempt-[K]/`
+  - 不包含项目依赖、编译环境、构建产物
+  - 若项目测试本身已支持临时数据（如 SQLite `:memory:`、Jest 隔离），不需要此目录
+
+**运行约定**：
+- 所有命令从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
+- Reproduction 脚本是普通项目测试，使用相对于项目根的导入路径
+- 项目运行环境（如 Rust `target/`、Node `node_modules/`、Python `venv/`）由项目自身管理，不在 .review-evidence/ 中重复创建
+- 仅在需要避免数据冲突时使用 _testdata/，通过环境变量传递路径
+- 示例运行命令：
+  ```bash
+  # 直接运行（项目测试已支持临时数据）
+  pnpm vitest run .review-evidence/round-1/inbox/security/SEC-001/reproduce.test.js
+  
+  # 需要隔离数据时
+  TEST_DB_PATH=.review-evidence/round-1/_testdata/security/test.db \
+    pnpm vitest run .review-evidence/round-1/inbox/security/SEC-001/reproduce.test.js
+  ```
 
 **Reproduction 文件命名**：按项目语言和测试约定命名，常见格式：
 - JavaScript/TypeScript: `reproduce.test.js`, `reproduce.spec.ts`

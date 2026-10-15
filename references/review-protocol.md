@@ -54,20 +54,105 @@ kind: defect | spec-gap | risk | preference
 
 ## 评审代理提示模板
 
-为每个代理替换 round、role-slug、范围和验收标准。第 4、5 轮还需提供待检查的修复提交/变更路径，但不提供历史 finding 或预期结论：
+为每个代理替换 round、role-slug、范围和验收标准。第 4、5 轮还需提供待检查的修复提交/变更路径，但不提供历史 finding 或预期结论。此模板用于常规评审；最终审计使用后文的专用模板。
 
-~~~text
+````text
 你是 [role-slug] 评审员。只读检查 [MVP 范围]，依据 [验收标准/契约] 和当前 HEAD。
 本轮变更范围：[常规评审填 none；回归评审列出待检查的提交/文件路径，不提供历史 finding 或预期结论]
 不要修改项目源代码、测试、配置，不要安装依赖或提交。只用临时 fixture/数据库执行验证；若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告阻塞。
-只在 .review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/ 中创建本角色的证据。
+
+## 文件组织与运行约定
+
+**证据文件**（counterexample.md、reproduction 脚本、output.log）：
+- 存放位置：.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/
+- Reproduction 脚本命名：按项目语言约定（reproduce.test.js、reproduce_test.py、reproduce_test.go 等）
+- 完整命令输出保存为 output.log，不要粘贴到回复或 counterexample.md 中
+
+**运行 reproduction**：
+- 从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
+- Reproduction 脚本就是普通项目测试，调用项目代码和测试工具
+- 示例：pnpm vitest run .review-evidence/round-1/inbox/security/SEC-001/reproduce.test.js
+- 不要为每个 finding 创建独立的依赖/编译环境
+
+**隔离数据文件**（仅在需要避免冲突时）：
+- 测试数据库、fixture、临时输出可放在：.review-evidence/round-[N]/_testdata/[role-slug]/
+- 通过环境变量传递路径：TEST_DB_PATH=.review-evidence/round-1/_testdata/security/test.db
+- 若项目测试本身已支持临时数据库（如 SQLite `:memory:`、Jest 自动隔离），直接使用
+- 默认串行运行，避免端口/进程冲突；需要并发时在阻塞项中说明原因
+
 不要查看其他角色的 findings，也不要把个人偏好作为缺陷。
 
-每条 finding 描述可观察的触发条件、期望/实际、影响、置信度和 kind。
-把完整 reproduction 或获准的 manual-steps.md、counterexample.md 写到该 finding 目录。
-最后只返回：检查范围摘要；每条 finding 的临时 ID、严重性、claim、kind、置信度和证据路径；无法验证的依赖/原因；未发现问题的关键路径。
-不要在回复中粘贴 reproduction 源码或完整命令输出。日志留在证据文件中，回复只给命令、退出状态和必要的短输出摘要。
+每条 finding 的 counterexample.md 按上方字段 schema 填写；完整 reproduction 或经确认无法自动化时的 manual-steps.md 放在该 finding 目录。按以下固定 YAML 结构交接，保留所有字段；无内容使用 [] 或 none，不省略字段。没有发现时 findings 写 []；未覆盖的路径及原因写入 uncovered_paths；无法完成检查的部分写入 blockers。
+不要在回复中粘贴 reproduction 源码或完整命令输出。回复中的命令仅给命令、退出状态和必要的短输出摘要，详细记录放在证据文件。
+
+~~~yaml
+review_status: "complete | partial | blocked"
+round: "<round number>"
+role_slug: "<role-slug>"
+scope_checked: "<scope summary>"
+commands:
+  - command: "<command>"
+    exit_status: "<exit code or not_run>"
+findings:
+  - finding_id: "<role-local temporary ID>"
+    severity: "P0 | P1 | P2 | P3"
+    claim: "<observable behavior>"
+    kind: "defect | spec-gap | risk | preference"
+    confidence: "high | medium | low"
+    evidence_dir: "<inbox directory>"
+    counterexample_file: "<counterexample.md path>"
+    reproduction_file: "<reproduce.* | manual-steps.md | none>"
+    reproduction_command: "<command | manual | not_run>"
+    reproduction_exit_status: "<exit code | manual | not_run>"
+    reproduction_status: "observed | not_observed | blocked | not_run"
+blockers: []
+uncovered_paths: []
 ~~~
+
+`reproduction_status` 只描述该候选的复现结果：`observed` 表示观察到 claim；`not_observed` 表示复现完整运行但未观察到 claim；`blocked` 表示无法判断；`not_run` 表示未尝试。`reproduction_exit_status` 只记录进程退出码；是否观察到 claim 以 `reproduction_status` 和证据为准。没有运行通用检查命令时，`commands` 写 `[]`。
+
+示例（假设项目有项目详情 API；仅示范交接格式，实际路径、命令和结果必须来自当前项目）：
+
+~~~yaml
+review_status: complete
+round: 1
+role_slug: security
+scope_checked: "GET /api/projects/{projectId} 的访问授权"
+commands: []
+findings:
+  - finding_id: SEC-001
+    severity: P1
+    claim: "已登录用户可读取其无权访问的项目详情"
+    kind: defect
+    confidence: high
+    evidence_dir: ".review-evidence/round-1/inbox/security/SEC-001/"
+    counterexample_file: ".review-evidence/round-1/inbox/security/SEC-001/counterexample.md"
+    reproduction_file: ".review-evidence/round-1/inbox/security/SEC-001/reproduce.spec.ts"
+    reproduction_command: "pnpm vitest run .review-evidence/round-1/inbox/security/SEC-001/reproduce.spec.ts"
+    reproduction_exit_status: 1
+    reproduction_status: observed
+blockers: []
+uncovered_paths: []
+~~~
+
+对应的 `counterexample.md` 示例：
+
+~~~text
+finding_id: SEC-001
+severity: P1
+claim: 已登录用户可读取其无权访问的项目详情
+location: src/routes/projects.ts:getProject
+preconditions: Alice 已登录；project-42 存在；Alice 不是该项目成员
+counterexample: 以 Alice 的会话请求 GET /api/projects/project-42
+expected_vs_actual: 预期 HTTP 403；实际 HTTP 200 并返回项目详情
+reproduction_path: .review-evidence/round-1/inbox/security/SEC-001/reproduce.spec.ts
+impact: 登录用户可读取其他项目的名称和配置，造成跨项目信息泄露
+confidence: high
+kind: defect
+~~~
+
+若没有发现，仍返回相同结构，设置 `review_status: complete`、`findings: []`；只有部分范围未检查时使用 `partial`，完全无法开展检查时使用 `blocked`。每个命令和 finding 的证据路径必须可定位到实际记录。
+````
 
 代理返回属于交接摘要，不是第二份证据副本。主代理只在裁决当前 finding 时读取其完整证据。
 
@@ -99,7 +184,14 @@ kind: defect | spec-gap | risk | preference
 ~~~text
 你是独立复现审查员。只检查 [标准 finding ID] 的 counterexample.md 与指定复现文件、当前 HEAD，以及主代理提供的相关基线/契约。不要读取其他 finding、原评审结论、adjudication.md、challenge-result.md 或 verification-result.md。
 复现材料：[该 finding 目录内 reproduce.* 或 manual-steps.md 的准确路径]
-只读项目文件和测试；不要修改源代码、测试、配置或提交。只用临时 fixture/数据库执行验证；若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked。
+只读项目文件和测试；不要修改源代码、测试、配置或提交。
+
+## 运行约定
+- 从项目根目录运行，使用项目自身的测试框架和依赖
+- 若需要隔离测试数据库/fixture，放在：.review-evidence/round-[N]/_testdata/replay-[finding-id]/
+- 通过环境变量传递数据路径，或使用项目测试框架的临时数据机制
+- 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
+
 运行复现并记录精确命令/操作、环境、退出状态、观察结果和证据路径。完整输出写入该 finding 的 replay-review.md，必要时写入 output.log。
 只返回 reproduced、not-reproduced 或 blocked，附证据路径、命令/退出状态摘要和阻塞项；不要判断 scope、severity 或最终 decision，不要粘贴完整日志。
 ~~~
@@ -179,7 +271,12 @@ verification: not-applicable | pending | pass | fail | inconclusive
 先独立重放 reproduce；若明确无法自动化，执行 manual-steps.md。
 随后尝试证明 claim 不成立：查规范、检查前提、尝试反例变体、寻找符合契约的正常行为。
 不要读取 adjudication.md、replay-review.md、其他代理的结论或主代理的裁决理由。
-遵守评审代理相同的数据隔离要求；无法隔离持久数据或外部写入时，停止并返回 inconclusive。
+
+## 运行约定
+- 从项目根目录运行，使用项目自身的测试框架和依赖
+- 若需要隔离测试数据或尝试反例变体，可放在：.review-evidence/round-[N]/_testdata/challenge-[finding-id]/
+- 无法隔离持久数据或外部写入时，停止并返回 inconclusive
+
 返回 supports、disputes 或 inconclusive；附证据路径、命令/退出状态和必要的短输出摘要。
 完整输出写入 challenge-result.md 或 output.log，不要粘贴完整代码和日志。
 ~~~
@@ -214,7 +311,12 @@ Finding：[标准 ID、原始 claim、验收契约和前提]
 
 先检查 implementation-result.md 中修复前的 RED 证据，确认它覆盖原始 claim 和同一验收断言；再在当前 HEAD 运行原始反例，确认修复后通过。除非提供可安全检查的修复前 commit/worktree，不得声称验证执行者亲自重现了修复前状态。手工 finding 则独立执行步骤并记录当前观察。
 运行相关项目测试，尝试至少一个相邻变体，并检查回归、兼容性和权限/数据副作用。
-只在临时 fixture/数据库上运行；若验证会改写持久数据或调用真实外部服务，停止并返回 inconclusive。
+
+## 运行约定
+- 从项目根目录运行，使用项目自身的测试框架和依赖
+- 若需要隔离测试数据或尝试变体，可放在：.review-evidence/round-[N]/_testdata/verify-[finding-id]/
+- 若验证会改写持久数据或调用真实外部服务，停止并返回 inconclusive
+
 把完整记录写入该 finding 的 verification-result.md，必要的完整输出写入 output.log。
 只返回 pass、fail 或 inconclusive、命令/退出状态摘要、证据路径和阻塞项。不要粘贴完整日志。
 ~~~
@@ -258,7 +360,15 @@ counterexample_coverage = 已由主代理或独立执行者重放并留证的 re
 ~~~text
 你是独立最终审计员。检查 [MVP 范围和验收标准] 在当前 HEAD 的整体行为。
 可运行的验证命令：[测试/构建/静态检查命令]
-不要读取 .review-evidence/ 中任何已有内容、历史 finding、修复清单或以前的裁决；不要编辑项目文件或提交。你只能写入本次指定的 `.review-evidence/round-[N]/final-audit/attempt-[K]/blind-scan.md` 和 `.review-evidence/round-[N]/inbox/final-audit-attempt-[K]/[临时_id]/`。只在临时 fixture/数据库上运行验证；若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止并记录阻塞。
+不要读取 .review-evidence/ 中任何已有内容、历史 finding、修复清单或以前的裁决；不要编辑项目文件或提交。
+
+## 文件组织约定
+- 候选证据写入：.review-evidence/round-[N]/inbox/final-audit-attempt-[K]/[临时_id]/
+- 扫描摘要写入：.review-evidence/round-[N]/final-audit/attempt-[K]/blind-scan.md
+- 从项目根目录运行，使用项目自身的测试框架和依赖
+- 若需要隔离测试数据，可放在：.review-evidence/round-[N]/_testdata/final-audit-attempt-[K]/
+- 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止并记录阻塞
+
 执行全新只读扫描和可用的整体验证。每条具体候选及完整反例写入对应 inbox 目录；在 blind-scan.md 中只写范围、命令摘要、候选临时 ID 和阻塞项，不记录 inbox 路径；主代理分配标准 ID 后在 screening-log.md 记录稳定的证据路径。
 返回 SCAN_COMPLETE 或 BLOCKED、finding 摘要/证据路径、命令退出状态和阻塞项。此阶段不得判定整体 CONVERGED，也不要核验历史 finding。
 ~~~
@@ -271,8 +381,13 @@ counterexample_coverage = 已由主代理或独立执行者重放并留证的 re
 已修复 finding 及其原始证据、项目测试、commit：[由主代理提供的列表]
 遗留 needs-evidence、rejected、deferred 风险：[由主代理提供的索引摘要]
 可以读取第一阶段记录和主代理提供的 finding 裁决/证据；不要改写 blind-scan.md。
+
+## 运行约定
+- 从项目根目录运行，使用项目自身的测试框架和依赖
+- 若需要隔离测试数据，继续使用：.review-evidence/round-[N]/_testdata/final-audit-attempt-[K]/
+- 若验证会改写持久数据或调用真实外部服务，停止并记录阻塞
+
 复核所有 accepted finding 和盲扫候选的最终裁决；运行每条 accepted finding 的原始反例和修复测试，再运行完整测试、构建和适用静态检查。
-沿用第一阶段的数据隔离要求；若验证会改写持久数据或调用真实外部服务，停止并记录阻塞。
 逐项处理 finding，只按需读取当前 finding 的证据并立即写入该项结果；不要一次性加载全部 reproduction 或日志。
 把逐项结果及风险检查写入 `.review-evidence/round-[N]/final-audit/attempt-[K]/targeted-verification.md`。
 只返回状态、finding ID、命令退出状态摘要、证据路径和阻塞项；不得编辑或提交。
