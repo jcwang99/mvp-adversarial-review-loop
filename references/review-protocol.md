@@ -67,26 +67,39 @@ kind: defect | spec-gap | risk | preference
 
 ## 文件组织与运行约定
 
-**证据文件**（counterexample.md、reproduction 脚本、output.log）：
-- 存放位置：.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/
-- Reproduction 脚本命名：按项目语言约定（reproduce.test.js、reproduce_test.py、reproduce_test.go 等）
-- 完整命令输出保存为 output.log，不要粘贴到回复或 counterexample.md 中
+**临时测试文件**（写入项目测试目录，供后续阶段复用）：
+- 存放位置：`tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext}`
+  - 示例：`tests/review/candidates/r1_sec_001.test.js`
+  - 使用项目测试格式，可以复用项目的测试环境、fixtures、辅助函数
+- **测试框架忽略此目录**：在项目测试配置中配置忽略 `tests/review/candidates/`，不会在日常测试中运行
+- 完整命令输出保存在：`.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/output.log`
+
+**证据文档**（仍在 .review-evidence/ 中）：
+- counterexample.md：`.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/counterexample.md`
+- output.log：完整命令输出，不要粘贴到回复或 counterexample.md 中
 
 **运行 reproduction**：
 - 从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
-- Reproduction 脚本就是普通项目测试，调用项目代码和测试工具
-- 示例：pnpm vitest run .review-evidence/round-1/inbox/security/SEC-001/reproduce.test.js
+- 测试文件就是普通项目测试，调用项目代码和测试工具
+- 示例：
+  ```bash
+  # 显式运行单个临时测试
+  ADVERSARIAL_REVIEW=true npm test tests/review/candidates/r1_sec_001.test.js
+  
+  # 或使用项目的测试命令
+  pnpm vitest run tests/review/candidates/r1_sec_001.test.js
+  ```
 - 不要为每个 finding 创建独立的依赖/编译环境
 
 **隔离数据文件**（仅在需要避免冲突时）：
-- 测试数据库、fixture、临时输出可放在：.review-evidence/round-[N]/_testdata/[role-slug]/
-- 通过环境变量传递路径：TEST_DB_PATH=.review-evidence/round-1/_testdata/security/test.db
+- 测试数据库、fixture、临时输出可放在：`.review-evidence/round-[N]/_testdata/[role-slug]/`
+- 通过环境变量传递路径：`TEST_DB_PATH=.review-evidence/round-1/_testdata/security/test.db`
 - 若项目测试本身已支持临时数据库（如 SQLite `:memory:`、Jest 自动隔离），直接使用
 - 默认串行运行，避免端口/进程冲突；需要并发时在阻塞项中说明原因
 
 不要查看其他角色的 findings，也不要把个人偏好作为缺陷。
 
-每条 finding 的 counterexample.md 按上方字段 schema 填写；完整 reproduction 或经确认无法自动化时的 manual-steps.md 放在该 finding 目录。按以下固定 YAML 结构交接，保留所有字段；无内容使用 [] 或 none，不省略字段。没有发现时 findings 写 []；未覆盖的路径及原因写入 uncovered_paths；无法完成检查的部分写入 blockers。
+每条 finding 的 counterexample.md 按上方字段 schema 填写；完整 reproduction 测试写入 `tests/review/candidates/`，经确认无法自动化时的 manual-steps.md 放在 `.review-evidence/` inbox 目录。按以下固定 YAML 结构交接，保留所有字段；无内容使用 [] 或 none，不省略字段。没有发现时 findings 写 []；未覆盖的路径及原因写入 uncovered_paths；无法完成检查的部分写入 blockers。
 不要在回复中粘贴 reproduction 源码或完整命令输出。回复中的命令仅给命令、退出状态和必要的短输出摘要，详细记录放在证据文件。
 
 ~~~yaml
@@ -103,9 +116,9 @@ findings:
     claim: "<observable behavior>"
     kind: "defect | spec-gap | risk | preference"
     confidence: "high | medium | low"
-    evidence_dir: "<inbox directory>"
-    counterexample_file: "<counterexample.md path>"
-    reproduction_file: "<reproduce.* | manual-steps.md | none>"
+    evidence_dir: ".review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/"
+    counterexample_file: ".review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/counterexample.md"
+    reproduction_file: "tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext} | manual-steps.md | none"
     reproduction_command: "<command | manual | not_run>"
     reproduction_exit_status: "<exit code | manual | not_run>"
     reproduction_status: "observed | not_observed | blocked | not_run"
@@ -131,8 +144,8 @@ findings:
     confidence: high
     evidence_dir: ".review-evidence/round-1/inbox/security/SEC-001/"
     counterexample_file: ".review-evidence/round-1/inbox/security/SEC-001/counterexample.md"
-    reproduction_file: ".review-evidence/round-1/inbox/security/SEC-001/reproduce.spec.ts"
-    reproduction_command: "pnpm vitest run .review-evidence/round-1/inbox/security/SEC-001/reproduce.spec.ts"
+    reproduction_file: "tests/review/candidates/r1_sec_001.test.js"
+    reproduction_command: "ADVERSARIAL_REVIEW=true npm test tests/review/candidates/r1_sec_001.test.js"
     reproduction_exit_status: 1
     reproduction_status: observed
 blockers: []
@@ -149,7 +162,7 @@ location: src/routes/projects.ts:getProject
 preconditions: Alice 已登录；project-42 存在；Alice 不是该项目成员
 counterexample: 以 Alice 的会话请求 GET /api/projects/project-42
 expected_vs_actual: 预期 HTTP 403；实际 HTTP 200 并返回项目详情
-reproduction_path: .review-evidence/round-1/inbox/security/SEC-001/reproduce.spec.ts
+reproduction_path: tests/review/candidates/r1_sec_001.test.js
 impact: 登录用户可读取其他项目的名称和配置，造成跨项目信息泄露
 confidence: high
 kind: defect
@@ -235,6 +248,12 @@ kind: defect
 
 decision 只取 accepted、needs-evidence、rejected 或 deferred。修复验证另记 verification 状态；inconclusive 是一次验证的结果，不是 finding decision。
 
+**临时测试文件的移动**（decision 为 accepted 时）：
+- 将 `tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext}` 移动到 `tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}`
+  - 示例：`tests/review/candidates/r1_sec_001.test.js` → `tests/review/reproductions/r1_f001_auth_bypass.test.js`
+- 若 decision 为 rejected、needs-evidence 或 deferred，删除 `tests/review/candidates/` 中的临时测试文件
+- 移动后的文件供 implementation 和 verification 阶段使用，不删除
+
 ### 3. 裁决记录字段
 
 主代理在标准 ID 目录的 adjudication.md 中记录（完整路径：`.review-evidence/round-[N]/[标准 ID]/adjudication.md`）：
@@ -318,11 +337,37 @@ verification: not-applicable | pending | pass | fail | inconclusive
 ~~~text
 你是独立修复验证员。只读检查当前 HEAD 和 commit [hash]，不要编辑或提交。
 Finding：[标准 ID、原始 claim、验收契约和前提]
-原始证据：[reproduce.* 或 manual-steps.md 的准确路径]
-修复测试：[项目测试套件路径及命令]
+临时测试文件：tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}
+修复后的项目测试：[项目正式测试文件路径，如 tests/auth.test.js]
 
-先检查 implementation-result.md 中修复前的 RED 证据，确认它覆盖原始 claim 和同一验收断言；再在当前 HEAD（已修复）运行原始反例脚本，确认问题已被修复（原本会失败的测试现在应该通过）。若原始反例在修复后的代码上仍然失败，说明修复不成功。除非提供可安全检查的修复前 commit/worktree，不得声称验证执行者亲自重现了修复前状态。手工 finding 则独立执行步骤并记录当前观察。
-运行相关项目测试，尝试至少一个相邻变体，并检查回归、兼容性和权限/数据副作用。
+## 验证步骤
+
+1. **检查 RED 证据**：读取 implementation-result.md 中的 RED 证据，确认它覆盖原始 claim
+
+2. **验证修复**：
+   - 运行临时测试文件：`ADVERSARIAL_REVIEW=true npm test tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}`
+   - 确认测试通过（问题已修复）
+   
+3. **生成相邻测试**：
+   - 基于临时测试文件（reproductions/），生成相邻测试用例
+   - 写入 `tests/review/verifications/r{round}_f{num}_adjacent.test.{ext}`
+   - 相邻测试应验证：
+     - 修复没有破坏相邻功能（正常情况仍然工作）
+     - 修复没有过度限制（over-fix）
+     - 边界情况都覆盖了
+   
+4. **运行相邻测试**：
+   - 运行 verifications/ 中的相邻测试
+   - 如果相邻测试失败，返回 fail，说明修复不完整或过度限制
+   
+5. **合并相邻测试到项目测试**：
+   - 如果相邻测试全部通过，将相邻测试用例复制到项目正式测试文件
+   - 调整导入路径、格式以符合项目风格
+   - 在测试用例中添加注释标注 finding ID
+   
+6. **运行完整测试套件**：
+   - 运行 `npm test`（或项目的测试命令）
+   - 确认所有测试通过（无回归）
 
 ## 运行约定
 - 从项目根目录运行，使用项目自身的测试框架和依赖
@@ -333,6 +378,10 @@ Finding：[标准 ID、原始 claim、验收契约和前提]
 - 完整验证报告写入：.review-evidence/round-[N]/[标准 ID]/verification-result.md
 - 必要的完整命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log
 - 只返回 pass、fail 或 inconclusive、命令/退出状态摘要、证据路径和阻塞项
+- verification-result.md 应包括：
+  - 相邻测试数量和描述
+  - 相邻测试运行结果
+  - 已合并到哪个项目正式测试文件
 - 不要在回复中粘贴完整日志
 ~~~
 

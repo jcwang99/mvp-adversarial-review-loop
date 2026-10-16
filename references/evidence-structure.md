@@ -26,7 +26,6 @@
     │   ├── security/
     │   │   └── SEC-001/
     │   │       ├── counterexample.md
-    │   │       ├── reproduce.test.js       # JavaScript/TypeScript 示例
     │   │       └── output.log              # 完整命令输出
     │   ├── functionality/
     │   │   └── FUNC-001/
@@ -35,15 +34,15 @@
     │   ├── reliability/
     │   │   └── REL-001/
     │   │       ├── counterexample.md
-    │   │       └── reproduce_test.py       # Python 示例
+    │   │       └── output.log
     │   ├── api/
     │   │   └── API-001/
     │   │       ├── counterexample.md
-    │   │       └── reproduce_test.go       # Go 示例
+    │   │       └── output.log
     │   └── final-audit-attempt-1/
     │       └── SCAN-001/
     │           ├── counterexample.md
-    │           └── TestAuthSecurity.java   # Java 示例
+    │           └── output.log
     ├── final-audit/
     │   └── attempt-1/
     │       ├── blind-scan.md
@@ -51,18 +50,28 @@
     └── R1-F001-SEC/
         ├── original-id.txt
         ├── counterexample.md
-        ├── reproduce.test.js               # 或 .py, .go, .java, .rs 等，取决于项目语言
         ├── adjudication.md
         ├── replay-review.md
         ├── challenge-result.md
         ├── implementation-result.md
         ├── verification-result.md
         └── output.log                      # 可选：完整命令输出
+
+tests/                                      # 项目测试目录
+├── auth.test.js                            # 项目正式测试文件
+├── api.test.js
+└── review/                                 # 临时测试目录（评审流程结束后删除）
+    ├── candidates/                         # 评审代理写入（测试框架忽略）
+    │   └── r1_sec_001.test.js
+    ├── reproductions/                      # adjudication accepted 后移动到这里
+    │   └── r1_f001_auth_bypass.test.js    # 保留供 verification 使用
+    └── verifications/                      # verification 阶段生成的相邻测试
+        └── r1_f001_adjacent.test.js       # 保留供最终合并
 ~~~
 
 **目录职责说明**：
 
-- **inbox/[role-slug]/[临时_id]/**：评审代理提交的候选证据，包含 counterexample.md、reproduction 脚本和完整输出
+- **inbox/[role-slug]/[临时_id]/**：评审代理提交的候选证据，包含 counterexample.md 和完整输出
 - **R[N]-F[XXX]-[CAT]/**：主代理分配标准 ID 后的正式 finding 目录，包含裁决、复现审查、挑战、实现、验证等完整生命周期记录
 - **_testdata/**（可选）：仅当需要隔离测试数据时使用，存放测试数据库文件、fixture、反例变体等
   - 按代理类型和 finding ID 隔离：`[role-slug]/`、`replay-[id]/`、`challenge-[id]/`、`verify-[id]/`、`impl-[id]/`、`final-audit-attempt-[K]/`
@@ -75,29 +84,88 @@
     - 最终审计通过且收敛后，可清理所有 _testdata/
     - _testdata/ 应列入 .gitignore，不提交到版本控制
 
+**tests/review/ 临时测试目录**（评审流程专用，结束后删除）：
+- **candidates/**：评审代理写入，测试框架配置中忽略此目录，不会在日常测试中运行
+- **reproductions/**：adjudication accepted 后从 candidates/ 移动到这里
+  - 命名规则：`r{round}_f{num}_{slug}.test.{ext}`（如 `r1_f001_auth_bypass.test.js`）
+  - **在 TDD 阶段**：实现代理读取此文件，复制测试用例到项目正式测试文件（如 `tests/auth.test.js`）
+  - **保留不删除**：供 verification 阶段使用（验证代理基于此生成相邻测试）
+  - 测试框架配置中忽略此目录（或仅在 `ADVERSARIAL_REVIEW=true` 时运行）
+- **verifications/**：verification 阶段，验证代理写入相邻测试
+  - 命名规则：`r{round}_f{num}_adjacent.test.{ext}`（如 `r1_f001_adjacent.test.js`）
+  - 相邻测试通过后，验证代理复制到项目正式测试文件
+  - **保留不删除**：供最终报告统计
+  - 测试框架配置中忽略此目录（或仅在 `ADVERSARIAL_REVIEW=true` 时运行）
+- **整个 tests/review/ 目录在评审流程结束后删除**
+
+**测试框架配置示例**（跨语言）：
+
+JavaScript (jest.config.js):
+```javascript
+const isReviewMode = process.env.ADVERSARIAL_REVIEW === 'true';
+module.exports = {
+  testMatch: isReviewMode 
+    ? ['**/tests/**/*.test.js']
+    : [
+        '**/tests/**/*.test.js',
+        '!**/tests/review/**'  // 日常测试跳过 review/
+      ],
+};
+```
+
+Python (pytest.ini):
+```ini
+[pytest]
+testpaths = tests
+addopts = --ignore=tests/review  # 默认跳过 review/
+# 评审模式: ADVERSARIAL_REVIEW=true pytest tests/
+```
+
+Go (使用 build tags):
+```go
+// +build adversarial_review
+// 在 tests/review/ 下的文件添加此 tag
+// 日常测试不会运行，评审时用 go test -tags adversarial_review
+```
+
+Rust (Cargo.toml):
+```toml
+[features]
+adversarial-review = []
+# 评审模式: cargo test --features adversarial-review
+```
+
 **运行约定**：
 - 所有命令从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
-- Reproduction 脚本是普通项目测试，使用相对于项目根的导入路径
+- **评审代理的 reproduction**：直接写入 `tests/review/candidates/` 目录，使用项目测试格式
+- **实现代理的测试合并**：从 `tests/review/reproductions/` 读取，复制测试用例到项目正式测试文件
 - 项目运行环境（如 Rust `target/`、Node `node_modules/`、Python `venv/`）由项目自身管理，不在 .review-evidence/ 中重复创建
 - 仅在需要避免数据冲突时使用 _testdata/，通过环境变量传递路径
 - 示例运行命令：
   ```bash
-  # 直接运行（项目测试已支持临时数据）
-  pnpm vitest run .review-evidence/round-1/inbox/security/SEC-001/reproduce.test.js
+  # 运行正式测试（日常测试，跳过 tests/review/）
+  npm test
+  
+  # 运行临时测试（评审流程中）
+  ADVERSARIAL_REVIEW=true npm test tests/review/reproductions/r1_f001_auth_bypass.test.js
   
   # 需要隔离数据时
   TEST_DB_PATH=.review-evidence/round-1/_testdata/security/test.db \
-    pnpm vitest run .review-evidence/round-1/inbox/security/SEC-001/reproduce.test.js
+    npm test tests/review/candidates/r1_sec_001.test.js
   ```
 
-**Reproduction 文件命名**：按项目语言和测试约定命名，常见格式：
-- JavaScript/TypeScript: `reproduce.test.js`, `reproduce.spec.ts`
-- Python: `reproduce_test.py`, `test_reproduce.py`
-- Go: `reproduce_test.go`
-- Java: `ReproduceTest.java`, 类名需匹配文件名
-- Rust: `reproduce.rs` 或在 `tests/` 下按项目约定
-- Ruby: `reproduce_spec.rb`
-- C#: `ReproduceTest.cs`
+**Reproduction 文件命名**：
+- **评审阶段（candidates/）**：`r{round}_{role}_{temp_id}.test.{ext}`（如 `r1_sec_001.test.js`）
+- **adjudication accepted（reproductions/）**：`r{round}_f{num}_{slug}.test.{ext}`（如 `r1_f001_auth_bypass.test.js`）
+- **verification 阶段（verifications/）**：`r{round}_f{num}_adjacent.test.{ext}`（如 `r1_f001_adjacent.test.js`）
+- 按项目语言和测试约定选择扩展名：
+  - JavaScript/TypeScript: `.test.js`, `.spec.ts`
+  - Python: `_test.py`, `test_.py`
+  - Go: `_test.go`
+  - Java: `Test.java`（类名需匹配文件名）
+  - Rust: `.rs`（放在 `tests/` 下）
+  - Ruby: `_spec.rb`
+  - C#: `Test.cs`
 
 每个评审角色使用唯一的 role-slug 目录，例如 security、functionality、api。临时 ID 只需在该角色目录内唯一。不同角色即使都使用 SEC-001，也不会写入同一路径。
 

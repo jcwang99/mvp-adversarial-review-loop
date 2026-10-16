@@ -124,6 +124,11 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 
 **最终报告**：从 screening-log.md、findings-index.md 和 run-state.md 汇总轮次、状态、证据、测试、提交、风险和收敛结论。无论 CONVERGED 或 INCOMPLETE，都附上所有 screened_out_preference 建议的汇总清单供用户决策。
 
+**清理临时文件**：
+- 删除 `tests/review/` 整个目录（candidates/、reproductions/、verifications/）
+- 保留项目正式测试文件中已合并的测试用例
+- 保留 `.review-evidence/` 目录作为审计证据
+
 ## 恢复检查点
 
 **压缩上下文后恢复时的强制步骤**：

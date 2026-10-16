@@ -28,35 +28,47 @@
 - 不要在回复中粘贴完整日志，不要替其他 finding 改代码
 ```
 
-## RED-GREEN-REFACTOR
+## RED-GREEN 循环与测试合并
 
 1. **RED**：读取当前 `git status --short`，确认没有新的外部写入。
-   - **优先使用评审代理提供的反例证据**：检查 `.review-evidence/round-[N]/R[N]-F[XXX]-[CAT]/` 目录（使用主代理分配的标准 ID）
-   - 如果存在可运行的 reproduction 代码，直接运行它验证问题存在；若是经批准的手工 finding，执行 `manual-steps.md` 并记录结果
-   - **自动化 reproduction 必须迁移到项目测试套件**：
-     - 确定项目测试目录位置（如 `tests/`、`__tests__/`、`test/`、`src/**/*_test.go`）
-     - 将 reproduction 代码改编为项目测试格式（调整导入路径、fixture 路径、断言库）
-     - 保留 `.review-evidence/` 中的原始文件作为审计证据
-     - 在项目测试套件中创建新测试文件或添加到相关测试文件
-     - 测试文件命名应反映 finding ID 并符合项目约定，如：
-       - JavaScript/TypeScript: `security-R1-F001-SEC.test.js` 或在现有测试中添加注释 `// R1-F001-SEC`
-       - Python: `test_security_R1_F001_SEC.py` 或 `test_auth.py` 中注释 `# R1-F001-SEC`
-       - Go: `security_test.go` 中函数 `TestAuthR1F001SEC` 或注释 `// R1-F001-SEC`
-       - Java: `AuthTest.java` 中方法 `testAuthR1F001SEC` 或注释 `// R1-F001-SEC`
-       - Rust: `tests/security_r1_f001_sec.rs` 或 `#[test] fn auth_r1_f001_sec()` 附注释 `// R1-F001-SEC`
-       - Ruby: `spec/security/auth_r1_f001_sec_spec.rb` 或在现有 spec 中注释 `# R1-F001-SEC`
-       - C#: `AuthTests.cs` 中方法 `[Test] public void TestAuth_R1F001SEC()` 或注释 `// R1-F001-SEC`
-   - 自动化反例迁移为项目测试后，运行新测试并保存按预期失败的结果；手工 finding 保存修复前的复现记录
-   - **手工 finding 的回归测试要求**：对经确认无法自动化的手工 finding，执行 `manual-steps.md` 并记录环境、操作、结果和证据。回归测试策略：
+   - **读取临时测试文件**：检查 `tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}` 目录（由主代理在 adjudication 阶段从 candidates/ 移动而来）
+   - 如果存在可运行的 reproduction 代码，直接运行验证问题存在；若是经批准的手工 finding，执行 `manual-steps.md` 并记录结果
+   
+   - **将测试合并到项目正式测试套件**：
+     - 读取临时 reproduction 文件的测试用例
+     - 确定项目中合适的正式测试文件（如 `tests/auth.test.js`、`tests/api_test.py`、`tests/security_test.go` 等）
+       - 根据被测模块路径、项目测试组织结构、命名约定临场判断
+       - 不同项目情况不同，灵活选择最合适的测试文件
+     - **复制**测试用例到正式测试文件（不是移动，临时文件保留）：
+       - 调整导入路径、fixture 路径、断言库以符合项目风格
+       - 在测试用例中添加注释标注 finding ID（如 `// R1-F001-SEC`、`# R1-F001-SEC`）
+       - 合并到现有 describe/suite 块，或创建新的测试分组
+     - 临时文件 `tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}` **保留不删除**（供 verification 阶段使用）
+   
+   - **运行合并后的测试**：
+     - 运行正式测试文件中新合并的测试
+     - 保存按预期失败的输出（RED 证据）
+   
+   - **手工 finding 的处理**：对经确认无法自动化的手工 finding，执行 `manual-steps.md` 并记录环境、操作、结果和证据。回归测试策略：
      - 优先尝试为相邻可测路径添加自动化测试（示例：手工 UI 流程无法自动化，但可测其底层 API 端点或数据层）
      - 若完全无法构造等价自动化测试：
        - 修复提交中说明理由，引用对应 finding 目录中的 manual-steps.md
        - verification-result.md 必须包含修复后的手工复测证据，由验证执行者独立执行步骤
        - 后续回归扫描中，该 finding 需要再次手工检查，或由主代理判断是否跳过并在报告中披露风险
+   
    - 没有 RED 证据（自动化失败输出或手工复现记录）不得改实现
-2. **GREEN**：实现满足验收断言的最小修复。沿用项目现有抽象和错误处理，避免顺手升级依赖、重排格式或重写不相关模块。修复后，新增测试和手工复测（如适用）应该通过。
-3. **REFACTOR**：仅在聚焦测试或获准的手工复测通过后清理重复代码或命名；每次整理后重跑聚焦验证。不要为了让测试通过而删除/放宽断言、吞掉错误、跳过权限检查或把真实调用改成无条件 mock。
-4. **回归**：运行项目已存在的最小回归集，再运行完整可用的测试、类型检查、lint、构建和适用的安全扫描。记录跳过项、失败项和环境限制，不把未执行写成通过。
+
+2. **GREEN**：实现满足验收断言的最小修复
+   - **只修改项目源代码**（不修改测试文件）
+   - 沿用项目现有抽象和错误处理，避免顺手升级依赖、重排格式或重写不相关模块
+   - 修复后，运行 `npm test`（或项目的测试命令）：
+     - 正式测试文件中新合并的测试应该通过
+     - 所有原有项目测试也应该通过（确认无回归）
+   - 不要为了让测试通过而删除/放宽断言、吞掉错误、跳过权限检查或把真实调用改成无条件 mock
+
+3. **回归检查**：运行项目完整测试套件、类型检查、lint、构建和适用的安全扫描
+   - 记录跳过项、失败项和环境限制，不把未执行写成通过
+   - 后续 findings 的修复会自动检查之前的修复（因为测试已合并到正式套件）
 
 ## 工作区与暂存隔离
 
@@ -78,13 +90,13 @@ fix(review): [ID] concise behavior being corrected
 
 **提交内容必须包含**：
 1. 源代码修复
-2. 可行的项目回归测试（从 `.review-evidence/` 改编而来）；若手工 finding 确认无法自动化，提交记录中说明原因、引用 manual-steps.md 路径，并列出已尝试的相邻可测路径（如有）
+2. **项目正式测试文件的修改**（已合并 reproduction 测试用例）；若手工 finding 确认无法自动化，提交记录中说明原因、引用 manual-steps.md 路径，并列出已尝试的相邻可测路径（如有）
 3. 必要的配置或依赖更新
 
-**.review-evidence/ 目录不提交到本次修复 commit**：
-- 证据目录应该在评审开始时就已提交（或在每轮评审后集中提交）
-- 修复 commit 只包含源代码、可行的测试和必要的手工验证例外记录
-- 避免混淆"审计证据"和"产品代码"的边界
+**tests/review/ 临时目录不提交到本次修复 commit**：
+- 临时测试文件（`tests/review/reproductions/`）保留在工作区，供 verification 阶段使用
+- 修复 commit 只包含源代码和正式测试文件的修改
+- 整个评审流程结束后，`tests/review/` 目录会被删除
 
 提交成功后返回完整哈希，并更新 run-state.md 与 findings-index.md。若提交钩子失败，修复钩子报告的问题并重新检查差异；不要绕过钩子。若仓库没有 Git 或用户明确要求不提交，返回 commit: unavailable，由主代理在最终报告说明。
 
@@ -101,9 +113,9 @@ fix(review): [ID] concise behavior being corrected
 只有全部满足才进入修复验证：
 
 - RED 阶段失败证据与原始反例一致。
-- 自动化 reproduction 已迁移到项目测试套件；手工 finding 已添加可行的自动化回归测试（或记录无法自动化的理由、已尝试的相邻可测路径、以及修复前后手工执行证据）。
+- **临时测试已复制并合并到项目正式测试文件**；手工 finding 已添加可行的自动化回归测试（或记录无法自动化的理由、已尝试的相邻可测路径、以及修复前后手工执行证据）。
 - 修复最小、可读、符合现有契约，且新增测试锁定回归；无法自动化的手工 finding 有明确理由和修复后复测证据。
 - 聚焦和回归命令的实际结果已记录；失败/跳过没有被隐藏。
-- 提交只包含当前 finding（源代码 + 可行的项目测试或手工验证例外记录），`git diff --check` 通过，用户改动未被覆盖。
+- **提交只包含当前 finding（源代码 + 正式测试文件修改）**，`git diff --check` 通过，用户改动未被覆盖。
 - commit、测试、反例和 finding ID 已写入 findings-index.md 与 run-state.md。
-- `.review-evidence/` 目录的原始文件保持完整（作为审计证据，不在修复 commit 中）。
+- **临时文件 `tests/review/reproductions/` 保留在工作区**（不提交，供 verification 使用）。
