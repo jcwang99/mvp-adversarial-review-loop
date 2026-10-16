@@ -1,6 +1,6 @@
 # Main Agent Recovery Guide - MVP Adversarial Review Loop
 
-**这是一个多轮循环流程，最少 2 轮常规评审，最多 5 轮，然后进行最终审计。**
+**这是一个多轮循环流程，最少 2 轮常规评审，最多 max_rounds 轮（默认 5，用户可在 baseline 指定），然后进行最终审计。**
 
 ## 压缩上下文后立即做的 3 件事
 
@@ -8,7 +8,8 @@
 
 获取当前状态：
 - `current_phase`: 当前在哪个阶段
-- `current_round`: 当前是第几轮（1-5）
+- `current_round`: 当前是第几轮（1 至 max_rounds）
+- `max_rounds`: 常规评审轮上限（默认 5，用户可在 baseline 指定）
 - `next_action`: 下一步应该做什么（包括需要委派的子代理类型）
 
 ### 2. 确认你在循环中的位置
@@ -49,11 +50,11 @@ baseline → review (委派) → adjudication (复现审查+裁决)
 round_decision (检查轮次迭代条件)
   ↓
   ├─ 满足进入最终审计 → final_audit (委派)
-  └─ 不满足且 < 5 轮 → review (下一轮)
+  └─ 不满足且未达 max_rounds → review (下一轮)
   ↓
 final_audit
   ↓
-  ├─ 发现新问题 → 裁决修复验证 → 若 <5 轮须先开新常规评审轮 → 重新 final_audit (最多 3 次)
+  ├─ 发现新问题 → 裁决修复验证 → 若未达 max_rounds 须先开新常规评审轮 → 重新 final_audit (最多 3 次)
   └─ 无新问题 → report (结束)
 ```
 
@@ -63,7 +64,7 @@ final_audit
 - **收敛条件（CONVERGED）**：见 `SKILL.md` 的"收敛判定与最终报告"章节
 - **关键检查点**：
   - 未解决的验证阻塞（inconclusive，不包括 blocked_by_user_changes）会使结论只能为 INCOMPLETE（不阻止终审执行）
-  - 检查 run-state.md 中的 `rounds_consumed` 和 `can_trigger_new_round` 字段
+  - 检查 run-state.md 中的 `rounds_consumed`、`max_rounds` 和 `can_trigger_new_round` 字段
 
 ## 详细文档
 

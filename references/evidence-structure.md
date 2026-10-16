@@ -186,13 +186,14 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 ~~~markdown
 # Review Run State
 
-**这是一个多轮循环流程：最少 2 轮常规评审，最多 5 轮，然后进行最终审计。**
+**这是一个多轮循环流程：最少 2 轮常规评审，最多 max_rounds 轮（默认 5，用户在 baseline 指定），然后进行最终审计。**
 
 - overall_status: in_progress | waiting_on_evidence | incomplete | converged
 - current_phase: baseline | review | adjudication | repair | verification | round_decision | final_audit | report
-- current_round: 1 (常规评审轮次，1-5)
-- rounds_consumed: 0/5 (已完成的常规评审轮次 / 上限；baseline 初始化为 0，每轮进入 round_decision 时更新为 current_round)
-- can_trigger_new_round: true (是否还能触发新的常规评审轮；每轮完成时重算 = rounds_consumed < 5)
+- current_round: 1 (常规评审轮次，1 至 max_rounds)
+- max_rounds: 5 (常规评审轮上限；默认 5，用户在 baseline 指定，最小值 2)
+- rounds_consumed: 0/max_rounds (已完成的常规评审轮次 / 上限；baseline 初始化为 0，每轮进入 round_decision 时更新为 current_round)
+- can_trigger_new_round: true (是否还能触发新的常规评审轮；每轮完成时重算 = rounds_consumed < max_rounds)
 - final_audit_attempt: 0/3 (已完成的最终审计尝试 / 上限)
 - baseline_head: [初始 HEAD 或 unavailable]
 - current_head: [当前 HEAD 或 unavailable]
@@ -211,15 +212,15 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 - Phase: final_audit → 必须委派给最终审计子代理
 
 ## Rounds Budget
-- 常规评审轮：最多 5 轮（rounds_consumed 计数）
+- 常规评审轮：最多 max_rounds 轮（默认 5，用户在 baseline 指定；rounds_consumed 计数）
 - 最终审计尝试：最多 3 次（final_audit_attempt 计数）
-- 当 rounds_consumed = 5 时，can_trigger_new_round = false，无法再启动新的常规评审轮
+- 当 rounds_consumed = max_rounds 时，can_trigger_new_round = false，无法再启动新的常规评审轮
 - 当 final_audit_attempt = 3 且仍发现问题时，报告 INCOMPLETE
 
 ## Round Completion Checklist (for main agent)
 - [ ] 当前轮所有 accepted findings 已处理完毕（verified / blocked_by_user_changes / 已登记未解决）
 - [ ] 更新 rounds_consumed = current_round
-- [ ] 重算 can_trigger_new_round = (rounds_consumed < 5)
+- [ ] 重算 can_trigger_new_round = (rounds_consumed < max_rounds)
 - [ ] 检查进入最终审计的条件
 - [ ] 更新 current_phase 为 final_audit 或下一轮的 review
 
@@ -234,9 +235,9 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 - counterexample_coverage: [百分比及分子/分母]
 
 ## Round History
-- Round 1: [评审角色数] roles, [accepted数] accepted, [verified数] verified, [新accepted P0/P1数] new accepted P0/P1
+- Round 1: [评审角色数] roles, [accepted数] accepted, [verified数] verified, [新找到的范围内 P0/P1/P2 问题数] new in-scope P0/P1/P2 findings
 - Round 2: ...
-(用于判断提前收敛条件和轮次上限)
+(用于判断提前收敛条件（最近连续两轮是否没有新找到 P0/P1/P2）和轮次上限)
 ~~~
 
 不要把 reproduction 源码或完整命令输出复制进 run-state.md。摘要必须足以判断当前阶段、待办和阻塞，但具体依据留在 finding 记录中。
@@ -276,9 +277,17 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 ## Review
 - Started at:
 - Assumptions:
+- max_rounds: [默认 5，或用户指定值]
+
+## Recovery Guide Deployment
+- Target file: [AGENTS.md | CLAUDE.md | none]
+- Mode: [created | appended | skipped]
+- Marker: mvp-adversarial-review-loop-recovery-guide
+- Backup: [.review-evidence/baseline-project-instructions.bak | none]
+- Notes: [无法部署或跳过时说明]
 ~~~
 
-先记录初始 git status，再创建审计文件。区分原有用户改动、评审证据文件和后续实现改动；任何提交都不得夹带基线中的用户改动。
+先记录初始 git status，再创建审计文件。区分原有用户改动、评审证据文件和后续实现改动；任何提交都不得夹带基线中的用户改动。启动部署对项目级指令文件的改动属于本流程引入的临时改动，记录在 baseline.md 的 Recovery Guide Deployment 小节，不提交，结束时还原。
 
 ## findings-index.md
 

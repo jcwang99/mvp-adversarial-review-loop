@@ -7,7 +7,9 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 ## ⚠️ 执行检查清单（每次行动前检查）
 
-**压缩上下文后恢复？** → 立即读取 `.review-evidence/run-state.md`，确认 `current_phase`、`current_round`、`next_action`
+**技能刚加载？** → 先执行"0. 建立基线"中的启动部署：把技能目录的 AGENTS.md 部署到项目的项目级指令文件（幂等，可重复运行）
+
+**压缩上下文后恢复？** → 立即读取 `.review-evidence/run-state.md`，确认 `current_phase`、`current_round`、`next_action`；若项目级指令文件既无恢复指南标记（`mvp-adversarial-review-loop-recovery-guide`）也无恢复指南标题，先从技能目录重新部署
 
 **当前在哪个阶段？** → 检查 run-state.md 中的 `current_phase`：
 - `review` → 必须委派评审子代理（至少 3 个角色）
@@ -17,7 +19,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 - `round_decision` → 检查轮次迭代条件
 - `final_audit` → 必须委派最终审计子代理
 
-**这是多轮循环流程**：最少 2 轮，最多 5 轮常规评审，然后进行最终审计。不要在第 1 轮后就结束！
+**这是多轮循环流程**：最少 2 轮，最多 `max_rounds` 轮常规评审（默认 5，用户可在 baseline 指定），然后进行最终审计。不要在第 1 轮后就结束！
 
 **每个阶段完成后**：更新 run-state.md 的 `current_phase`、`next_action`、`last_completed_event`
 
@@ -48,7 +50,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 **你是主代理，每个阶段必须遵循以下规则。压缩上下文后恢复时，立即读取 `.review-evidence/run-state.md` 确认当前位置。**
 
-1. **这是一个多轮循环流程**，最少 2 轮常规评审，最多 5 轮，然后进行最终审计。不要在第 1 轮后就结束。
+1. **这是一个多轮循环流程**，最少 2 轮常规评审，最多 `max_rounds` 轮（默认 5，与用户在 baseline 确认并记入 run-state.md），然后进行最终审计。不要在第 1 轮后就结束。
 2. **每个需要独立评估的任务必须使用子代理**：评审角色、复现审查、挑战、补强、修复实现、修复验证、最终审计都必须委派给子代理。**例外**：当所有可用独立代理都已提交过相关候选时，主代理经用户明确授权后可以亲自复现，但必须在 adjudication.md 中明确记录并标注为高风险项，并在最终报告中单独披露。
 3. **每个阶段完成后，立即更新 run-state.md**，记录 current_phase、current_round、next_action 和 last_completed_event。
 4. **每个轮次完成后，必须检查轮次迭代条件**（见下方"轮次迭代与最终审计"），决定是否进入下一轮常规评审或最终审计。
@@ -59,9 +61,18 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 ### 0. 建立基线 (Phase: baseline)
 
-**主代理执行**：确认 MVP 范围、验收标准、技术栈、当前 HEAD、工作区改动、测试/构建命令和基线结果。创建 .review-evidence/ 并初始化 baseline.md、run-state.md、findings-index.md、screening-log.md。确保项目测试配置忽略 tests/review/（或使用等价的 ADVERSARIAL_REVIEW 开关），将方式和是否可在结束时还原记录到 baseline.md；无法确保时记录阻塞。
+**主代理执行**：确认 MVP 范围、验收标准、技术栈、当前 HEAD、工作区改动、测试/构建命令、基线结果和最大轮数（`max_rounds`，默认 5，与用户确认，用户可指定；最小值 2，小于 2 时按 2 处理并记录）。创建 .review-evidence/ 并初始化 baseline.md、run-state.md、findings-index.md、screening-log.md。确保项目测试配置忽略 tests/review/（或使用等价的 ADVERSARIAL_REVIEW 开关），将方式和是否可在结束时还原记录到 baseline.md；无法确保时记录阻塞。
 
-**完成后**：更新 run-state.md，设置 `current_phase: review`, `current_round: 1`, `rounds_consumed: 0/5`, `can_trigger_new_round: true`, `next_action: "启动第 1 轮评审角色"`。
+**启动部署（技能加载后、开始评审前执行；幂等，可安全重复运行）**：把技能目录下的 AGENTS.md（主代理恢复指南）部署到项目级指令文件，保证上下文压缩后恢复指南仍被自动加载：
+
+1. **定位目标文件**：项目根目录的 `AGENTS.md`；若项目以 `CLAUDE.md` 为项目级指令文件（存在 `CLAUDE.md` 且无 `AGENTS.md`），则以 `CLAUDE.md` 为目标。
+2. **幂等检查**：目标文件已包含标记 `mvp-adversarial-review-loop-recovery-guide` 或恢复指南标题（`Main Agent Recovery Guide - MVP Adversarial Review Loop`）时跳过，不重复追加。
+3. **部署**：
+   - 目标文件不存在：把技能目录的 `AGENTS.md` 复制到项目根目录，并在内容前后加 `<!-- BEGIN mvp-adversarial-review-loop-recovery-guide -->` / `<!-- END mvp-adversarial-review-loop-recovery-guide -->` 标记。
+   - 目标文件已存在：先把原始内容备份到 `.review-evidence/baseline-project-instructions.bak`（目录不存在时先创建），再把带标记的恢复指南追加到文件末尾。
+4. **记录**：把目标文件、模式（created / appended / skipped）、标记和备份路径写入 baseline.md 的 "Recovery Guide Deployment" 小节；无法部署时记录原因和阻塞。
+
+**完成后**：更新 run-state.md，设置 `current_phase: review`, `current_round: 1`, `max_rounds: [5 或用户指定值]`, `rounds_consumed: 0/max_rounds`, `can_trigger_new_round: true`, `next_action: "启动第 1 轮评审角色"`。
 
 ### 1. 独立评审 (Phase: review)
 
@@ -80,9 +91,9 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 | OPS | operations | 日志、监控、可调试性、部署、配置、测试覆盖 |
 | PROD | product | 产品契约、用户体验一致性、错误消息清晰度 |
 
-**轮次策略**：第 1、2 轮默认选择 SEC、FUNC、REL，根据项目特点补充其他角色；第 3 轮起，根据前序发现的高风险区域选择针对性角色；第 4、5 轮仅检查回归，选择与已修复 findings 相关的角色。
+**轮次策略**：第 1、2 轮默认选择 SEC、FUNC、REL，根据项目特点补充其他角色；中段轮次（第 3 轮至倒数第 4 轮，max_rounds ≥ 6 时存在）沿用默认广扫；倒数第 3 轮根据前序发现的高风险区域选择针对性角色；倒数第 2 轮及以后（即最后两轮）仅检查回归，选择与已修复 findings 相关的角色。max_rounds 小于 5 时省略无空间的阶段（优先保留第 1、2 轮默认广扫与最后两轮回归）。
 
-**提示模板**：完整提示模板和输出格式见 agent-prompts.md 的"评审代理（Review Agent）"章节。委派时为每个代理替换 round、role-slug、范围和验收标准；第 4、5 轮提供待检查的修复提交/变更路径，但不提供历史 finding 或预期结论。临时测试文件写入 `tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext}`；证据文档写入 `.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/`。代理返回固定 YAML 结构的摘要，完整日志写入 output.log；该摘要属于交接摘要，不是第二份证据副本，主代理只在裁决当前 finding 时读取其完整证据。
+**提示模板**：完整提示模板和输出格式见 agent-prompts.md 的"评审代理（Review Agent）"章节。委派时为每个代理替换 round、role-slug、范围和验收标准；倒数第 2 轮及以后（最后两轮回归检查轮）提供待检查的修复提交/变更路径，但不提供历史 finding 或预期结论。临时测试文件写入 `tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext}`；证据文档写入 `.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/`。代理返回固定 YAML 结构的摘要，完整日志写入 output.log；该摘要属于交接摘要，不是第二份证据副本，主代理只在裁决当前 finding 时读取其完整证据。
 
 **临时 ID**：每个代理只需在自身 role-slug 目录内保证临时 ID 唯一，例如 security 角色使用 SEC-001、SEC-002，functionality 角色使用 FUNC-001、FUNC-002。类别代码：SEC 安全隐私；FUNC 功能边界；REL 可靠性一致性；API API兼容性；PERF 性能资源；UX 可访问性；OPS 测试运维；PROD 产品契约。标准 ID 由主代理在裁决阶段统一分配。
 
@@ -243,7 +254,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 **轮次迭代决策（主代理执行）**：
 1. **确认当前轮已完成**：所有 accepted findings 已终结（verified / blocked_by_user_changes / 已登记未解决）
-2. **轮次计数**：设置 `rounds_consumed = current_round`（表示已完成的常规评审轮数），并重算 `can_trigger_new_round = (rounds_consumed < 5)`
+2. **轮次计数**：设置 `rounds_consumed = current_round`（表示已完成的常规评审轮数），并重算 `can_trigger_new_round = (rounds_consumed < max_rounds)`
 3. **检查是否满足进入最终审计的条件**（见下方）
 4. **决策分支**：
    - 若不满足且 `can_trigger_new_round = true`：进入下一轮常规评审，更新 run-state.md，设置 `current_round: N+1`, `current_phase: review`, `next_action: "启动第 N+1 轮评审角色"`
@@ -254,17 +265,16 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 **轮次上限与优先级**：
 
-- 默认最多 5 轮常规评审，每轮最多 6 个评审角色。**轮次计数只包含常规评审轮；最终审计不计入轮次，但其发现的问题如需修复会触发新的常规评审轮。**
-- 第 1、2 轮的常规扫描覆盖 P0-P2；第 3 轮的常规扫描只寻找新 P0。此限制不取消此前已 accepted finding 的修复，也不屏蔽强制终审扫描发现的问题；后者仍须进入普通裁决和修复流程。
-- 第 4、5 轮的常规扫描只检查此前修复引入的回归。终审发现的新候选仍须裁决；若修复后已没有轮次完成所需的互补复核和新终审，则报告 INCOMPLETE。
-- **提前结束条件**：第 1、2 轮均没有新的、范围内且未解决的 P0/P1，且第 2 轮没有新的、范围内且未解决的 P2，可在完成第 2 轮后跳过第 3-5 轮常规扫描，直接进入最终审计。"未解决"指 needs-evidence，或 accepted 但 verification 非 pass 且非 blocked_by_user_changes（含已登记未解决）；deferred 项和 needs_evidence_clarity 为 clear_claim_lacking_env 的 P2 不计为未解决，只须在最终报告披露。此条件仅适用于前 2 轮；第 3 轮后不再适用（第 3 轮本身只找 P0，P2 判断已不再适用）。
+- 最多 `max_rounds` 轮常规评审（默认 5，与用户在 baseline 确认并记入 run-state.md），每轮最多 6 个评审角色。**轮次计数只包含常规评审轮；最终审计不计入轮次，但其发现的问题如需修复会触发新的常规评审轮。**
+- 第 1、2 轮与中段轮次（定义见"轮次策略"）的常规扫描覆盖 P0-P2；倒数第 3 轮的常规扫描只寻找新 P0。此限制不取消此前已 accepted finding 的修复，也不屏蔽强制终审扫描发现的问题；后者仍须进入普通裁决和修复流程。
+- 最后两轮（倒数第 2、1 轮）的常规扫描只检查此前修复引入的回归。终审发现的新候选仍须裁决；若修复后已没有轮次完成所需的互补复核和新终审，则报告 INCOMPLETE。
+- **提前结束条件**：从第 2 轮起，每轮 round_decision 时检查最近两轮；若连续两轮都没有新找到的、范围内的 P0/P1/P2 问题，则跳过其后所有常规扫描轮，直接进入最终审计。判定口径：该轮没有新增范围内 P0/P1/P2 finding（被筛除或去重的候选、最终 rejected 的 finding 不算；P3 不算）。
 - 已证实的 deferred 风险应披露，但本身不阻止收敛。达到轮次上限仍有未解决的范围内 P0/P1、未解决的 inconclusive 验证阻塞（blocked_by_user_changes 除外）或覆盖率不足时，标记 INCOMPLETE。不要为了达到轮数而继续提交低优先级改动。
 
 **进入最终审计的条件**（满足其一即可）：
 
-1. **提前收敛**（第 2 轮后）：满足上方"提前结束条件"（含其中"未解决"及例外项的口径定义）
-2. **正常完成**（第 3-5 轮后）：本轮无新 accepted P0/P1，且所有 accepted findings 已终结（verified / blocked_by_user_changes / 已登记未解决；未解决项不阻止进入最终审计，但使收敛结论只能为 INCOMPLETE）
-3. **达到上限**（第 5 轮后）：无论如何都必须进入最终审计
+1. **提前收敛**（连续两轮都没有新找到的、范围内的 P0/P1/P2 问题后）：满足上方"提前结束条件"（判定口径见该处）
+2. **达到上限**（完成 max_rounds 轮后）：无论如何都必须进入最终审计
 
 **轮次记录与覆盖率**：每轮分别报告 raw_candidates、duplicates、screened_out（偏好/明确 scope 或 contract 非 finding）和 replay-eligible 独立 finding 数。被筛除的意见、重复项不进入反例覆盖率分母，但必须单独计数并写入 `.review-evidence/screening-log.md`（顶层文件，按轮次分节）。进入 finding 生命周期的候选（包括 needs-evidence 及之后被 rejected/deferred 的候选）必须获得标准 ID 和 `.review-evidence/findings-index.md` 中的索引行。
 
@@ -285,8 +295,8 @@ counterexample_coverage = 已由主代理或独立执行者重放并留证的 re
   2. **定向复核**：扫描结果已保存后，再提供所有 accepted finding、未结的范围内 needs-evidence P0/P1、原始证据路径、修复测试路径和提交，要求逐项复核，并检查完整测试、构建、适用静态检查及遗留风险。
 - 主代理预先提供新的输出路径。第一阶段代理不得读取任何已有 `.review-evidence/` 内容，但可以把本阶段结果写入指定文件；完整候选证据写在 inbox，摘要只在 blind-scan.md 记录一次。
 - 若最终审计发现新问题：回到裁决流程；accepted 的问题仍修复并由验证代理验证。
-  - 若 `rounds_consumed < 5`：必须启动新的常规评审轮检查受影响区域和回归（计入 5 轮上限），随后重新审计（递增 attempt，最多共 3 次尝试）。
-  - 若已达第 5 轮上限：不再启动常规评审轮，报告 INCOMPLETE，并标注"已修复验证、但缺少独立互补评审轮复核"的项及未修复的项。
+  - 若 `rounds_consumed < max_rounds`：必须启动新的常规评审轮检查受影响区域和回归（计入 max_rounds 上限），随后重新审计（递增 attempt，最多共 3 次尝试）。
+  - 若已达 max_rounds 轮上限：不再启动常规评审轮，报告 INCOMPLETE，并标注"已修复验证、但缺少独立互补评审轮复核"的项及未修复的项。
 - 最终审计最多 3 次尝试；第 3 次尝试仍发现需要修复的问题时，报告 INCOMPLETE（修复与验证仍按上一条执行并标注）。
 - 关键规则：第一阶段扫描已保存后，再给同一审计员第二阶段提示，不要改写第一阶段结论；不得询问 "是否还有其他问题" 或依赖对话记忆，所有 finding 必须写在指定证据文件中；第一阶段结果是基线，第二阶段逐项复核但不必重复第一阶段已列举的 finding。
 
@@ -310,6 +320,7 @@ counterexample_coverage = 已由主代理或独立执行者重放并留证的 re
 - 保留项目正式测试文件中已合并的测试用例
 - 保留 `.review-evidence/` 目录作为审计证据
 - 还原 baseline 阶段为隔离临时测试对项目测试配置所做的临时改动（仅还原自己引入的部分，不触碰用户改动；无法安全还原时记录）
+- 按 baseline.md 的 "Recovery Guide Deployment" 记录还原项目级指令文件：appended 模式删除标记分节并对照备份确认用户内容未受损；created 模式在文件仍只含本指南时删除整个文件，否则仅删除标记分节；无法安全还原时记录
 
 **可选归档**（长期项目）：
 - 压缩轮次证据以节省存储空间（见 [references/archival.md](references/archival.md)）
@@ -318,8 +329,8 @@ counterexample_coverage = 已由主代理或独立执行者重放并留证的 re
 
 ## 恢复检查点
 
-**压缩上下文后恢复时的强制步骤**（详见 AGENTS.md）：
+**压缩上下文后恢复时的强制步骤**（恢复指南由启动部署写入项目级指令文件；若标记和恢复指南标题均缺失，先按"0. 建立基线"重新部署）：
 1. 立即读取 `.review-evidence/run-state.md`
-2. 确认 `current_phase`、`current_round`、`rounds_consumed`、`can_trigger_new_round` 和 `next_action`
+2. 确认 `current_phase`、`current_round`、`max_rounds`、`rounds_consumed`、`can_trigger_new_round` 和 `next_action`
 3. 根据 `next_action` 继续执行，不要跳过或重复已完成的阶段
-4. 这是多轮循环流程（最少 2 轮，最多 5 轮），不要在第 1 轮后就结束
+4. 这是多轮循环流程（最少 2 轮，最多 max_rounds 轮，默认 5），不要在第 1 轮后就结束

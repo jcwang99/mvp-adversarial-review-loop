@@ -18,7 +18,7 @@
 
 ### 提示模板
 
-为每个代理替换 round、role-slug、范围和验收标准。第 4、5 轮还需提供待检查的修复提交/变更路径，但不提供历史 finding 或预期结论。
+为每个代理替换 round、role-slug、范围和验收标准。倒数第 2 轮及以后（最后两轮回归检查轮）还需提供待检查的修复提交/变更路径，但不提供历史 finding 或预期结论。
 
 ````text
 你是 [role-slug] 评审员。只读检查 [MVP 范围]，依据 [验收标准/契约] 和当前 HEAD。
@@ -1000,7 +1000,7 @@ blockers: []
 - `[MVP 范围]`: 从 baseline.md 中提取
 - `[验收标准/契约]`: 从 baseline.md 中提取
 - `[role-slug]`: security、functionality、reliability、api、performance、ux、ops、product
-- `[round number]`: 当前轮次（1-5）
+- `[round number]`: 当前轮次（1 至 max_rounds，默认 1-5）
 - `[标准 finding ID]`: R1-F001-SEC 格式
 - `[临时_id]`: SEC-001 格式（role-local）
 

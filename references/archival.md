@@ -157,9 +157,9 @@ echo "Archived to: archives/round-1.tar.gz" > round-1/.archived
 # 删除原始文件（保留目录结构）
 find round-1/ -type f ! -name ".archived" -delete
 
-# 重复其他轮次
-for round in round-2 round-3 round-4 round-5; do
-  if [ -d "$round" ]; then
+# 重复其他轮次（遍历实际存在的轮次目录；轮数上限由 max_rounds 决定，默认 5）
+for round in $(ls -d round-* 2>/dev/null); do
+  if [ "$round" != "round-1" ] && [ -d "$round" ]; then
     tar -czf "archives/${round}.tar.gz" "$round/"
     echo "Archived to: archives/${round}.tar.gz" > "$round/.archived"
     find "$round/" -type f ! -name ".archived" -delete
@@ -167,7 +167,7 @@ for round in round-2 round-3 round-4 round-5; do
 done
 
 # 压缩最终审计证据（如果存在）
-if [ -d "round-5/final-audit" ]; then
+if ls -d round-*/final-audit >/dev/null 2>&1; then
   tar -czf archives/final-audit.tar.gz round-*/final-audit/
 fi
 ```
