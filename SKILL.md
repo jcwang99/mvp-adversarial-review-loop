@@ -236,12 +236,19 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 
 ### 5. 轮次迭代与最终审计 (Phase: round_decision or final_audit)
 
+**轮次完成的定义**：
+- **轮次开始**：`current_round = N`, `current_phase = review`，启动评审角色
+- **轮次修复验证阶段**：`current_phase = repair | verification`, `current_round = N`（不变），处理本轮 accepted findings
+- **轮次完成**：所有 accepted findings 终结（verified 或 blocked_by_user_changes 或已登记未解决）后，`current_phase = round_decision`
+
 **轮次迭代决策（主代理执行）**：
-- 先将本轮计入：设置 `rounds_consumed = current_round`（表示已完成的常规评审轮数），并重算 `can_trigger_new_round = (rounds_consumed < 5)`
-- 检查是否满足进入最终审计的条件（见下方）
-- 若不满足且 `can_trigger_new_round = true`：进入下一轮常规评审，更新 run-state.md，设置 `current_round: N+1`, `current_phase: review`, `next_action: "启动第 N+1 轮评审角色"`
-- 若满足：进入最终审计，更新 run-state.md，设置 `current_phase: final_audit`, `final_audit_attempt: 1/3`, `next_action: "启动最终审计代理（盲扫）"`
-- 未解决的验证阻塞（inconclusive，不包括 blocked_by_user_changes）不阻止最终审计的执行，但使收敛结论只能为 INCOMPLETE；最终报告必须列明未验证项
+1. **确认当前轮已完成**：所有 accepted findings 已终结（verified / blocked_by_user_changes / 已登记未解决）
+2. **轮次计数**：设置 `rounds_consumed = current_round`（表示已完成的常规评审轮数），并重算 `can_trigger_new_round = (rounds_consumed < 5)`
+3. **检查是否满足进入最终审计的条件**（见下方）
+4. **决策分支**：
+   - 若不满足且 `can_trigger_new_round = true`：进入下一轮常规评审，更新 run-state.md，设置 `current_round: N+1`, `current_phase: review`, `next_action: "启动第 N+1 轮评审角色"`
+   - 若满足：进入最终审计，更新 run-state.md，设置 `current_phase: final_audit`, `final_audit_attempt: 1/3`, `next_action: "启动最终审计代理（盲扫）"`
+5. **验证阻塞处理**：未解决的验证阻塞（inconclusive，不包括 blocked_by_user_changes）不阻止最终审计的执行，但使收敛结论只能为 INCOMPLETE；最终报告必须列明未验证项
 
 **轮次证据提交（可选）**：每轮所有 accepted findings 验证完成后，主代理将本轮 `.review-evidence/` 变更作为独立提交（如 `chore(review): round-[N] evidence`），不夹带产品代码或测试；用户不希望提交或无法安全区分改动时跳过，并在 run-state.md 记录。
 

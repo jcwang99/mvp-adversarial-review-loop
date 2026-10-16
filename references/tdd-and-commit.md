@@ -84,25 +84,31 @@
    - 返回 `blocker: "user_changes_conflict: [文件列表]"`
 
 2. **主代理判断是否能安全分块**：
-   - 使用 `git diff` 检查用户改动的具体位置
-   - 使用 `git add -p` 尝试交互式分块暂存
-   - **安全分块的条件**：
-     - 用户改动和修复改动在不同函数/模块
-     - 修改不相邻（至少间隔 5 行）
-     - 修改不涉及共享变量或依赖关系
-   - **不能安全分块的情况**：
-     - 改动在同一函数内
-     - 改动涉及相同的变量、类型定义或接口
-     - 无法通过 `git add -p` 清晰分离
+   - 使用 `git diff -U5 <冲突文件>` 检查用户改动和修复改动的具体位置（显示上下 5 行上下文）
+   - 使用 `git add -p <冲突文件>` 尝试交互式分块暂存
+   - **安全分块的条件**（必须全部满足）：
+     - 用户改动和修复改动在不同函数或不同模块
+     - 修改不相邻（至少间隔 **3 行**且在不同函数）
+     - 修改不涉及共享变量、类型定义、接口或函数调用关系
+     - `git add -p` 能清晰分离两类改动（每个 hunk 只包含一类改动）
+   - **不能安全分块的情况**（任一满足即不能分块）：
+     - 改动在同一函数内（即使间隔 3 行以上）
+     - 改动涉及相同的变量、类型定义、接口或相互调用
+     - `git add -p` 的某个 hunk 同时包含用户改动和修复改动
+     - 用户改动修改了修复涉及的函数签名、导入语句或依赖声明
 
 3. **冲突解决流程**：
-   - **能安全分块**：主代理执行分块暂存并提交，更新 finding 状态为 `verification: pending`
+   - **能安全分块**：
+     - 主代理执行 `git add -p <冲突文件>`，在交互模式中只暂存修复改动
+     - 运行 `git diff --cached` 确认暂存内容不包含用户改动
+     - 提交修复，更新 finding 状态为 `verification: pending`
+     - 在 implementation-result.md 记录："工作区冲突已通过分块暂存解决"
    - **不能安全分块**：
      - 更新 finding 状态为 `decision: accepted`, `verification: blocked_by_user_changes`
      - 在 findings-index.md 中记录 `Verification: blocked_by_user_changes`
      - 在 run-state.md 中递增 `verification_blocked_by_user_changes` 计数
      - **不阻止收敛**：这类 finding 在最终报告中单独披露，作为"需要用户手工合并的修复"
-     - 在 adjudication.md 中添加字段：`merge_conflict: true`, `user_changes_files: [列表]`
+     - 在 adjudication.md 中添加字段：`merge_conflict: true`, `user_changes_files: [列表]`, `chunk_attempt_result: "<git add -p 的具体失败原因>"`
 
 4. **最终报告处理**：
    - 单独章节列出所有 `blocked_by_user_changes` 的 findings

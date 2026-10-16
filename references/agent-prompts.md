@@ -413,11 +413,14 @@ blockers: []
 
 实现代理的任务是按照 TDD 流程（RED-GREEN-REFACTOR）修复已 accepted 的 finding。
 
+**前置条件**：主代理已将 accepted findings 的临时测试文件从 `tests/review/candidates/` 移动到 `tests/review/reproductions/`。实现代理只处理已在 reproductions/ 目录中的测试文件。
+
 ### 关键要求
 
 1. **RED 阶段**：
-   - 将 `tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}` 复制到项目测试目录
-   - 运行测试，确认失败（RED）
+   - 读取 `tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}`（主代理已移动到此）
+   - 将其测试用例复制到项目正式测试文件（如 `tests/auth.test.js`）
+   - 运行正式测试文件中新合并的测试，确认失败（RED）
    - 如果测试通过，说明 finding 已被其他修复解决，报告 already_fixed
 
 2. **GREEN 阶段**：
@@ -581,11 +584,71 @@ blockers:
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
 ## 工作区保护（强制）
-- 不得在共享工作区直接 `git checkout` 修复前 commit。用独立 worktree 复现修复前状态：
-  `git worktree add <系统临时目录或仓库同级目录>/verify-[finding-id] [修复前 commit]`
-  在该 worktree 中运行复现命令，完成后 `git worktree remove <该路径>`
-- 无法使用 worktree 时（受控兜底，需主代理批准）：先记录原分支/HEAD 和 `git status --short`，用 `git stash push` 保存未提交改动；随后 `git checkout [修复前 commit]`（detached）运行复现；完成后 `git checkout [原分支或基线 HEAD]`，再 `git stash pop` 恢复，并对比确认工作区与开始时一致
-- 禁止 `git checkout --force`、`git reset --hard`、`git clean`；修复后状态直接在当前 HEAD 工作区验证；除上述受控兜底流程外不要移动 HEAD
+
+**默认方案（worktree）**：
+- 不得在共享工作区直接 `git checkout` 修复前 commit
+- 用独立 worktree 复现修复前状态：
+  ```bash
+  # 创建临时 worktree
+  git worktree add <系统临时目录或仓库同级目录>/verify-[finding-id] [修复前 commit]
+  
+  # 在 worktree 中运行复现命令
+  cd <worktree-path>
+  [运行 reproduction 命令]
+  
+  # 完成后清理
+  cd <原工作区>
+  git worktree remove <worktree-path>
+  ```
+
+**兜底方案（stash + checkout）**：
+- **触发条件**：`git worktree add` 失败（如 Git 版本不支持、文件系统限制）
+- **需要主代理批准**：验证代理遇到 worktree 失败时，必须报告 blocked，由主代理决定是否授权使用兜底方案
+- **执行步骤**：
+  1. 记录原始状态：
+     ```bash
+     original_head=$(git rev-parse HEAD)
+     original_branch=$(git rev-parse --abbrev-ref HEAD)
+     git status --short > /tmp/verify-[finding-id]-original-status.txt
+     ```
+  2. 保存工作区改动：
+     ```bash
+     git stash push --include-untracked -m "verify-[finding-id]-backup"
+     stash_ref=$(git rev-parse stash@{0})  # 记录 stash 引用
+     ```
+  3. 切换到修复前 commit：
+     ```bash
+     git checkout [修复前 commit]  # detached HEAD
+     ```
+  4. 运行复现命令并记录结果
+  5. 恢复原始状态：
+     ```bash
+     git checkout $original_branch  # 或 $original_head
+     git stash pop $stash_ref
+     ```
+  6. **错误恢复**：
+     - 若 `git stash pop` 产生冲突：
+       ```bash
+       git stash drop  # 放弃 stash（工作区改动已在 original-status.txt 中记录）
+       ```
+       报告 blocked，附原始状态文件路径和冲突详情，不要强制合并
+     - 若验证代理在步骤 3-4 之间崩溃：主代理检测到 detached HEAD，执行：
+       ```bash
+       git checkout <baseline_head 或 original_branch>
+       git stash list  # 查找 verify-[finding-id]-backup
+       git stash pop <stash-ref>  # 若失败，保留 stash 并报告
+       ```
+  7. 验证恢复结果：
+     ```bash
+     git status --short > /tmp/verify-[finding-id]-restored-status.txt
+     diff /tmp/verify-[finding-id]-original-status.txt /tmp/verify-[finding-id]-restored-status.txt
+     ```
+     若有差异且不能确认为预期变化，报告 blocked
+
+**禁止操作**：
+- 禁止 `git checkout --force`、`git reset --hard`、`git clean`
+- 修复后状态直接在当前 HEAD 工作区验证，不要移动 HEAD
+- 除上述受控兜底流程外，验证代理不得以任何方式移动 HEAD
 
 ## 输出约定
 - 完整验证报告写入：.review-evidence/round-[N]/[标准 ID]/verification-result.md
