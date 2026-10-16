@@ -107,21 +107,31 @@
 
 ## run-state.md 检查点
 
-run-state.md 是当前执行位置的短检查点，不是完整历史日志。每次代理交接、状态变化、提交、验证和轮次切换后更新。用于恢复工作时先读它，再按 next_action 读取相关 finding 文件。
+run-state.md 是当前执行位置的短检查点，不是完整历史日志。每次代理交接、状态变化、提交、验证和轮次切换后更新。**压缩上下文后恢复时，主代理必须立即读取此文件确认当前位置。**
 
 ~~~markdown
 # Review Run State
 
+**这是一个多轮循环流程：最少 2 轮常规评审，最多 5 轮，然后进行最终审计。**
+
 - overall_status: in_progress | waiting_on_evidence | incomplete | converged
-- current_phase: baseline | review | adjudication | replay_review | repair | verification | final_audit | report
-- current_round: 1
+- current_phase: baseline | review | adjudication | replay_review | repair | verification | round_decision | final_audit | report
+- current_round: 1 (常规评审轮次，1-5)
 - baseline_head: [初始 HEAD 或 unavailable]
 - current_head: [当前 HEAD 或 unavailable]
-- last_completed_event: [短摘要]
+- last_completed_event: [短摘要，包括完成的阶段和轮次]
 - active_finding: [标准 ID 或 none]
-- next_action: [一个明确动作及所需文件路径]
+- next_action: [一个明确动作及所需文件路径，包括需要委派的子代理类型]
 - blockers: [无，或阻塞事项和负责人]
 - updated_at: [ISO 8601]
+
+## Workflow Reminder
+- Phase: review → 必须使用独立评审子代理（至少 3 个角色）
+- Phase: adjudication → 复现审查必须委派给子代理，挑战必须委派给挑战代理
+- Phase: repair → 必须委派给实现子代理
+- Phase: verification → 必须委派给验证子代理（不能是实现代理）
+- Phase: round_decision → 检查是否满足进入最终审计的条件，否则进入下一轮
+- Phase: final_audit → 必须委派给最终审计子代理
 
 ## Counts
 - raw_candidates: [数量]
@@ -131,6 +141,11 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 - decisions: [accepted / needs-evidence / rejected / deferred 数量]
 - verification: [pending / pass / fail / inconclusive 数量]
 - counterexample_coverage: [百分比及分子/分母]
+
+## Round History
+- Round 1: [评审角色数] roles, [accepted数] accepted, [verified数] verified, [新P0/P1数] new P0/P1
+- Round 2: ...
+(用于判断提前收敛条件和轮次上限)
 ~~~
 
 不要把 reproduction 源码或完整命令输出复制进 run-state.md。摘要必须足以判断当前阶段、待办和阻塞，但具体依据留在 finding 记录中。

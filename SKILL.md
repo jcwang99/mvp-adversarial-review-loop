@@ -5,6 +5,22 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 
 # MVP 对抗式评审循环
 
+## ⚠️ 执行检查清单（每次行动前检查）
+
+**压缩上下文后恢复？** → 立即读取 `.review-evidence/run-state.md`，确认 `current_phase`、`current_round`、`next_action`
+
+**当前在哪个阶段？** → 检查 run-state.md 中的 `current_phase`：
+- `review` → 必须委派评审子代理（至少 3 个角色）
+- `adjudication` → 复现审查、挑战必须委派子代理
+- `repair` → 必须委派实现子代理
+- `verification` → 必须委派验证子代理
+- `round_decision` → 检查轮次迭代条件
+- `final_audit` → 必须委派最终审计子代理
+
+**这是多轮循环流程**：最少 2 轮，最多 5 轮常规评审，然后进行最终审计。不要在第 1 轮后就结束！
+
+**每个阶段完成后**：更新 run-state.md 的 `current_phase`、`next_action`、`last_completed_event`
+
 ## 目标与资料路由
 
 以可重放证据确认缺陷，以按统一标准的验证确认修复。主代理对 finding 和最终收敛负责；子代理提供独立评审、挑战、实现或验证结果，不替主代理作最终裁决。
@@ -25,32 +41,60 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 6. **区分失败、未知和阻塞。** 环境不可用或证据不充分时不能标 rejected 或 verified。未完成的核验保持未完成，并记录阻塞原因。
 7. **报告真实收敛状态。** 遵循评审协议的轮次上限、覆盖率和收敛条件。没有完成要求的验证时，报告 INCOMPLETE，不以测试绿灯或”未发现问题”代替证据。
 
+## 强制执行规则
+
+**你是主代理，每个阶段必须遵循以下规则。压缩上下文后恢复时，立即读取 `.review-evidence/run-state.md` 确认当前位置。**
+
+1. **这是一个多轮循环流程**，最少 2 轮常规评审，最多 5 轮，然后进行最终审计。不要在第 1 轮后就结束。
+2. **每个需要独立评估的任务必须使用子代理**：评审角色、复现审查、挑战、补强、修复实现、修复验证、最终审计都必须委派给子代理，不能由主代理直接执行。
+3. **每个阶段完成后，立即更新 run-state.md**，记录 current_phase、current_round、next_action 和 last_completed_event。
+4. **每个轮次完成后，必须检查轮次迭代条件**（见下方"轮次迭代与最终审计"），决定是否进入下一轮常规评审或最终审计。
+5. **修复实现必须按 TDD 流程**：委派给实现代理，按 tdd-and-commit.md 执行 RED-GREEN-REFACTOR。
+6. **修复验证必须委派给独立验证代理**，不能由实现代理自己验证，也不能跳过。
+
 ## 工作流
 
-### 0. 建立基线
+### 0. 建立基线 (Phase: baseline)
 
-在启动代理前，主代理确认 MVP 范围、验收标准、技术栈、当前 HEAD、工作区改动、测试/构建命令和基线结果。创建 .review-evidence/ 并初始化 baseline.md、run-state.md、findings-index.md。没有 Git 时仍可评审，但不得声称已提交。
+**主代理执行**：确认 MVP 范围、验收标准、技术栈、当前 HEAD、工作区改动、测试/构建命令和基线结果。创建 .review-evidence/ 并初始化 baseline.md、run-state.md、findings-index.md。
 
-### 1. 独立评审
+**完成后**：更新 run-state.md，设置 `current_phase: review`, `current_round: 1`, `next_action: "启动第 1 轮评审角色"`。
 
-按项目风险选择互补角色，使用 review-protocol.md 中的提示模板。每个角色只读检查项目文件，将每条候选 finding 和完整反例材料写到自己的 inbox 目录，并按规定的短格式返回结果。主代理收到并记录一个角色的交接后再启动下一个。
+### 1. 独立评审 (Phase: review)
 
-### 2. 主代理裁决
+**必须使用子代理**：按项目风险选择互补角色（至少 3 个），使用 review-protocol.md 中的提示模板。每个角色是一个独立子代理，只读检查项目文件，将候选 finding 写到自己的 inbox 目录。
 
-主代理先把纯偏好、明确范围外的新功能要求等非 finding 记录到 screening-log.md，再去重并为可能代表现存具体风险的候选分配标准 ID。将常规复现委派给未提交该候选的独立代理；主代理检查复现材料、结果和关键输出后作决定。高风险、争议或证据异常项由主代理加验。需要挑战的 finding 必须先完成挑战再裁决。按 review-protocol.md 更新 finding 记录、索引和轮次覆盖率。证据或环境不足时保留 needs-evidence，不猜测结论。
+**完成后**：更新 run-state.md，设置 `current_phase: adjudication`, `next_action: "筛选、去重并裁决候选 findings"`。
 
-### 3. TDD 修复与提交
+### 2. 主代理裁决 (Phase: adjudication)
 
-仅处理 accepted finding。每次只处理一个 finding；实现代理按 tdd-and-commit.md 留存 RED、修复、测试、差异和提交记录。主代理检查证据与提交边界后，才进入修复验证。
+**主代理执行但必须委派复现审查**：先筛选偏好和范围外建议到 screening-log.md，再去重并分配标准 ID。**常规复现必须委派给独立子代理**（复现审查代理），主代理检查其返回的证据后裁决。高风险项由主代理亲自加验。P0/P1 及敏感 finding 需要挑战时，**必须委派给挑战代理**。
 
-### 4. 修复验证
+**完成后**：
+- 若有 accepted findings：更新 run-state.md，设置 `current_phase: repair`, `next_action: "修复第一个 accepted finding: [ID]"`
+- 若无 accepted findings：跳过修复，直接检查轮次迭代条件
 
-由未参与该 finding 实现的验证代理验证修复效果：检查修复前 RED 证据是否充分，在修复后的代码上运行原始反例脚本（确认问题已被修复），检查项目回归测试并尝试相邻变体。只有按 review-protocol.md 完成验证并返回 pass 才标记 verified；主代理兜底时适用相同标准并记录执行者。fail 回到修复或新增 finding；inconclusive 保持 accepted 但未 verified，先解决阻塞再继续收敛判断。
+### 3. TDD 修复与提交 (Phase: repair)
 
-### 5. 轮次迭代与最终审计
+**必须使用子代理**：每次处理一个 accepted finding，**委派给实现代理**按 tdd-and-commit.md 执行 RED-GREEN-REFACTOR、提交。
 
-**常规评审轮的迭代规则**：
-- 当前轮所有 accepted finding 均 verified 后，检查是否满足进入最终审计的条件；若不满足，进入下一轮常规评审
+**完成后**：更新 run-state.md，设置 `current_phase: verification`, `active_finding: [ID]`, `next_action: "验证 finding [ID] 的修复"`。
+
+### 4. 修复验证 (Phase: verification)
+
+**必须使用子代理**：**委派给验证代理**（不能是实现该 finding 的代理）验证修复效果。验证代理检查 RED 证据、运行原始反例、运行回归测试。
+
+**完成后**：
+- 更新 finding 状态（verified / fail / inconclusive）到 findings-index.md
+- 若还有其他 accepted 未验证的 findings：继续修复下一个
+- 若当前轮所有 accepted findings 已验证：检查轮次迭代条件
+
+### 5. 轮次迭代与最终审计 (Phase: round_decision or final_audit)
+
+**轮次迭代决策（主代理执行）**：
+- 检查是否满足进入最终审计的条件（见下方）
+- 若不满足，进入下一轮常规评审：更新 run-state.md，设置 `current_round: N+1`, `current_phase: review`, `next_action: "启动第 N+1 轮评审角色"`
+- 若满足，进入最终审计：更新 run-state.md，设置 `current_phase: final_audit`, `next_action: "启动最终审计代理（盲扫）"`
 - 未解决的验证阻塞（inconclusive）阻止进入最终审计，转为 INCOMPLETE
 
 **进入最终审计的条件**（满足其一即可）：
@@ -58,12 +102,31 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 2. **正常完成**（第 3-5 轮后）：完成当前轮的所有修复和验证，且没有新的范围内 P0/P1（第 3 轮后优先级限制生效）
 3. **达到轮次上限**（第 5 轮后）：无论是否还有问题，都必须进入最终审计以评估最终状态
 
-**最终审计流程**：
-- 由未参与前序评审或实现的新代理完成，分两阶段（盲扫 + 定向复核），防止锚定效应
-- 若第一阶段发现新问题，必须回到普通裁决流程，修复后启动新的常规评审轮检查回归，再重新进行最终审计
-- 最终审计最多重试 2 次（共 3 次尝试）；终审发现触发的新常规评审轮计入 5 轮上限
-- 若终审后触发的新常规评审轮超过第 5 轮上限，或终审重试耗尽，报告 INCOMPLETE
+**最终审计流程（必须使用子代理）**：
+- **委派给最终审计代理**（未参与前序评审或实现的新代理），分两阶段：
+  1. 盲扫：不读取已有 findings，独立检查
+  2. 定向复核：检查已修复的 findings 是否真的有效
+- 若第一阶段发现新问题：回到普通裁决流程，修复后启动新常规评审轮（计入 5 轮上限），再重新进行最终审计
+- 最终审计最多 3 次尝试；若耗尽或超过第 5 轮上限，报告 INCOMPLETE
 
-**收敛判定**：按 review-protocol.md 的收敛条件，只有所有 P0/P1 已修复、所有 accepted finding 已验证、覆盖率≥80%、且最终审计两阶段完成无新发现时，才报告 CONVERGED。否则报告 INCOMPLETE 并列明残余风险。
+**完成后**：进入收敛判定和最终报告。
+
+### 6. 收敛判定与最终报告 (Phase: report)
+
+**收敛条件**（全部满足才是 CONVERGED）：
+- 所有范围内 P0/P1 已修复且验证通过
+- 所有 accepted finding 已 verified
+- 反例覆盖率 ≥80%
+- 最终审计两阶段完成且无新发现
+
+**未满足时报告 INCOMPLETE**，列明残余风险、阻塞原因和未验证项。
 
 **最终报告**：从 screening-log.md、findings-index.md 和 run-state.md 汇总轮次、状态、证据、测试、提交、风险和收敛结论。无论 CONVERGED 或 INCOMPLETE，都附上所有 screened_out_preference 建议的汇总清单供用户决策。
+
+## 恢复检查点
+
+**压缩上下文后恢复时的强制步骤**：
+1. 立即读取 `.review-evidence/run-state.md`
+2. 确认 `current_phase`、`current_round`、`active_finding` 和 `next_action`
+3. 根据 `next_action` 继续执行，不要跳过或重复已完成的阶段
+4. 若 `current_round < 5` 且不满足提前收敛条件，必须继续下一轮常规评审
