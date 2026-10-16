@@ -606,6 +606,7 @@ blockers:
   ```
 
 **兜底方案（stash + checkout）**：
+- **平台说明（Windows）**：下方命令为 POSIX shell 示例，Windows PowerShell 下需改写为等价形式：`/tmp/...` → 系统临时目录（如 `$env:TEMP\verify-...`），`var=$(...)` → `$var = ...`，`diff` → `git diff --no-index`（或 `Compare-Object`），含 `{}` 的参数如 `stash@{0}` 需加引号（`'stash@{0}'`）。
 - **触发条件**：`git worktree add` 失败（如 Git 版本不支持、文件系统限制）
 - **需要主代理批准**：验证代理遇到 worktree 失败时，必须报告 blocked，由主代理决定是否授权使用兜底方案
 - **执行步骤**：

@@ -1,6 +1,6 @@
 ---
 name: mvp-adversarial-review-loop
-description: 对已完成的 MVP 执行有证据、可审计的多代理评审与 TDD 修复循环。适用于用户要求检查并修复产品、功能、安全、可靠性、API、性能、可访问性或运维问题的场景；达到流程上限仍未满足收敛条件时，必须报告未完成。
+description: 当用户要求对已完成的 MVP 进行评审、查找并修复问题（覆盖产品、功能、安全、可靠性、API、性能、可访问性、运维等领域），或要求对抗式/多轮评审、反例验证、有证据且可审计的修复时使用。
 ---
 
 # MVP 对抗式评审循环
@@ -232,7 +232,7 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 **完成后**：
 - 更新 finding 状态（verification: pending / pass / fail / inconclusive / blocked_by_user_changes）到 findings-index.md
 - 若还有其他 accepted findings 未处理或未解决：处理下一个（每个 finding 的修复-验证循环最多 2 次，超过后按上方结果解释的退出规则处理）
-- 若本轮所有 accepted findings 均已终结（verified 或已登记未解决）：检查轮次迭代条件
+- 若本轮所有 accepted findings 均已终结（verified / blocked_by_user_changes / 已登记未解决）：检查轮次迭代条件
 
 ### 5. 轮次迭代与最终审计 (Phase: round_decision or final_audit)
 
@@ -257,13 +257,13 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 - 默认最多 5 轮常规评审，每轮最多 6 个评审角色。**轮次计数只包含常规评审轮；最终审计不计入轮次，但其发现的问题如需修复会触发新的常规评审轮。**
 - 第 1、2 轮的常规扫描覆盖 P0-P2；第 3 轮的常规扫描只寻找新 P0。此限制不取消此前已 accepted finding 的修复，也不屏蔽强制终审扫描发现的问题；后者仍须进入普通裁决和修复流程。
 - 第 4、5 轮的常规扫描只检查此前修复引入的回归。终审发现的新候选仍须裁决；若修复后已没有轮次完成所需的互补复核和新终审，则报告 INCOMPLETE。
-- **提前结束条件**：第 1、2 轮均没有新的、范围内且仍未解决的 P0/P1，且第 2 轮没有新的未解决 P2（accepted 或 deferred 均计入，deferred 的须在最终报告披露），可在完成第 2 轮后跳过第 3-5 轮常规扫描，直接进入最终审计。此条件仅适用于前 2 轮；第 3 轮后不再适用（第 3 轮本身只找 P0，P2 判断已不再适用）。
-- 范围外且已证实的 deferred 风险应披露，但本身不阻止收敛。达到轮次上限仍有未解决的范围内 P0/P1、未解决的 inconclusive 验证阻塞（blocked_by_user_changes 除外）或覆盖率不足时，标记 INCOMPLETE。不要为了达到轮数而继续提交低优先级改动。
+- **提前结束条件**：第 1、2 轮均没有新的、范围内且未解决的 P0/P1，且第 2 轮没有新的、范围内且未解决的 P2，可在完成第 2 轮后跳过第 3-5 轮常规扫描，直接进入最终审计。"未解决"指 needs-evidence，或 accepted 但 verification 非 pass 且非 blocked_by_user_changes（含已登记未解决）；deferred 项和 needs_evidence_clarity 为 clear_claim_lacking_env 的 P2 不计为未解决，只须在最终报告披露。此条件仅适用于前 2 轮；第 3 轮后不再适用（第 3 轮本身只找 P0，P2 判断已不再适用）。
+- 已证实的 deferred 风险应披露，但本身不阻止收敛。达到轮次上限仍有未解决的范围内 P0/P1、未解决的 inconclusive 验证阻塞（blocked_by_user_changes 除外）或覆盖率不足时，标记 INCOMPLETE。不要为了达到轮数而继续提交低优先级改动。
 
 **进入最终审计的条件**（满足其一即可）：
 
-1. **提前收敛**（第 2 轮后）：第 1、2 轮均无新 accepted 或未解决的范围内 P0/P1（含 needs-evidence），且第 2 轮无新的未解决 P2（accepted 或 deferred 均计入，deferred 须披露）
-2. **正常完成**（第 3-5 轮后）：本轮无新 accepted P0/P1，且所有 accepted finding 已 verified 或 blocked_by_user_changes
+1. **提前收敛**（第 2 轮后）：满足上方"提前结束条件"（含其中"未解决"及例外项的口径定义）
+2. **正常完成**（第 3-5 轮后）：本轮无新 accepted P0/P1，且所有 accepted findings 已终结（verified / blocked_by_user_changes / 已登记未解决；未解决项不阻止进入最终审计，但使收敛结论只能为 INCOMPLETE）
 3. **达到上限**（第 5 轮后）：无论如何都必须进入最终审计
 
 **轮次记录与覆盖率**：每轮分别报告 raw_candidates、duplicates、screened_out（偏好/明确 scope 或 contract 非 finding）和 replay-eligible 独立 finding 数。被筛除的意见、重复项不进入反例覆盖率分母，但必须单独计数并写入 `.review-evidence/screening-log.md`（顶层文件，按轮次分节）。进入 finding 生命周期的候选（包括 needs-evidence 及之后被 rejected/deferred 的候选）必须获得标准 ID 和 `.review-evidence/findings-index.md` 中的索引行。
