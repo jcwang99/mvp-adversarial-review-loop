@@ -72,7 +72,42 @@
 
 ## 工作区与暂存隔离
 
-共享工作区可能已有用户改动。实现代理必须在开始和提交前各执行一次 `git status --short`，比较基线；只暂存自己为当前 finding 新增或修改的明确路径，例如 `git add -- path/to/test path/to/source`，禁止 `git add -A` 或 `git commit -am`。若同一文件同时含有用户改动，先停止并让主代理决定是否能安全分块；不能安全分块就不提交。
+共享工作区可能已有用户改动。实现代理必须在开始和提交前各执行一次 `git status --short`，比较基线；只暂存自己为当前 finding 新增或修改的明确路径，例如 `git add -- path/to/test path/to/source`，禁止 `git add -A` 或 `git commit -am`。
+
+### 工作区冲突处理
+
+若同一文件同时含有用户改动和 finding 修复：
+
+1. **实现代理停止并报告**：
+   - 在 implementation-result.md 中记录冲突文件列表
+   - 标记 `implementation_status: blocked`
+   - 返回 `blocker: "user_changes_conflict: [文件列表]"`
+
+2. **主代理判断是否能安全分块**：
+   - 使用 `git diff` 检查用户改动的具体位置
+   - 使用 `git add -p` 尝试交互式分块暂存
+   - **安全分块的条件**：
+     - 用户改动和修复改动在不同函数/模块
+     - 修改不相邻（至少间隔 5 行）
+     - 修改不涉及共享变量或依赖关系
+   - **不能安全分块的情况**：
+     - 改动在同一函数内
+     - 改动涉及相同的变量、类型定义或接口
+     - 无法通过 `git add -p` 清晰分离
+
+3. **冲突解决流程**：
+   - **能安全分块**：主代理执行分块暂存并提交，更新 finding 状态为 `verified: pending`
+   - **不能安全分块**：
+     - 更新 finding 状态为 `decision: accepted`, `verification: blocked_by_user_changes`
+     - 在 findings-index.md 中记录 `Verification: blocked_by_user_changes`
+     - 在 run-state.md 中递增 `verification_blocked_by_user_changes` 计数
+     - **不阻止收敛**：这类 finding 在最终报告中单独披露，作为"需要用户手工合并的修复"
+     - 在 adjudication.md 中添加字段：`merge_conflict: true`, `user_changes_files: [列表]`
+
+4. **最终报告处理**：
+   - 单独章节列出所有 `blocked_by_user_changes` 的 findings
+   - 提供手工合并建议：具体文件、冲突位置、推荐修复代码
+   - 这些 findings 不计入"未验证"统计，但必须明确披露
 
 提交前至少执行：
 

@@ -28,6 +28,7 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 - [references/review-protocol.md](references/review-protocol.md)：角色选择、评审输出、finding 裁决、挑战/补强、轮次边界和收敛规则。评审和裁决阶段按需读取。
 - [references/evidence-structure.md](references/evidence-structure.md)：证据目录、状态检查点、索引和记录格式。初始化证据目录时读取。
 - [references/tdd-and-commit.md](references/tdd-and-commit.md)：实现任务、RED-GREEN-REFACTOR、工作区隔离和提交验收。进入修复阶段时读取。
+- [references/agent-prompts.md](references/agent-prompts.md)：子代理提示模板与标准输出格式。委派子代理时按需参考。
 
 不要默认加载所有参考文件；只读取当前阶段需要的资料。详细规则以对应参考文件为准，不在本入口重复定义。
 
@@ -70,6 +71,10 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 
 **主代理执行但必须委派复现审查**：先筛选偏好和范围外建议到 screening-log.md，再去重并分配标准 ID。**常规复现必须委派给独立子代理**（复现审查代理），主代理检查其返回的证据后裁决。高风险项由主代理亲自加验。P0/P1 及敏感 finding 需要挑战时，**必须委派给挑战代理**。
 
+**临时测试文件移动**：在所有候选的 decision 确定后，主代理批量移动临时测试文件：
+- decision 为 accepted：移动到 `tests/review/reproductions/`
+- decision 为 rejected/needs-evidence/deferred：删除临时测试文件
+
 **完成后**：
 - 若有 accepted findings：更新 run-state.md，设置 `current_phase: repair`, `next_action: "修复第一个 accepted finding: [ID]"`
 - 若无 accepted findings：更新 run-state.md，设置 `current_phase: round_decision`, `next_action: "检查轮次迭代条件（本轮无 accepted findings）"`
@@ -92,10 +97,11 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 ### 5. 轮次迭代与最终审计 (Phase: round_decision or final_audit)
 
 **轮次迭代决策（主代理执行）**：
+- 检查 run-state.md 中的 `rounds_consumed` 和 `can_trigger_new_round` 字段
 - 检查是否满足进入最终审计的条件（见下方）
-- 若不满足且 `current_round < 5`：进入下一轮常规评审，更新 run-state.md，设置 `current_round: N+1`, `current_phase: review`, `next_action: "启动第 N+1 轮评审角色"`
-- 若满足：进入最终审计，更新 run-state.md，设置 `current_phase: final_audit`, `final_audit_attempt: 1`, `next_action: "启动最终审计代理（盲扫）"`
-- 未解决的验证阻塞（inconclusive）阻止进入最终审计，报告 INCOMPLETE
+- 若不满足且 `can_trigger_new_round = true`：进入下一轮常规评审，更新 run-state.md，递增 `rounds_consumed`，设置 `current_round: N+1`, `current_phase: review`, `next_action: "启动第 N+1 轮评审角色"`
+- 若满足：进入最终审计，更新 run-state.md，设置 `current_phase: final_audit`, `final_audit_attempt: 1/3`, `next_action: "启动最终审计代理（盲扫）"`
+- 未解决的验证阻塞（inconclusive，不包括 blocked_by_user_changes）阻止进入最终审计，报告 INCOMPLETE
 
 **进入最终审计的条件**（满足其一即可）：
 1. **提前收敛**（仅在第 2 轮后检查）：连续第 1、2 轮本轮评审后均无新 accepted P0/P1，且第 2 轮也无新 accepted P2
@@ -106,9 +112,9 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 - **委派给最终审计代理**（未参与前序评审或实现的新代理），分两阶段：
   1. 盲扫：不读取已有 findings，独立检查
   2. 定向复核：检查已修复的 findings 是否真的有效
-- 若第一阶段发现新问题且 `current_round < 5`：回到普通裁决流程（adjudication phase），修复验证后启动新常规评审轮（`current_round + 1`，计入 5 轮上限），检查回归后重新进行最终审计（`final_audit_attempt + 1`）
-- 若第一阶段发现新问题但 `current_round >= 5`：直接裁决并修复（不启动新评审轮），修复验证后重新进行最终审计（`final_audit_attempt + 1`）
-- 最终审计最多 3 次尝试；若第 3 次尝试仍发现新问题，或 `final_audit_attempt` 耗尽，报告 INCOMPLETE
+- 若第一阶段发现新问题且 `can_trigger_new_round = true`：回到普通裁决流程（adjudication phase），修复验证后启动新常规评审轮（递增 `rounds_consumed`，计入 5 轮上限），检查回归后重新进行最终审计（递增 `final_audit_attempt`）
+- 若第一阶段发现新问题但 `can_trigger_new_round = false`（已达轮次上限）：直接裁决并修复（不启动新评审轮），修复验证后重新进行最终审计（递增 `final_audit_attempt`）
+- 最终审计最多 3 次尝试（`final_audit_attempt` 最大值 3）；若第 3 次尝试仍发现新问题，报告 INCOMPLETE
 
 **完成后**：进入收敛判定和最终报告。
 
@@ -116,7 +122,10 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 
 **收敛条件**（全部满足才是 CONVERGED）：
 - 所有 accepted 且范围内的 P0/P1 已修复且验证通过（rejected/deferred 的不计入）
-- 所有 accepted finding（所有优先级）已 verified
+- 所有 accepted finding（所有优先级）已 verified 或 blocked_by_user_changes（后者在最终报告中单独披露，提供手工合并建议）
+- 反例覆盖率（verified findings 的 reproduction 占 accepted findings 的比例）≥80%
+- 最终审计两阶段完成且无新 accepted findings
+- P2 needs-evidence 中，所有 `needs_evidence_clarity: unclear_claim` 的必须解决；`clear_claim_lacking_env` 的可作为残余风险
 - 反例覆盖率（verified findings 的 reproduction 占 accepted findings 的比例）≥80%
 - 最终审计两阶段完成且无新 accepted findings
 

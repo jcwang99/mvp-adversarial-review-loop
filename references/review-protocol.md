@@ -230,12 +230,58 @@ kind: defect
 
 检查前提是否可能成立、意见是否针对 MVP 已承诺的功能、预期行为是否有验收标准/契约支持、影响是否与严重性相称。
 
-- 仅要求新增明确不在 MVP 承诺内的功能，或把没有契约依据的偏好当成验收失败，且没有指出当前行为的具体损害：记为 `screened_out_scope` 或 `screened_out_contract`，写明依据；不分配标准 ID、不进入 findings-index.md 或覆盖率分母，也无需运行反例。此规则不能用于否认当前行为造成的具体损害；若现存行为可能影响已承诺边界、数据、权限或用户，继续调查其实际影响和适用契约。
-- 不得仅因某条功能不在 MVP 承诺内，就拒绝检查该功能当前已存在的行为。若该行为可能影响已承诺边界、数据、权限或用户，可验证时继续筛查和重放；只有确认问题真实且仅在 MVP 范围外场景触发后，才可标 deferred。
-- 纯偏好或仅措辞建议 (kind: preference)：标记为 screened_out_preference，写入 screening-log.md；不分配标准 finding ID、不进入 findings-index.md，也不进入修复队列或反例覆盖率分母。所有 preference 建议汇总后在达到收敛或轮次上限时交给用户决策。
-- 有具体后果但依赖未定产品决策、缺少必要前提或尚未确定的契约解释：decision 为 needs-evidence，列出需要的证据。不能只因契约没有明说就把具体、可观察的现有行为风险 rejected。
-- 反例有小的可修正缺陷：decision 暂为 needs-evidence，可派补强代理。
-- 根本无法运行但仍有合理方向：保留 needs-evidence；补强代理不能修正本身不证明问题不存在。
+**筛查决策流程**：
+
+```
+候选 finding
+  ↓
+[1] 是否仅为偏好或措辞建议？(kind: preference)
+  ├─ 是 → screened_out_preference（不分配标准 ID）
+  └─ 否 → [2]
+  ↓
+[2] 是否仅要求新增明确不在 MVP 承诺内的功能？
+  ├─ 是 → screened_out_scope（不分配标准 ID）
+  └─ 否 → [3]
+  ↓
+[3] 是否针对当前已存在的行为？
+  ├─ 否 → screened_out_scope（功能不存在，无需检查）
+  └─ 是 → [4]
+  ↓
+[4] 该行为是否可能影响已承诺边界、数据、权限或用户？
+  ├─ 否 → screened_out_scope（范围外行为，无实际影响）
+  └─ 是 → [5]
+  ↓
+[5] 期望行为是否有验收标准/契约支持？
+  ├─ 无依据 → 是否指出当前行为的具体损害？
+  │   ├─ 否 → screened_out_contract（仅为无依据的偏好）
+  │   └─ 是 → [6]（有损害，继续调查）
+  └─ 有依据 → [6]
+  ↓
+[6] 前提是否可能成立？证据是否可验证？
+  ├─ 前提不成立 → needs-evidence（需补充前提）
+  ├─ 证据不可验证 → needs-evidence（需补充证据）
+  └─ 可验证 → 进入复现阶段
+```
+
+**具体规则**：
+
+- **纯偏好或仅措辞建议** (kind: preference)：标记为 screened_out_preference，写入 screening-log.md；不分配标准 finding ID、不进入 findings-index.md，也不进入修复队列或反例覆盖率分母。所有 preference 建议汇总后在达到收敛或轮次上限时交给用户决策。
+
+- **仅要求新增明确不在 MVP 承诺内的功能**：记为 screened_out_scope，写明依据；不分配标准 ID、不进入 findings-index.md 或覆盖率分母，也无需运行反例。
+  - **示例（筛除）**："应该支持 OAuth2 登录"（MVP 只承诺密码登录）
+  - **反例（不筛除）**："当前的密码登录没有长度限制，可以设置单字符密码"（当前行为存在，影响安全）
+
+- **针对当前已存在的行为但无实际影响**：若该行为仅在 MVP 承诺范围外的场景触发，且不影响已承诺边界、数据、权限或用户，记为 screened_out_scope。
+  - **示例（筛除）**："管理员看不到已删除用户的历史操作"（MVP 不承诺软删除功能）
+  - **反例（不筛除）**："管理员删除用户后，该用户仍能登录"（影响已承诺的删除功能）
+
+- **无契约依据但有具体损害**：不能仅因契约未明说就筛除。若 finding 指出当前行为的具体损害（数据、权限、可用性、安全），继续调查并标记为 needs-evidence，列出需要的契约依据或产品决策。
+  - **示例（不筛除）**："API 无速率限制，单个用户可耗尽服务器资源"（即使契约未提及速率限制，损害明确）
+  - **反例（筛除）**："应该使用 GraphQL 而非 REST"（无具体损害，纯偏好）
+
+- **前提或证据不充分**：decision 为 needs-evidence，列出需要的证据。可派补强代理修正小缺陷。根本无法运行但仍有合理方向的，保留 needs-evidence；补强代理不能修正本身不证明问题不存在。
+
+**不得仅因某条功能不在 MVP 承诺内，就拒绝检查该功能当前已存在的行为。** 若该行为可能影响已承诺边界、数据、权限或用户，可验证时继续筛查和重放；只有确认问题真实且仅在 MVP 范围外场景触发后，才可标 deferred（而非 screened_out）。
 
 ### 2. 复现与主代理裁决
 
@@ -248,11 +294,17 @@ kind: defect
 
 decision 只取 accepted、needs-evidence、rejected 或 deferred。修复验证另记 verification 状态；inconclusive 是一次验证的结果，不是 finding decision。
 
-**临时测试文件的移动**（decision 为 accepted 时）：
-- 将 `tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext}` 移动到 `tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}`
+**临时测试文件的移动**（主代理在裁决阶段执行）：
+- **时机**：在所有候选的 decision 确定后，进入 repair 阶段前，主代理批量处理临时测试文件
+- **decision 为 accepted**：
+  - 将 `tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext}` 移动到 `tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}`
   - 示例：`tests/review/candidates/r1_sec_001.test.js` → `tests/review/reproductions/r1_f001_auth_bypass.test.js`
-- 若 decision 为 rejected、needs-evidence 或 deferred，删除 `tests/review/candidates/` 中的临时测试文件
-- 移动后的文件供 implementation 和 verification 阶段使用，不删除
+  - 使用 finding 的标准 ID 和简短 slug 命名
+  - 移动后的文件供 implementation 和 verification 阶段使用，不删除
+- **decision 为 rejected、needs-evidence 或 deferred**：
+  - 删除 `tests/review/candidates/` 中的临时测试文件
+  - 保留 `.review-evidence/round-[N]/[标准 ID]/` 中的证据记录
+- **更新 run-state.md**：临时测试文件移动完成后，设置 `current_phase: repair`, `next_action: "修复第一个 accepted finding"`
 
 ### 3. 裁决记录字段
 
@@ -273,10 +325,18 @@ replay_command_or_steps:
 replay_result_and_evidence_path:
 challenge_result: not-triggered | supports | disputes | inconclusive
 decision: accepted | needs-evidence | rejected | deferred
+needs_evidence_clarity: clear_claim_lacking_env | unclear_claim | n/a
 reasoning:
 next_action:
 verification: not-applicable | pending | pass | fail | inconclusive
+merge_conflict: false | true
+user_changes_files: []
 ~~~
+
+**needs_evidence_clarity 字段说明**：
+- `clear_claim_lacking_env`：claim、前提、触发路径和潜在影响已明确记录，仅缺少运行环境或外部依赖。P2 类 finding 使用此值时，可作为残余风险披露而不阻止收敛。
+- `unclear_claim`：claim、范围或契约解释本身不明确。使用此值的 P2 finding 阻止收敛，必须补充证据或明确定义。
+- `n/a`：decision 不是 needs-evidence 时使用。
 
 ### 4. 挑战代理
 
@@ -406,11 +466,11 @@ counterexample_coverage = 已由主代理或独立执行者重放并留证的 re
   - 若不满足提前结束条件且未达第 5 轮上限，进入下一轮常规评审
   - 若达到第 5 轮上限，或在第 3-5 轮后没有新的范围内 P0/P1 且所有 accepted finding 已 verified，进入最终审计
   - 未解决的验证阻塞（inconclusive）阻止进入最终审计，应报告 INCOMPLETE
-- 范围内 P0/P1 的 accepted 未修复或 needs-evidence 都是未解决项，阻止收敛。**常规评审轮中的 P2 needs-evidence 按以下规则处理**：
-  - 若该 P2 的前提、触发路径和潜在影响已明确记录，仅缺少运行环境或外部依赖，可作为残余风险披露而不阻止收敛
-    - 示例（不阻止收敛）：P2 "在 Redis 集群模式下，缓存可能读到过期数据" - 前提、路径、影响明确，但当前环境只有单机 Redis，无法复现
-  - 若 claim、范围或契约解释本身不明确，阻止收敛
-    - 示例（阻止收敛）：P2 "某些情况下性能可能不好" - claim 不明确（哪些情况？期望值？实际值？）
+- 范围内 P0/P1 的 accepted 未修复或 needs-evidence 都是未解决项，阻止收敛。**常规评审轮中的 P2 needs-evidence 按 adjudication.md 中的 needs_evidence_clarity 字段处理**：
+  - `clear_claim_lacking_env`：前提、触发路径和潜在影响已明确记录，仅缺少运行环境或外部依赖，可作为残余风险披露而不阻止收敛
+    - 示例（不阻止收敛）：P2 "在 Redis 集群模式下，缓存可能读到过期数据" - 前提、路径、影响明确，但当前环境只有单机 Redis，无法复现；needs_evidence_clarity: clear_claim_lacking_env
+  - `unclear_claim`：claim、范围或契约解释本身不明确，阻止收敛
+    - 示例（阻止收敛）：P2 "某些情况下性能可能不好" - claim 不明确（哪些情况？期望值？实际值？）；needs_evidence_clarity: unclear_claim
 - 范围外且已证实的 deferred 风险应披露，但本身不阻止收敛。达到轮次上限仍有未解决的范围内 P0/P1、accepted finding 验证阻塞或覆盖率不足时，标记 INCOMPLETE。不要为了达到轮数而继续提交低优先级改动。
 
 ### 回归 finding

@@ -78,11 +78,16 @@ tests/                                      # 项目测试目录
   - 不包含项目依赖、编译环境、构建产物
   - 若项目测试本身已支持临时数据（如 SQLite `:memory:`、Jest 隔离），不需要此目录
   - **清理规则**：
-    - 每轮评审完成后，可清理该轮的 `_testdata/` 目录
-    - 清理前确认所有证据文件已保存在 inbox/ 或标准 ID 目录
-    - 若需要复现验证失败的 finding，保留对应的 _testdata/ 子目录
-    - 最终审计通过且收敛后，可清理所有 _testdata/
-    - _testdata/ 应列入 .gitignore，不提交到版本控制
+    - **保留条件**：_testdata/ 必须保留直到该轮所有 accepted findings 验证完成
+    - **清理时机**：
+      - 每轮评审和修复验证完全完成后，可清理该轮的 `_testdata/` 目录
+      - 若该轮有 verification: fail 或 inconclusive 的 findings，保留对应的 _testdata/ 子目录
+      - 进入下一轮常规评审时，可清理上一轮已验证的 _testdata/
+    - **清理前检查**：
+      - 确认所有证据文件（counterexample.md、output.log、*-result.md）已保存在 inbox/ 或标准 ID 目录
+      - 确认不需要复现失败或 inconclusive 的 finding
+    - **最终清理**：最终审计通过且收敛后，可清理所有 _testdata/
+    - **版本控制**：_testdata/ 应列入 .gitignore，不提交到版本控制
 
 **tests/review/ 临时测试目录**（评审流程专用，结束后删除）：
 - **candidates/**：评审代理写入，测试框架配置中忽略此目录，不会在日常测试中运行
@@ -185,7 +190,9 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 - overall_status: in_progress | waiting_on_evidence | incomplete | converged
 - current_phase: baseline | review | adjudication | replay_review | repair | verification | round_decision | final_audit | report
 - current_round: 1 (常规评审轮次，1-5)
-- final_audit_attempt: 0 (最终审计尝试次数，最多 3)
+- rounds_consumed: 1/5 (已完成的常规评审轮次 / 上限)
+- can_trigger_new_round: true (是否还能触发新的常规评审轮，取决于 rounds_consumed < 5)
+- final_audit_attempt: 0/3 (已完成的最终审计尝试 / 上限)
 - baseline_head: [初始 HEAD 或 unavailable]
 - current_head: [当前 HEAD 或 unavailable]
 - last_completed_event: [短摘要，包括完成的阶段和轮次]
@@ -196,11 +203,17 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 
 ## Workflow Reminder
 - Phase: review → 必须使用独立评审子代理（至少 3 个角色）
-- Phase: adjudication → 复现审查必须委派给子代理，挑战必须委派给挑战代理
+- Phase: adjudication → 复现审查必须委派给子代理，挑战必须委派给挑战代理；**主代理负责移动 accepted findings 的临时测试文件**
 - Phase: repair → 必须委派给实现子代理
 - Phase: verification → 必须委派给验证子代理（不能是实现代理）
-- Phase: round_decision → 检查是否满足进入最终审计的条件，否则进入下一轮（若 current_round < 5）
+- Phase: round_decision → 检查是否满足进入最终审计的条件，否则进入下一轮（若 can_trigger_new_round = true）
 - Phase: final_audit → 必须委派给最终审计子代理
+
+## Rounds Budget
+- 常规评审轮：最多 5 轮（rounds_consumed 计数）
+- 最终审计尝试：最多 3 次（final_audit_attempt 计数）
+- 当 rounds_consumed = 5 时，can_trigger_new_round = false，无法再启动新的常规评审轮
+- 当 final_audit_attempt = 3 且仍发现问题时，报告 INCOMPLETE
 
 ## Counts
 - raw_candidates: [数量]
@@ -209,6 +222,7 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 - independently_replayed: [自动化数量 / 手工数量]
 - decisions: [accepted / needs-evidence / rejected / deferred 数量]
 - verification: [pending / pass / fail / inconclusive 数量]
+- verification_blocked_by_user_changes: [数量] (因工作区冲突无法提交的 findings)
 - counterexample_coverage: [百分比及分子/分母]
 
 ## Round History
