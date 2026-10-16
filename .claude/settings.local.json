@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(rm references/agent-prompts.md.backup)",
+      "Bash(git commit -m 'feat: centralize all sub-agent prompts to agent-prompts.md *)"
+    ]
+  }
+}

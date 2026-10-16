@@ -1,14 +1,66 @@
 # 子代理提示模板与输出格式
 
-本文件提供各类子代理的完整提示模板和标准输出格式。
+本文件是所有子代理提示模板和输出格式的唯一来源。委派子代理时，从此文件获取完整的提示模板。
+
+## 目录
+
+1. [评审代理（Review Agent）](#1-评审代理review-agent)
+2. [独立复现审查代理（Replay Reviewer Agent）](#2-独立复现审查代理replay-reviewer-agent)
+3. [挑战代理（Challenge Agent）](#3-挑战代理challenge-agent)
+4. [补强代理（Reinforce Agent）](#4-补强代理reinforce-agent)
+5. [实现代理（Implementation Agent）](#5-实现代理implementation-agent)
+6. [验证代理（Verification Agent）](#6-验证代理verification-agent)
+7. [最终审计代理（Final Audit Agent）](#7-最终审计代理final-audit-agent)
+
+---
 
 ## 1. 评审代理（Review Agent）
 
 ### 提示模板
 
-见 `review-protocol.md` 中的"评审代理提示模板"章节（L63-172）。
+为每个代理替换 round、role-slug、范围和验收标准。第 4、5 轮还需提供待检查的修复提交/变更路径，但不提供历史 finding 或预期结论。
 
-### 输出格式（YAML）
+````text
+你是 [role-slug] 评审员。只读检查 [MVP 范围]，依据 [验收标准/契约] 和当前 HEAD。
+本轮变更范围：[常规评审填 none；回归评审列出待检查的提交/文件路径，不提供历史 finding 或预期结论]
+不要修改项目源代码、测试、配置，不要安装依赖或提交。只用临时 fixture/数据库执行验证；若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告阻塞。
+
+## 文件组织与运行约定
+
+**临时测试文件**（写入项目测试目录，供后续阶段复用）：
+- 存放位置：`tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext}`
+  - 示例：`tests/review/candidates/r1_sec_001.test.js`
+  - 使用项目测试格式，可以复用项目的测试环境、fixtures、辅助函数
+- **测试框架忽略此目录**：在项目测试配置中配置忽略 `tests/review/candidates/`，不会在日常测试中运行
+- 完整命令输出保存在：`.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/output.log`
+
+**证据文档**（仍在 .review-evidence/ 中）：
+- counterexample.md：`.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/counterexample.md`
+- output.log：完整命令输出，不要粘贴到回复或 counterexample.md 中
+
+**运行 reproduction**：
+- 从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
+- 测试文件就是普通项目测试，调用项目代码和测试工具
+- 示例：
+  ```bash
+  # 显式运行单个临时测试
+  ADVERSARIAL_REVIEW=true npm test tests/review/candidates/r1_sec_001.test.js
+  
+  # 或使用项目的测试命令
+  pnpm vitest run tests/review/candidates/r1_sec_001.test.js
+  ```
+- 不要为每个 finding 创建独立的依赖/编译环境
+
+**隔离数据文件**（仅在需要避免冲突时）：
+- 测试数据库、fixture、临时输出可放在：`.review-evidence/round-[N]/_testdata/[role-slug]/`
+- 通过环境变量传递路径：`TEST_DB_PATH=.review-evidence/round-1/_testdata/security/test.db`
+- 若项目测试本身已支持临时数据库（如 SQLite `:memory:`、Jest 自动隔离），直接使用
+- 默认串行运行，避免端口/进程冲突；需要并发时在阻塞项中说明原因
+
+不要查看其他角色的 findings，也不要把个人偏好作为缺陷。
+
+每条 finding 的 counterexample.md 按上方字段 schema 填写；完整 reproduction 测试写入 `tests/review/candidates/`，经确认无法自动化时的 manual-steps.md 放在 `.review-evidence/` inbox 目录。按以下固定 YAML 结构交接，保留所有字段；无内容使用 [] 或 none，不省略字段。没有发现时 findings 写 []；未覆盖的路径及原因写入 uncovered_paths；无法完成检查的部分写入 blockers。
+不要在回复中粘贴 reproduction 源码或完整命令输出。回复中的命令仅给命令、退出状态和必要的短输出摘要，详细记录放在证据文件。
 
 ~~~yaml
 review_status: "complete | partial | blocked"
@@ -34,11 +86,80 @@ blockers: []
 uncovered_paths: []
 ~~~
 
+`reproduction_status` 只描述该候选的复现结果：`observed` 表示观察到 claim；`not_observed` 表示复现完整运行但未观察到 claim；`blocked` 表示无法判断；`not_run` 表示未尝试。`reproduction_exit_status` 只记录进程退出码；是否观察到 claim 以 `reproduction_status` 和证据为准。没有运行通用检查命令时，`commands` 写 `[]`。
+
+示例（假设项目有项目详情 API；仅示范交接格式，实际路径、命令和结果必须来自当前项目）：
+
+~~~yaml
+review_status: complete
+round: 1
+role_slug: security
+scope_checked: "GET /api/projects/{projectId} 的访问授权"
+commands: []
+findings:
+  - finding_id: SEC-001
+    severity: P1
+    claim: "已登录用户可读取其无权访问的项目详情"
+    kind: defect
+    confidence: high
+    evidence_dir: ".review-evidence/round-1/inbox/security/SEC-001/"
+    counterexample_file: ".review-evidence/round-1/inbox/security/SEC-001/counterexample.md"
+    reproduction_file: "tests/review/candidates/r1_sec_001.test.js"
+    reproduction_command: "ADVERSARIAL_REVIEW=true npm test tests/review/candidates/r1_sec_001.test.js"
+    reproduction_exit_status: 1
+    reproduction_status: observed
+blockers: []
+uncovered_paths: []
+~~~
+
+对应的 `counterexample.md` 示例：
+
+~~~text
+finding_id: SEC-001
+severity: P1
+claim: 已登录用户可读取其无权访问的项目详情
+location: src/routes/projects.ts:getProject
+preconditions: Alice 已登录；project-42 存在；Alice 不是该项目成员
+counterexample: 以 Alice 的会话请求 GET /api/projects/project-42
+expected_vs_actual: 预期 HTTP 403；实际 HTTP 200 并返回项目详情
+reproduction_path: tests/review/candidates/r1_sec_001.test.js
+impact: 登录用户可读取其他项目的名称和配置，造成跨项目信息泄露
+confidence: high
+kind: defect
+~~~
+
+若没有发现，仍返回相同结构，设置 `review_status: complete`、`findings: []`；只有部分范围未检查时使用 `partial`，完全无法开展检查时使用 `blocked`。每个命令和 finding 的证据路径必须可定位到实际记录。
+````
+
+### 输出格式说明
+
+代理返回属于交接摘要，不是第二份证据副本。主代理只在裁决当前 finding 时读取其完整证据。
+
+---
+
 ## 2. 独立复现审查代理（Replay Reviewer Agent）
 
 ### 提示模板
 
-见 `review-protocol.md` 中的"独立复现审查员"章节（L198-223）。
+主代理完成去重、范围/契约初筛并分配标准 ID 后，对可复现候选指派一名未提交该候选的独立复现审查员。
+
+~~~text
+你是独立复现审查员。只检查 [标准 finding ID] 的 counterexample.md 与指定复现文件、当前 HEAD，以及主代理提供的相关基线/契约。不要读取其他 finding、原评审结论、adjudication.md、challenge-result.md 或 verification-result.md。
+复现材料：[该 finding 目录内 reproduce.* 或 manual-steps.md 的准确路径]
+只读项目文件和测试；不要修改源代码、测试、配置或提交。
+
+## 运行约定
+- 从项目根目录运行，使用项目自身的测试框架和依赖
+- 若需要隔离测试数据库/fixture，放在：.review-evidence/round-[N]/_testdata/replay-[finding-id]/
+- 通过环境变量传递数据路径，或使用项目测试框架的临时数据机制
+- 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
+
+## 输出约定
+- 完整复现报告写入：.review-evidence/round-[N]/[标准 ID]/replay-review.md
+- 必要的完整命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log
+- 只返回 reproduced、not-reproduced 或 blocked，附证据路径、命令/退出状态摘要和阻塞项
+- 不要判断 scope、severity 或最终 decision，不要在回复中粘贴完整日志
+~~~
 
 ### 输出格式（简短摘要）
 
@@ -50,470 +171,811 @@ output_log_path: ".review-evidence/round-[N]/[标准 ID]/output.log"
 commands_summary:
   - command: "<command>"
     exit_status: "<exit code>"
-    outcome: "<short summary>"
-blockers: []
-notes: "<brief observation>"
+blockers: []  # 仅在 blocked 时填写
+notes: "<简短说明，例如与原始证据的一致性>"
 ~~~
 
-### replay-review.md 格式（完整报告）
+### 结果解释
+
+- `reproduced`：有效前提下观察到 claim 所述行为；是否违反承诺范围由主代理另行裁决。
+- `not-reproduced`：前提和断言有效、复现完整运行，但观察结果明确不符合 claim；记录具体反证。仅仅没有得到输出或结果模糊不算。
+- `blocked`：环境、依赖、前提、脚本或观察点不完整，无法判断 claim；保留 `needs-evidence`，不得据此 rejected。
+
+### 完整复现报告（replay-review.md）
 
 ~~~markdown
-# Replay Review: [标准 ID]
+# Replay Review: [标准 finding ID]
 
 ## Finding Summary
-- Claim: [claim from counterexample.md]
-- Severity: [P0/P1/P2/P3]
-- Original reviewer: [role-slug]
+- **Claim**: [claim 原文]
+- **Reproduction Path**: [文件路径]
+- **Review Date**: [ISO 8601]
 
-## Replay Execution
-- Reproduction file: [tests/review/reproductions/... 或 manual-steps.md]
-- Command: `<exact command>`
-- Exit status: [exit code]
-- Environment: [relevant env vars, data paths]
+## Reproduction Attempt
+### Commands Run
+```bash
+[实际运行的命令，包含环境变量]
+```
 
-## Observations
-[描述运行过程中观察到的行为]
+### Exit Status
+[退出码和状态]
 
-## Replay Status
-- Status: reproduced | not-reproduced | blocked
-- Evidence: [关键输出片段或现象描述]
-- Reasoning: [为什么得出这个结论]
+### Observed Behavior
+[详细描述观察到的行为]
+
+## Comparison with Claim
+[观察结果是否与 claim 一致，如有差异详细说明]
+
+## Verdict
+**Status**: reproduced | not-reproduced | blocked
+
+**Reasoning**: [简要说明判断依据]
 
 ## Blockers (if any)
-[无法完成复现的原因]
-
-## Output Logs
-完整命令输出见：`.review-evidence/round-[N]/[标准 ID]/output.log`
+[阻塞项列表]
 ~~~
+
+---
 
 ## 3. 挑战代理（Challenge Agent）
 
 ### 提示模板
 
-见 `review-protocol.md` 中的"挑战代理"章节（L292-316）。
+~~~text
+你是挑战代理。检查 [标准 finding ID]，质疑其前提、严重性、范围或证据，找出可使其不成立或降级的理由。
+提供材料：[counterexample.md 路径、reproduction 路径、adjudication.md 路径]
+只读项目文件和测试；不要修改源代码、测试、配置或提交。
+
+## 任务
+1. 独立重放 reproduction（如果可运行）
+2. 检查前提是否必然成立
+3. 检查 claim 是否被夸大或误解
+4. 检查 severity 是否与实际影响相符
+5. 检查是否有替代解释或缓解因素
+
+## 运行约定
+- 从项目根目录运行，使用项目自身的测试框架和依赖
+- 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/challenge-[finding-id]/
+- 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
+
+## 输出约定
+- 完整挑战报告写入：.review-evidence/round-[N]/[标准 ID]/challenge-result.md
+- 必要的命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log（如果有新的运行）
+- 返回 YAML 摘要：challenge_status、reproduction_replay_status、challenges、suggested_decision
+- 不要在回复中粘贴完整日志或 reproduction 源码
+~~~
 
 ### 输出格式（简短摘要）
 
 ~~~yaml
 finding_id: "<标准 ID>"
-challenge_result: "supports | disputes | inconclusive"
+challenge_status: "complete | blocked"
+reproduction_replay_status: "reproduced | not-reproduced | blocked | not_run"
+challenges:
+  - aspect: "precondition | claim | severity | scope | evidence"
+    argument: "<挑战论据>"
+    confidence: "high | medium | low"
+suggested_decision: "rejected | downgrade-to-[P2/P3] | needs-evidence | accept-as-is"
 challenge_evidence_path: ".review-evidence/round-[N]/[标准 ID]/challenge-result.md"
-output_log_path: ".review-evidence/round-[N]/[标准 ID]/output.log"
-commands_summary:
-  - command: "<command>"
-    exit_status: "<exit code>"
-    outcome: "<short summary>"
-key_findings: "<brief summary of what was found>"
 blockers: []
 ~~~
 
-### challenge-result.md 格式（完整报告）
+### 完整挑战报告（challenge-result.md）
 
 ~~~markdown
-# Challenge Result: [标准 ID]
+# Challenge Report: [标准 finding ID]
 
-## Original Finding
-- Claim: [claim from counterexample.md]
-- Severity: [P0/P1/P2/P3]
-- Original confidence: [high/medium/low]
+## Finding Summary
+- **Claim**: [claim 原文]
+- **Original Severity**: [P0/P1/P2/P3]
+- **Challenge Date**: [ISO 8601]
 
-## Independent Replay
-- Reproduction file: [path]
-- Command: `<exact command>`
-- Exit status: [exit code]
-- Replay outcome: [能否重现原始 claim]
+## Reproduction Replay
+### Commands Run
+```bash
+[实际运行的命令]
+```
 
-## Challenge Attempts
-[描述为了反驳 claim 而进行的尝试]
+### Observed Behavior
+[观察到的行为]
 
-### Attempt 1: [描述]
-- Command: `<command>`
-- Exit status: [exit code]
-- Observation: [结果]
+### Replay Status
+**Status**: reproduced | not-reproduced | blocked | not_run
 
-### Attempt 2: [描述]
-...
+**Notes**: [与原始证据的一致性]
 
-## Contract/Specification Review
-[检查规范、文档、承诺的内容，是否支持或反驳 claim]
+## Challenges
 
-## Challenge Result
-- Result: supports | disputes | inconclusive
-- Reasoning: [详细解释]
-- Evidence: [支持结论的关键证据]
+### Challenge 1: [aspect]
+**Argument**: [具体论据]
 
-## Recommendations (if disputes)
-- Suggested decision: rejected | needs-evidence | accepted-with-revision
-- Severity adjustment: [如果需要降级]
-- Claim revision: [如果需要修订 claim]
+**Evidence**: [支持论据的证据]
 
-## Blockers (if inconclusive)
-[无法完成挑战的原因]
+**Confidence**: high | medium | low
 
-## Output Logs
-完整命令输出见：`.review-evidence/round-[N]/[标准 ID]/output.log`
+---
+
+### Challenge 2: [aspect]
+[重复上述结构]
+
+## Suggested Decision
+**Recommendation**: rejected | downgrade-to-[P2/P3] | needs-evidence | accept-as-is
+
+**Reasoning**: [综合判断依据]
+
+## Blockers (if any)
+[阻塞项列表]
 ~~~
+
+---
 
 ## 4. 补强代理（Reinforce Agent）
 
 ### 提示模板
 
 ~~~text
-你是补强代理。修复 [标准 ID] 的 reproduction 或 counterexample.md 中的小缺陷。
-原始证据目录：.review-evidence/round-[N]/[标准 ID]/
-主代理反馈：[具体的缺陷描述]
+你是补强代理。为 [标准 finding ID] 提供支持论据，强化其严重性、范围或影响评估。
+提供材料：[counterexample.md 路径、reproduction 路径、adjudication.md 路径、challenge-result.md 路径（如果有）]
+只读项目文件和测试；不要修改源代码、测试、配置或提交。
 
-只修改标准 ID 目录内的 reproduction 或 counterexample.md，不改项目源代码、测试或配置。
+## 任务
+1. 独立重放 reproduction（如果可运行）
+2. 寻找类似或相关的缺陷模式
+3. 评估在不同条件下的影响范围
+4. 提供支持 severity 判断的额外证据
+5. 回应挑战代理的论据（如果有）
 
-## 允许的修改
-- 修正小的语法错误、导入路径、断言逻辑
-- 补充缺失的前提条件说明
-- 调整环境变量或数据路径
-- 修正 counterexample.md 中的不一致描述
-
-## 禁止的修改
-- 改变 claim 的本质含义
-- 放宽或删除关键断言
-- 添加项目源代码中不存在的假设
-- 修改项目源代码
+## 运行约定
+- 从项目根目录运行，使用项目自身的测试框架和依赖
+- 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/reinforce-[finding-id]/
+- 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
 ## 输出约定
 - 完整补强报告写入：.review-evidence/round-[N]/[标准 ID]/reinforce-result.md
-- 返回 fixed 或 cannot-fix、修改摘要、证据路径和未解决问题
-- 不要在回复中粘贴完整代码
+- 必要的命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log（如果有新的运行）
+- 返回 YAML 摘要：reinforce_status、reproduction_replay_status、reinforcements、suggested_decision
+- 不要在回复中粘贴完整日志或 reproduction 源码
 ~~~
 
 ### 输出格式（简短摘要）
 
 ~~~yaml
 finding_id: "<标准 ID>"
-reinforce_result: "fixed | cannot-fix"
+reinforce_status: "complete | blocked"
+reproduction_replay_status: "reproduced | not-reproduced | blocked | not_run"
+reinforcements:
+  - aspect: "impact | scope | related-issues | severity-justification"
+    argument: "<补强论据>"
+    confidence: "high | medium | low"
+suggested_decision: "accept-as-[P0/P1/P2] | upgrade-to-[P0/P1] | needs-evidence"
 reinforce_evidence_path: ".review-evidence/round-[N]/[标准 ID]/reinforce-result.md"
-modifications: "<brief summary of what was changed>"
-remaining_issues: []
 blockers: []
 ~~~
 
-### reinforce-result.md 格式（完整报告）
+### 完整补强报告（reinforce-result.md）
 
 ~~~markdown
-# Reinforce Result: [标准 ID]
+# Reinforce Report: [标准 finding ID]
 
-## Original Issue
-[主代理指出的缺陷]
+## Finding Summary
+- **Claim**: [claim 原文]
+- **Original Severity**: [P0/P1/P2/P3]
+- **Reinforce Date**: [ISO 8601]
 
-## Modifications Made
-[详细列出修改内容]
+## Reproduction Replay
+### Commands Run
+```bash
+[实际运行的命令]
+```
 
-### File: [文件路径]
-- Line [N]: [原内容] → [新内容]
-- Reason: [修改理由]
+### Observed Behavior
+[观察到的行为]
 
-## Verification
-- Command: `<command to verify fix>`
-- Exit status: [exit code]
-- Outcome: [修复后能否正常运行]
+### Replay Status
+**Status**: reproduced | not-reproduced | blocked | not_run
 
-## Reinforce Result
-- Result: fixed | cannot-fix
-- Reasoning: [详细解释]
+**Notes**: [与原始证据的一致性]
 
-## Remaining Issues (if cannot-fix)
-[无法解决的问题]
+## Reinforcements
 
-## Output Logs
-完整命令输出见：`.review-evidence/round-[N]/[标准 ID]/output.log`
+### Reinforcement 1: [aspect]
+**Argument**: [具体论据]
+
+**Evidence**: [支持论据的证据]
+
+**Confidence**: high | medium | low
+
+---
+
+### Reinforcement 2: [aspect]
+[重复上述结构]
+
+## Response to Challenges (if any)
+[逐条回应挑战代理的论据，提供反驳或澄清]
+
+## Suggested Decision
+**Recommendation**: accept-as-[P0/P1/P2] | upgrade-to-[P0/P1] | needs-evidence
+
+**Reasoning**: [综合判断依据]
+
+## Blockers (if any)
+[阻塞项列表]
 ~~~
+
+---
 
 ## 5. 实现代理（Implementation Agent）
 
 ### 提示模板
 
-~~~text
-你是唯一的实现代理，只处理 finding [标准 ID，如 R1-F001-SEC]。
-现状与证据：[主代理裁决摘要]
-必须重现的反例：[完整前提、步骤和期望/实际]
-原始反例文件：tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}
-验收断言：[可测试的行为]
-允许改动：[文件/模块]
-必须运行：[聚焦测试、回归、静态或安全检查]
-禁止：[用户已有改动、无关重构、真实外部写入]
+见 `tdd-and-commit.md` 中的"实现任务模板"章节（L8-29），以及"TDD 工作流"章节（L31-71）。
 
-## 运行约定
-- 从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
-- 项目测试套件使用项目本身的测试配置和数据机制
-- 若需要验证修复前后状态对比的临时数据，可放在：.review-evidence/round-[N]/_testdata/impl-[finding-id]/
+实现代理的任务是按照 TDD 流程（RED-GREEN-REFACTOR）修复已 accepted 的 finding。
 
-## TDD 流程
+### 关键要求
 
-### RED 阶段
-1. 检查工作区状态：`git status --short`
-2. 读取临时测试文件：tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}
-3. 确定项目中合适的正式测试文件（如 tests/auth.test.js）
-4. **复制**测试用例到正式测试文件（不是移动，临时文件保留）：
-   - 调整导入路径、fixture 路径、断言库以符合项目风格
-   - 在测试用例中添加注释标注 finding ID（如 `// R1-F001-SEC`）
-   - 合并到现有 describe/suite 块，或创建新的测试分组
-5. 运行合并后的测试，保存按预期失败的输出（RED 证据）
-6. 临时文件保留不删除（供 verification 阶段使用）
+1. **RED 阶段**：
+   - 将 `tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}` 复制到项目测试目录
+   - 运行测试，确认失败（RED）
+   - 如果测试通过，说明 finding 已被其他修复解决，报告 already_fixed
 
-### GREEN 阶段
-1. 实现最小修复（只修改项目源代码，不修改测试文件）
-2. 运行测试确认修复：新合并的测试应该通过
-3. 运行回归测试：所有原有项目测试也应该通过
+2. **GREEN 阶段**：
+   - 实现最小修复，使测试通过
+   - 运行完整测试套件，确保无回归
+   - 不要过度工程或添加 finding 范围外的功能
 
-### 回归检查
-运行项目完整测试套件、类型检查、lint、构建和适用的安全扫描。
+3. **REFACTOR 阶段**（可选）：
+   - 仅在必要时进行代码清理
+   - 保持测试通过
+   - 不要引入新的抽象或模式，除非修复本身需要
 
-### 工作区隔离与提交
-1. 提交前检查：`git status --short`，只暂存当前 finding 相关文件
-2. 提交内容：源代码修复 + 项目正式测试文件的修改
-3. **tests/review/ 临时目录不提交**
-4. 提交信息格式：`fix(review): [ID] concise behavior being corrected`
-
-## 输出约定
-- 完整实现报告写入：.review-evidence/round-[N]/[标准 ID]/implementation-result.md
-- 必要的完整命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log
-- 返回修复摘要、命令与退出状态摘要、证据路径、提交哈希和未解决问题
-- 不要在回复中粘贴完整日志
-~~~
+4. **提交**：
+   - 每个 finding 一个独立提交
+   - 提交消息格式：`fix(category): [claim summary]`
+   - 提交体包含：finding ID、影响、修复说明、测试路径
 
 ### 输出格式（简短摘要）
 
 ~~~yaml
 finding_id: "<标准 ID>"
-implementation_status: "committed | blocked"
-commit_hash: "<full git hash or unavailable>"
-implementation_evidence_path: ".review-evidence/round-[N]/[标准 ID]/implementation-result.md"
-output_log_path: ".review-evidence/round-[N]/[标准 ID]/output.log"
-test_file_merged_to: "<项目正式测试文件路径>"
-commands_summary:
-  - phase: "RED | GREEN | REGRESSION"
-    command: "<command>"
-    exit_status: "<exit code>"
-    outcome: "<short summary>"
+implementation_status: "fixed | already_fixed | blocked | cannot_fix"
+test_status:
+  red: "confirmed | not_confirmed"
+  green: "pass | fail"
+  full_suite: "pass | fail | not_run"
+commit_sha: "<commit hash | none>"
+commit_message: "<first line>"
+modified_files: []
+test_files: []
 blockers: []
-unresolved_issues: []
 ~~~
 
-### implementation-result.md 格式（完整报告）
+### 完整实现报告（implementation-result.md）
 
 ~~~markdown
-# Implementation Result: [标准 ID]
+# Implementation Result: [标准 finding ID]
 
 ## Finding Summary
-- Claim: [claim]
-- Severity: [P0/P1/P2/P3]
-- Acceptance criteria: [验收断言]
+- **Claim**: [claim 原文]
+- **Severity**: [P0/P1/P2/P3]
+- **Implementation Date**: [ISO 8601]
 
 ## RED Phase
-- Temporary test file: tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}
-- Merged to: [项目正式测试文件，如 tests/auth.test.js]
-- Test command: `<command>`
-- Exit status: [exit code] (expected failure)
-- RED evidence: [关键失败输出片段]
+### Test File
+**Path**: [测试文件路径]
+
+### RED Confirmation
+```bash
+[运行测试的命令]
+```
+
+**Exit Status**: [退出码]
+
+**Result**: confirmed | not_confirmed
+
+**Notes**: [如果 not_confirmed，说明原因，可能是 already_fixed]
 
 ## GREEN Phase
-- Modified files: [列出修改的源代码文件]
-- Implementation approach: [简述实现策略]
-- Test command: `<command>`
-- Exit status: 0 (tests pass)
+### Implementation Approach
+[简要描述修复方法]
 
-## Regression Check
-- Full test suite: `<command>` - exit status: [exit code]
-- Type check: `<command>` - exit status: [exit code]
-- Lint: `<command>` - exit status: [exit code]
-- Build: `<command>` - exit status: [exit code]
+### Modified Files
+- [文件路径 1]
+- [文件路径 2]
+
+### GREEN Confirmation
+```bash
+[运行测试的命令]
+```
+
+**Exit Status**: [退出码]
+
+**Result**: pass | fail
+
+### Full Test Suite
+```bash
+[运行完整测试套件的命令]
+```
+
+**Exit Status**: [退出码]
+
+**Result**: pass | fail | not_run
+
+## REFACTOR Phase (if any)
+[描述重构内容，如果没有则省略此节]
 
 ## Commit
-- Pre-commit check: `git diff --check` - [result]
-- Staged files: [列出暂存的文件]
-- Commit hash: [full hash]
-- Commit message: [message]
+**SHA**: [commit hash]
 
-## Implementation Status
-- Status: committed | blocked
-- Blockers: [如果有]
-- Unresolved issues: [如果有]
+**Message**:
+```
+[完整的 commit message]
+```
 
-## Output Logs
-完整命令输出见：`.review-evidence/round-[N]/[标准 ID]/output.log`
+## Blockers (if any)
+[阻塞项列表，例如：
+- 与用户代码冲突（blocked_by_user_changes）
+- 依赖项缺失
+- 测试环境问题
+]
 ~~~
+
+### 工作区冲突处理
+
+当发现修复目标文件含有用户未提交的改动时：
+
+1. 检查是否可以安全分块（见 `tdd-and-commit.md` 的"工作区冲突处理"章节）
+2. 如果不能安全分块，将 finding 标记为 `blocked_by_user_changes`
+3. 输出格式中增加字段：
+
+~~~yaml
+implementation_status: "blocked"
+blockers:
+  - type: "user_changes_conflict"
+    affected_files: []
+    can_chunk: false
+    notes: "<说明冲突的性质>"
+~~~
+
+---
 
 ## 6. 验证代理（Verification Agent）
 
 ### 提示模板
 
-见 `review-protocol.md` 中的"修复验证"章节（L332-390）。
+~~~text
+你是验证代理。检查 [标准 finding ID] 的修复是否有效、完整、无回归。你未参与该 finding 的实现，必须独立验证。
+提供材料：
+- 原始 counterexample.md 和 reproduction 路径
+- 实现代理的修复提交 SHA 和实现报告路径
+- 当前 HEAD（应该包含修复提交）
+
+## 任务
+1. **复现原始缺陷**（在修复前的 commit）：确认 finding 确实存在
+2. **验证修复**（在修复后的 commit / HEAD）：确认 finding 已解决
+3. **生成相邻测试**（Adjacent Tests）：为相邻功能、边界情况、异常路径生成至少 2 个新测试用例
+4. **运行完整测试套件**：确认无回归
+5. **检查修复完整性**：是否遗漏相关场景
+
+## 相邻测试要求
+
+**最低标准**：
+- 最少 2 个用例：正常情况 + 边界情况
+- 必须覆盖原 finding 未直接测试的相邻路径
+- 必须可运行并通过
+
+**示例**（假设原 finding 是"未登录用户可访问受保护资源"）：
+- Adjacent Test 1: 已登录但无权限的用户访问（边界情况）
+- Adjacent Test 2: 已登录且有权限的用户访问（正常情况）
+- Adjacent Test 3: Token 过期的用户访问（异常情况）
+
+**失败处理**：
+- 如果无法生成有意义的相邻测试（例如：finding 的修复已覆盖所有相关路径），说明理由，verification 仍可 pass
+- 如果生成的相邻测试失败，verification 状态为 fail，不合并测试文件
+
+## 运行约定
+- 从项目根目录运行，使用项目自身的测试框架和依赖
+- 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/verify-[finding-id]/
+- 相邻测试写入：tests/review/verifications/r{round}_f{num}_{slug}_adjacent.test.{ext}
+- 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
+
+## 输出约定
+- 完整验证报告写入：.review-evidence/round-[N]/[标准 ID]/verification-result.md
+- 必要的命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log
+- 返回 YAML 摘要：verification_status、reproduction_status（before/after）、adjacent_tests、verdict
+- 不要在回复中粘贴完整日志或测试源码
+~~~
 
 ### 输出格式（简短摘要）
 
 ~~~yaml
 finding_id: "<标准 ID>"
-verification_status: "pass | fail | inconclusive"
+verification_status: "complete | blocked"
+reproduction_before_fix:
+  commit: "<修复前的 commit SHA>"
+  status: "observed | not_observed | blocked"
+  notes: "<简短说明>"
+reproduction_after_fix:
+  commit: "<修复后的 commit SHA / HEAD>"
+  status: "not_observed | still_observed | blocked"
+  notes: "<简短说明>"
+adjacent_tests:
+  generated: true | false
+  count: <数量>
+  file_path: "tests/review/verifications/r{round}_f{num}_{slug}_adjacent.test.{ext} | none"
+  status: "pass | fail | not_run"
+  notes: "<如果未生成或失败，说明理由>"
+full_test_suite:
+  status: "pass | fail | not_run"
+  exit_status: "<退出码>"
+verdict: "pass | fail | inconclusive | blocked"
 verification_evidence_path: ".review-evidence/round-[N]/[标准 ID]/verification-result.md"
-output_log_path: ".review-evidence/round-[N]/[标准 ID]/output.log"
-adjacent_tests_generated: <number>
-adjacent_tests_merged_to: "<项目正式测试文件路径>"
-commands_summary:
-  - phase: "RED_CHECK | FIX_CHECK | ADJACENT_GEN | ADJACENT_RUN | MERGE | FULL_SUITE"
-    command: "<command>"
-    exit_status: "<exit code>"
-    outcome: "<short summary>"
 blockers: []
 ~~~
 
-### verification-result.md 格式（完整报告）
+### 完整验证报告（verification-result.md）
 
 ~~~markdown
-# Verification Result: [标准 ID]
+# Verification Result: [标准 finding ID]
 
-## Finding and Fix Summary
-- Claim: [claim]
-- Commit: [hash]
-- Implementation evidence: [path to implementation-result.md]
+## Finding Summary
+- **Claim**: [claim 原文]
+- **Severity**: [P0/P1/P2/P3]
+- **Fix Commit**: [SHA]
+- **Verification Date**: [ISO 8601]
 
-## RED Evidence Check
-- RED evidence location: [path in implementation-result.md]
-- Covers original claim: yes | no
-- Notes: [any observations]
+## Step 1: Reproduce Before Fix
+### Commit
+**SHA**: [修复前的 commit]
 
-## Fix Verification
-- Temporary test file: tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}
-- Command: `<command>`
-- Exit status: 0 (tests pass)
-- Outcome: [问题已修复]
+### Commands Run
+```bash
+git checkout [SHA]
+[reproduction 命令]
+```
 
-## Adjacent Tests Generation
-- Generated tests count: [number]
-- Generated test file: tests/review/verifications/r{round}_f{num}_adjacent.test.{ext}
-- Test cases:
-  1. [描述相邻测试用例 1]
-  2. [描述相邻测试用例 2]
-  ...
+### Observed Behavior
+[观察到的行为]
 
-## Adjacent Tests Execution
-- Command: `<command>`
-- Exit status: [exit code]
-- Outcome: [all pass | some failed]
-- Failed cases (if any): [列出失败的用例及原因]
+### Status
+**Result**: observed | not_observed | blocked
 
-## Adjacent Tests Merge
-- Merged to: [项目正式测试文件路径]
-- Adjustments made: [导入路径、格式调整]
-- Finding ID annotation: [已添加]
+**Notes**: [如果 not_observed，说明原始 finding 可能无效或已被其他修复解决]
 
-## Full Test Suite
-- Command: `<command>`
-- Exit status: [exit code]
-- Outcome: [all pass | some failed]
-- Regression detected: no | yes [如果有，列出失败的测试]
+## Step 2: Verify After Fix
+### Commit
+**SHA**: [修复后的 commit / HEAD]
 
-## Verification Status
-- Status: pass | fail | inconclusive
-- Reasoning: [详细解释]
-- Verified by: [agent-id or main-agent]
+### Commands Run
+```bash
+git checkout [SHA]
+[reproduction 命令]
+```
 
-## Blockers (if inconclusive)
-[无法完成验证的原因]
+### Observed Behavior
+[观察到的行为]
 
-## Output Logs
-完整命令输出见：`.review-evidence/round-[N]/[标准 ID]/output.log`
+### Status
+**Result**: not_observed | still_observed | blocked
+
+**Notes**: [如果 still_observed，说明修复无效或不完整]
+
+## Step 3: Adjacent Tests
+### Generated Tests
+**File Path**: [测试文件路径 | none]
+
+**Test Cases**:
+1. [测试用例 1 描述]
+2. [测试用例 2 描述]
+3. [测试用例 3 描述（可选）]
+
+### Execution
+```bash
+[运行相邻测试的命令]
+```
+
+**Exit Status**: [退出码]
+
+**Result**: pass | fail | not_run
+
+**Notes**: [如果未生成或失败，详细说明理由]
+
+## Step 4: Full Test Suite
+```bash
+[运行完整测试套件的命令]
+```
+
+**Exit Status**: [退出码]
+
+**Result**: pass | fail | not_run
+
+## Step 5: Completeness Check
+[检查修复是否遗漏相关场景，例如：
+- 是否只修复了一个路径，遗漏了其他类似路径？
+- 是否只处理了正常情况，遗漏了异常情况？
+- 是否引入了新的边界问题？
+]
+
+## Verdict
+**Final Verdict**: pass | fail | inconclusive | blocked
+
+**Reasoning**: [综合判断依据]
+
+## Blockers (if any)
+[阻塞项列表]
 ~~~
+
+### Verdict 判断规则
+
+- **pass**: reproduction_before_fix = observed，reproduction_after_fix = not_observed，full_test_suite = pass，adjacent_tests = pass 或有合理理由未生成
+- **fail**: reproduction_after_fix = still_observed，或 full_test_suite = fail，或 adjacent_tests = fail
+- **inconclusive**: reproduction_before_fix = not_observed（原始 finding 无法复现），需要重新评估
+- **blocked**: 任一步骤 = blocked
+
+---
 
 ## 7. 最终审计代理（Final Audit Agent）
 
+最终审计由未参与前序评审或实现的新代理完成，分两阶段：盲扫、定向复核。
+
 ### 第一阶段提示模板（盲扫）
 
-见 `review-protocol.md` 中的"最终审计与收敛"章节（L443-460）。
+主代理预先提供新的输出路径。第一阶段代理不得读取任何已有 `.review-evidence/` 内容，但可以把本阶段结果写入指定文件；完整候选证据写在 inbox，摘要只在 blind-scan.md 记录一次。
+
+~~~text
+你是独立最终审计员。检查 [MVP 范围和验收标准] 在当前 HEAD 的整体行为。
+可运行的验证命令：[测试/构建/静态检查命令]
+不要读取 .review-evidence/ 中任何已有内容、历史 finding、修复清单或以前的裁决；不要编辑项目文件或提交。
+
+## 任务
+1. 独立检查当前 HEAD 是否满足 MVP 承诺
+2. 寻找新的缺陷、遗漏的边界情况、回归问题
+3. 不要假设之前的评审已覆盖所有问题
+4. 不要重复提交已在 .review-evidence/ 中存在的 finding（你不知道它们）
+
+## 文件组织
+- 临时测试文件：tests/review/candidates/r{round}_finalaudit_{temp_id}.test.{ext}
+- 证据文档：.review-evidence/round-[N]/final-audit/attempt-[K]/inbox/[临时_id]/counterexample.md
+- 完整命令输出：.review-evidence/round-[N]/final-audit/attempt-[K]/inbox/[临时_id]/output.log
+- 盲扫摘要：.review-evidence/round-[N]/final-audit/attempt-[K]/blind-scan.md
+
+## 运行约定
+- 从项目根目录运行，使用项目自身的测试框架和依赖
+- 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/final-audit/attempt-[K]/
+- 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
+
+## 输出约定
+按与常规评审代理相同的 YAML 格式返回，但 role_slug 使用 "final-audit"：
+
+~~~yaml
+review_status: "complete | partial | blocked"
+round: "[N]"
+role_slug: "final-audit"
+scope_checked: "<scope summary>"
+commands: []
+findings:
+  - finding_id: "FA-001"  # 使用 FA- 前缀
+    severity: "P0 | P1 | P2 | P3"
+    claim: "<observable behavior>"
+    kind: "defect | spec-gap | risk | regression"
+    confidence: "high | medium | low"
+    evidence_dir: ".review-evidence/round-[N]/final-audit/attempt-[K]/inbox/FA-001/"
+    counterexample_file: ".review-evidence/round-[N]/final-audit/attempt-[K]/inbox/FA-001/counterexample.md"
+    reproduction_file: "tests/review/candidates/r{round}_finalaudit_fa001.test.{ext} | manual-steps.md | none"
+    reproduction_command: "<command | manual | not_run>"
+    reproduction_exit_status: "<exit code | manual | not_run>"
+    reproduction_status: "observed | not_observed | blocked | not_run"
+blockers: []
+uncovered_paths: []
+~~~
+
+若没有发现新问题，返回 `review_status: complete`、`findings: []`。
+~~~
 
 ### 第二阶段提示模板（定向复核）
 
-见 `review-protocol.md` 中的"最终审计与收敛"章节（L463-479）。
+扫描结果已保存后，再提供所有 accepted finding、原始证据路径、修复测试路径和提交，要求逐项复核。
 
-### 第一阶段输出格式（盲扫摘要）
+~~~text
+你是最终审计员（第二阶段）。已完成盲扫，现在定向复核已修复的 findings。
+提供材料：
+- 所有 accepted finding 的列表、原始证据路径、修复提交 SHA
+- 修复测试路径和验证结果路径
+- 当前 HEAD
+
+## 任务
+1. 逐项检查已修复的 findings，确认修复有效
+2. 检查修复是否引入新问题或回归
+3. 检查测试覆盖是否充分
+4. 检查是否有遗留风险或边界情况未处理
+5. 运行完整测试套件和适用的静态检查
+
+## 运行约定
+- 从项目根目录运行，使用项目自身的测试框架和依赖
+- 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/final-audit/attempt-[K]/
+- 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
+
+## 输出约定
+- 完整复核报告写入：.review-evidence/round-[N]/final-audit/attempt-[K]/targeted-review.md
+- 必要的命令输出写入：.review-evidence/round-[N]/final-audit/attempt-[K]/output.log
+- 返回 YAML 摘要：review_status、findings_reviewed、new_issues、overall_assessment
 
 ~~~yaml
-audit_phase: "blind-scan"
-audit_attempt: <number>
-scan_status: "SCAN_COMPLETE | BLOCKED"
-blind_scan_evidence_path: ".review-evidence/round-[N]/final-audit/attempt-[K]/blind-scan.md"
-candidate_findings_count: <number>
-candidate_findings:
-  - temp_id: "<audit-local ID>"
-    severity: "P0 | P1 | P2 | P3"
-    claim: "<short claim>"
-    evidence_dir: ".review-evidence/round-[N]/inbox/final-audit-attempt-[K]/[temp_id]/"
-commands_summary:
-  - command: "<command>"
-    exit_status: "<exit code>"
-    outcome: "<short summary>"
-blockers: []
-~~~
-
-### 第二阶段输出格式（定向复核摘要）
-
-~~~yaml
-audit_phase: "targeted-verification"
-audit_attempt: <number>
-verification_status: "COMPLETE | BLOCKED"
-targeted_verification_evidence_path: ".review-evidence/round-[N]/final-audit/attempt-[K]/targeted-verification.md"
-verified_findings_count: <number>
-findings_verification:
+review_status: "complete | partial | blocked"
+round: "[N]"
+attempt: "[K]"
+findings_reviewed:
   - finding_id: "<标准 ID>"
-    original_test_passed: yes | no
-    fix_test_passed: yes | no
-    notes: "<brief observation>"
-residual_risks:
-  - category: "needs-evidence | rejected | deferred"
-    count: <number>
-    notes: "<brief summary>"
-commands_summary:
-  - command: "<command>"
-    exit_status: "<exit code>"
-    outcome: "<short summary>"
+    fix_effective: true | false
+    regression_detected: true | false
+    test_coverage_adequate: true | false
+    notes: "<简短说明>"
+new_issues:  # 复核中发现的新问题（应该很少）
+  - finding_id: "FA-00X"
+    severity: "P0 | P1 | P2 | P3"
+    claim: "<observable behavior>"
+    evidence_dir: ".review-evidence/round-[N]/final-audit/attempt-[K]/inbox/FA-00X/"
+overall_assessment:
+  status: "pass | fail"
+  summary: "<overall summary>"
+  residual_risks: []  # 残余风险列表
+  recommendations: []  # 建议（可选）
 blockers: []
 ~~~
+~~~
 
-### blind-scan.md 格式（第一阶段完整报告）
+### 完整复核报告（targeted-review.md）
 
-见 `review-protocol.md` L455-458 的输出约定。
+~~~markdown
+# Final Audit: Targeted Review (Attempt [K])
 
-### targeted-verification.md 格式（第二阶段完整报告）
+## Review Summary
+- **Round**: [N]
+- **Attempt**: [K]
+- **Review Date**: [ISO 8601]
+- **Findings Reviewed**: [数量]
 
-见 `review-protocol.md` L475-478 的输出约定。
+## Findings Review
 
-## 输出格式使用规范
+### [标准 Finding ID 1]
+**Original Claim**: [claim 原文]
 
-1. **简短摘要（返回给主代理）**：使用 YAML 格式，只包含关键字段、状态、证据路径和命令摘要
-2. **完整报告（写入证据文件）**：使用 Markdown 格式，包含详细步骤、观察、推理和证据
-3. **完整命令输出（写入 output.log）**：原始的、未经编辑的命令输出，脱敏后保存
-4. **不要在回复中粘贴完整代码或日志**：只在摘要中引用路径和关键片段
+**Fix Commit**: [SHA]
 
-## 相邻测试（Adjacent Tests）的最低标准
+**Fix Effectiveness**: effective | ineffective | partial
 
-验证代理生成的相邻测试必须满足以下最低标准：
+**Test Coverage**: adequate | inadequate
 
-1. **至少生成 2 个相邻测试用例**：
-   - 一个测试正常情况（修复没有破坏合法用例）
-   - 一个测试边界情况（修复没有过度限制）
+**Regression Detected**: yes | no
 
-2. **相邻测试必须可运行**：
-   - 使用项目的测试框架和风格
-   - 导入路径、断言库正确
-   - 不依赖临时测试目录
+**Notes**: [详细说明]
 
-3. **相邻测试失败的处理**：
-   - 若相邻测试失败，验证状态为 `fail`
-   - 在 verification-result.md 中说明失败原因（over-fix / under-fix / regression）
-   - 不合并失败的相邻测试到项目测试文件
+---
 
-4. **无法生成相邻测试的处理**：
-   - 若修复过于简单（如修正拼写错误），可以不生成相邻测试
-   - 在 verification-result.md 中说明理由
-   - 验证状态仍可为 `pass`（基于 RED 证据和修复测试）
+### [标准 Finding ID 2]
+[重复上述结构]
 
-5. **手工 finding 的相邻测试**：
-   - 优先为相邻可测路径生成自动化测试
-   - 若完全无法自动化，在 verification-result.md 中说明理由和已尝试的相邻路径
-   - 必须包含修复后的手工复测证据
+---
+
+## New Issues (if any)
+
+### FA-00X: [claim]
+**Severity**: [P0/P1/P2/P3]
+
+**Evidence**: [证据路径]
+
+**Notes**: [说明这是复核中发现的新问题]
+
+---
+
+## Overall Assessment
+
+### Test Suite
+```bash
+[运行完整测试套件的命令]
+```
+
+**Exit Status**: [退出码]
+
+**Result**: pass | fail
+
+### Static Checks (if applicable)
+```bash
+[运行静态检查的命令]
+```
+
+**Result**: [结果摘要]
+
+### Build Verification
+```bash
+[构建命令]
+```
+
+**Result**: pass | fail
+
+### Overall Status
+**Status**: pass | fail
+
+**Summary**: [综合评估]
+
+### Residual Risks
+[列出任何已知但未修复的残余风险，例如：
+- 手工 findings 无法自动化验证
+- 外部依赖问题
+- 性能问题（P3）已 deferred
+]
+
+### Recommendations (optional)
+[可选的改进建议]
+
+## Blockers (if any)
+[阻塞项列表]
+~~~
+
+---
+
+## 提示模板使用指南
+
+### 1. 模板参数替换
+
+所有提示模板中的 `[...]` 占位符都必须在委派时替换为实际值：
+
+- `[MVP 范围]`: 从 baseline.md 中提取
+- `[验收标准/契约]`: 从 baseline.md 中提取
+- `[role-slug]`: security、functionality、reliability、api、performance、ux、ops、product
+- `[round number]`: 当前轮次（1-5）
+- `[标准 finding ID]`: R1-F001-SEC 格式
+- `[临时_id]`: SEC-001 格式（role-local）
+
+### 2. 委派时机
+
+- **评审代理**: review phase 开始时，委派至少 3 个角色
+- **复现审查代理**: adjudication phase，主代理筛查并分配标准 ID 后
+- **挑战/补强代理**: adjudication phase，主代理决定需要挑战或补强时
+- **实现代理**: repair phase，逐个修复 accepted findings
+- **验证代理**: verification phase，每个修复完成后
+- **最终审计代理**: final_audit phase，满足进入最终审计条件时
+
+### 3. 输出处理
+
+所有子代理的输出分为两部分：
+
+1. **简短摘要（YAML）**: 返回给主代理的对话中，用于决策和状态流转
+2. **完整报告（Markdown）**: 写入证据目录，用于审计和恢复
+
+主代理只在需要时读取完整报告（例如裁决时读取 counterexample.md），而不是让子代理在回复中粘贴完整内容。
+
+### 4. 证据路径规范
+
+所有证据文件路径都必须遵循 `evidence-structure.md` 中定义的结构：
+
+- 候选阶段: `.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/`
+- 标准阶段: `.review-evidence/round-[N]/[标准 ID]/`
+- 最终审计: `.review-evidence/round-[N]/final-audit/attempt-[K]/`
+
+### 5. 命令输出管理
+
+所有完整命令输出都必须保存到 `output.log`，而不是粘贴到回复或其他 Markdown 文件中。这样可以：
+
+- 减少对话上下文占用
+- 保持证据文件的可读性
+- 允许独立查看和分析命令输出
+
+### 6. 阻塞处理
+
+所有子代理在遇到无法继续的情况时，必须：
+
+1. 设置状态为 `blocked`
+2. 在 `blockers` 字段中列出具体阻塞项
+3. 不要猜测或假设结果
+4. 不要因为阻塞而跳过其他可以完成的工作
+
+### 7. 独立性要求
+
+以下代理必须独立于原始评审员：
+
+- 复现审查代理：不能是提交该候选的评审员
+- 验证代理：不能是实现该修复的代理
+- 最终审计代理：不能参与过前序评审或实现
+
+主代理在委派时必须检查并确保独立性。

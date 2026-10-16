@@ -58,120 +58,15 @@ kind: defect | spec-gap | risk | preference
 
 ## 评审代理提示模板
 
-为每个代理替换 round、role-slug、范围和验收标准。第 4、5 轮还需提供待检查的修复提交/变更路径，但不提供历史 finding 或预期结论。此模板用于常规评审；最终审计使用后文的专用模板。
+**完整提示模板和输出格式**见 `agent-prompts.md` 的"评审代理（Review Agent）"章节。
 
-````text
-你是 [role-slug] 评审员。只读检查 [MVP 范围]，依据 [验收标准/契约] 和当前 HEAD。
-本轮变更范围：[常规评审填 none；回归评审列出待检查的提交/文件路径，不提供历史 finding 或预期结论]
-不要修改项目源代码、测试、配置，不要安装依赖或提交。只用临时 fixture/数据库执行验证；若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告阻塞。
-
-## 文件组织与运行约定
-
-**临时测试文件**（写入项目测试目录，供后续阶段复用）：
-- 存放位置：`tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext}`
-  - 示例：`tests/review/candidates/r1_sec_001.test.js`
-  - 使用项目测试格式，可以复用项目的测试环境、fixtures、辅助函数
-- **测试框架忽略此目录**：在项目测试配置中配置忽略 `tests/review/candidates/`，不会在日常测试中运行
-- 完整命令输出保存在：`.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/output.log`
-
-**证据文档**（仍在 .review-evidence/ 中）：
-- counterexample.md：`.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/counterexample.md`
-- output.log：完整命令输出，不要粘贴到回复或 counterexample.md 中
-
-**运行 reproduction**：
-- 从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
-- 测试文件就是普通项目测试，调用项目代码和测试工具
-- 示例：
-  ```bash
-  # 显式运行单个临时测试
-  ADVERSARIAL_REVIEW=true npm test tests/review/candidates/r1_sec_001.test.js
-  
-  # 或使用项目的测试命令
-  pnpm vitest run tests/review/candidates/r1_sec_001.test.js
-  ```
-- 不要为每个 finding 创建独立的依赖/编译环境
-
-**隔离数据文件**（仅在需要避免冲突时）：
-- 测试数据库、fixture、临时输出可放在：`.review-evidence/round-[N]/_testdata/[role-slug]/`
-- 通过环境变量传递路径：`TEST_DB_PATH=.review-evidence/round-1/_testdata/security/test.db`
-- 若项目测试本身已支持临时数据库（如 SQLite `:memory:`、Jest 自动隔离），直接使用
-- 默认串行运行，避免端口/进程冲突；需要并发时在阻塞项中说明原因
-
-不要查看其他角色的 findings，也不要把个人偏好作为缺陷。
-
-每条 finding 的 counterexample.md 按上方字段 schema 填写；完整 reproduction 测试写入 `tests/review/candidates/`，经确认无法自动化时的 manual-steps.md 放在 `.review-evidence/` inbox 目录。按以下固定 YAML 结构交接，保留所有字段；无内容使用 [] 或 none，不省略字段。没有发现时 findings 写 []；未覆盖的路径及原因写入 uncovered_paths；无法完成检查的部分写入 blockers。
-不要在回复中粘贴 reproduction 源码或完整命令输出。回复中的命令仅给命令、退出状态和必要的短输出摘要，详细记录放在证据文件。
-
-~~~yaml
-review_status: "complete | partial | blocked"
-round: "<round number>"
-role_slug: "<role-slug>"
-scope_checked: "<scope summary>"
-commands:
-  - command: "<command>"
-    exit_status: "<exit code or not_run>"
-findings:
-  - finding_id: "<role-local temporary ID>"
-    severity: "P0 | P1 | P2 | P3"
-    claim: "<observable behavior>"
-    kind: "defect | spec-gap | risk | preference"
-    confidence: "high | medium | low"
-    evidence_dir: ".review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/"
-    counterexample_file: ".review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/counterexample.md"
-    reproduction_file: "tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext} | manual-steps.md | none"
-    reproduction_command: "<command | manual | not_run>"
-    reproduction_exit_status: "<exit code | manual | not_run>"
-    reproduction_status: "observed | not_observed | blocked | not_run"
-blockers: []
-uncovered_paths: []
-~~~
-
-`reproduction_status` 只描述该候选的复现结果：`observed` 表示观察到 claim；`not_observed` 表示复现完整运行但未观察到 claim；`blocked` 表示无法判断；`not_run` 表示未尝试。`reproduction_exit_status` 只记录进程退出码；是否观察到 claim 以 `reproduction_status` 和证据为准。没有运行通用检查命令时，`commands` 写 `[]`。
-
-示例（假设项目有项目详情 API；仅示范交接格式，实际路径、命令和结果必须来自当前项目）：
-
-~~~yaml
-review_status: complete
-round: 1
-role_slug: security
-scope_checked: "GET /api/projects/{projectId} 的访问授权"
-commands: []
-findings:
-  - finding_id: SEC-001
-    severity: P1
-    claim: "已登录用户可读取其无权访问的项目详情"
-    kind: defect
-    confidence: high
-    evidence_dir: ".review-evidence/round-1/inbox/security/SEC-001/"
-    counterexample_file: ".review-evidence/round-1/inbox/security/SEC-001/counterexample.md"
-    reproduction_file: "tests/review/candidates/r1_sec_001.test.js"
-    reproduction_command: "ADVERSARIAL_REVIEW=true npm test tests/review/candidates/r1_sec_001.test.js"
-    reproduction_exit_status: 1
-    reproduction_status: observed
-blockers: []
-uncovered_paths: []
-~~~
-
-对应的 `counterexample.md` 示例：
-
-~~~text
-finding_id: SEC-001
-severity: P1
-claim: 已登录用户可读取其无权访问的项目详情
-location: src/routes/projects.ts:getProject
-preconditions: Alice 已登录；project-42 存在；Alice 不是该项目成员
-counterexample: 以 Alice 的会话请求 GET /api/projects/project-42
-expected_vs_actual: 预期 HTTP 403；实际 HTTP 200 并返回项目详情
-reproduction_path: tests/review/candidates/r1_sec_001.test.js
-impact: 登录用户可读取其他项目的名称和配置，造成跨项目信息泄露
-confidence: high
-kind: defect
-~~~
-
-若没有发现，仍返回相同结构，设置 `review_status: complete`、`findings: []`；只有部分范围未检查时使用 `partial`，完全无法开展检查时使用 `blocked`。每个命令和 finding 的证据路径必须可定位到实际记录。
-````
-
-代理返回属于交接摘要，不是第二份证据副本。主代理只在裁决当前 finding 时读取其完整证据。
+**关键要求摘要**：
+- 为每个代理替换 round、role-slug、范围和验收标准
+- 第 4、5 轮提供待检查的修复提交/变更路径，但不提供历史 finding 或预期结论
+- 临时测试文件写入 `tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext}`
+- 证据文档写入 `.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/`
+- 返回固定 YAML 结构的摘要，完整日志写入 output.log
+- 代理返回属于交接摘要，不是第二份证据副本。主代理只在裁决当前 finding 时读取其完整证据
 
 ## Finding ID 与证据路径
 
@@ -196,29 +91,18 @@ kind: defect
 
 ## 独立复现审查员
 
-主代理完成去重、范围/契约初筛并分配标准 ID 后，对可复现候选指派一名未提交该候选的独立复现审查员。原评审员运行过的结果可作线索，但不能替代独立复现。挑战代理的独立重放可满足此要求；高风险或证据异常项还须由主代理加验或再委派第二个独立审查。
+**完整提示模板和输出格式**见 `agent-prompts.md` 的"独立复现审查代理（Replay Reviewer Agent）"章节。
 
-~~~text
-你是独立复现审查员。只检查 [标准 finding ID] 的 counterexample.md 与指定复现文件、当前 HEAD，以及主代理提供的相关基线/契约。不要读取其他 finding、原评审结论、adjudication.md、challenge-result.md 或 verification-result.md。
-复现材料：[该 finding 目录内 reproduce.* 或 manual-steps.md 的准确路径]
-只读项目文件和测试；不要修改源代码、测试、配置或提交。
+**关键要求摘要**：
+- 主代理完成去重、范围/契约初筛并分配标准 ID 后，对可复现候选指派一名未提交该候选的独立复现审查员
+- 原评审员运行过的结果可作线索，但不能替代独立复现
+- 挑战代理的独立重放可满足此要求；高风险或证据异常项还须由主代理加验或再委派第二个独立审查
+- 返回 `reproduced`、`not-reproduced` 或 `blocked`，完整复现报告写入 replay-review.md
 
-## 运行约定
-- 从项目根目录运行，使用项目自身的测试框架和依赖
-- 若需要隔离测试数据库/fixture，放在：.review-evidence/round-[N]/_testdata/replay-[finding-id]/
-- 通过环境变量传递数据路径，或使用项目测试框架的临时数据机制
-- 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
-
-## 输出约定
-- 完整复现报告写入：.review-evidence/round-[N]/[标准 ID]/replay-review.md
-- 必要的完整命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log
-- 只返回 reproduced、not-reproduced 或 blocked，附证据路径、命令/退出状态摘要和阻塞项
-- 不要判断 scope、severity 或最终 decision，不要在回复中粘贴完整日志
-~~~
-
-- `reproduced`：有效前提下观察到 claim 所述行为；是否违反承诺范围由主代理另行裁决。
-- `not-reproduced`：前提和断言有效、复现完整运行，但观察结果明确不符合 claim；记录具体反证。仅仅没有得到输出或结果模糊不算。
-- `blocked`：环境、依赖、前提、脚本或观察点不完整，无法判断 claim；保留 `needs-evidence`，不得据此 rejected。
+**结果解释**：
+- `reproduced`：有效前提下观察到 claim 所述行为；是否违反承诺范围由主代理另行裁决
+- `not-reproduced`：前提和断言有效、复现完整运行，但观察结果明确不符合 claim；记录具体反证
+- `blocked`：环境、依赖、前提、脚本或观察点不完整，无法判断 claim；保留 `needs-evidence`，不得据此 rejected
 
 主代理审查 replay-review.md 和关键原始输出后，填写 adjudication。P0/P1、权限/数据完整性/公开 API、高影响 finding，以及结果互相矛盾或不寻常的证据，主代理必须亲自加验或再委派第二个独立审查。若没有独立代理可用，主代理亲自复现作为退路。
 
