@@ -46,7 +46,7 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 **你是主代理，每个阶段必须遵循以下规则。压缩上下文后恢复时，立即读取 `.review-evidence/run-state.md` 确认当前位置。**
 
 1. **这是一个多轮循环流程**，最少 2 轮常规评审，最多 5 轮，然后进行最终审计。不要在第 1 轮后就结束。
-2. **每个需要独立评估的任务必须使用子代理**：评审角色、复现审查、挑战、补强、修复实现、修复验证、最终审计都必须委派给子代理，不能由主代理直接执行。
+2. **每个需要独立评估的任务必须使用子代理**：评审角色、复现审查、挑战、补强、修复实现、修复验证、最终审计都必须委派给子代理。**例外**：当所有可用独立代理都已提交过相关候选时，主代理可以亲自复现，但必须在 adjudication.md 中明确记录并标注为高风险项，并在最终报告中单独披露。
 3. **每个阶段完成后，立即更新 run-state.md**，记录 current_phase、current_round、next_action 和 last_completed_event。
 4. **每个轮次完成后，必须检查轮次迭代条件**（见下方"轮次迭代与最终审计"），决定是否进入下一轮常规评审或最终审计。
 5. **修复实现必须按 TDD 流程**：委派给实现代理，按 tdd-and-commit.md 执行 RED-GREEN-REFACTOR。
@@ -72,7 +72,7 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 
 **完成后**：
 - 若有 accepted findings：更新 run-state.md，设置 `current_phase: repair`, `next_action: "修复第一个 accepted finding: [ID]"`
-- 若无 accepted findings：跳过修复，直接检查轮次迭代条件
+- 若无 accepted findings：更新 run-state.md，设置 `current_phase: round_decision`, `next_action: "检查轮次迭代条件（本轮无 accepted findings）"`
 
 ### 3. TDD 修复与提交 (Phase: repair)
 
@@ -93,31 +93,32 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 
 **轮次迭代决策（主代理执行）**：
 - 检查是否满足进入最终审计的条件（见下方）
-- 若不满足，进入下一轮常规评审：更新 run-state.md，设置 `current_round: N+1`, `current_phase: review`, `next_action: "启动第 N+1 轮评审角色"`
-- 若满足，进入最终审计：更新 run-state.md，设置 `current_phase: final_audit`, `next_action: "启动最终审计代理（盲扫）"`
-- 未解决的验证阻塞（inconclusive）阻止进入最终审计，转为 INCOMPLETE
+- 若不满足且 `current_round < 5`：进入下一轮常规评审，更新 run-state.md，设置 `current_round: N+1`, `current_phase: review`, `next_action: "启动第 N+1 轮评审角色"`
+- 若满足：进入最终审计，更新 run-state.md，设置 `current_phase: final_audit`, `final_audit_attempt: 1`, `next_action: "启动最终审计代理（盲扫）"`
+- 未解决的验证阻塞（inconclusive）阻止进入最终审计，报告 INCOMPLETE
 
 **进入最终审计的条件**（满足其一即可）：
-1. **提前收敛**（第 2 轮后）：连续第 1、2 轮没有新的范围内 P0/P1，也没有新 accepted P2
-2. **正常完成**（第 3-5 轮后）：完成当前轮的所有修复和验证，且没有新的范围内 P0/P1（第 3 轮后优先级限制生效）
+1. **提前收敛**（仅在第 2 轮后检查）：连续第 1、2 轮本轮评审后均无新 accepted P0/P1，且第 2 轮也无新 accepted P2
+2. **正常完成**（第 3-5 轮后）：完成当前轮的所有修复和验证，且本轮评审后无新 accepted P0/P1。第 3 轮起，评审角色仅关注 P0/P1 风险，P2 类 findings 若无安全/数据影响可标记为 screened_out_low_priority
 3. **达到轮次上限**（第 5 轮后）：无论是否还有问题，都必须进入最终审计以评估最终状态
 
 **最终审计流程（必须使用子代理）**：
 - **委派给最终审计代理**（未参与前序评审或实现的新代理），分两阶段：
   1. 盲扫：不读取已有 findings，独立检查
   2. 定向复核：检查已修复的 findings 是否真的有效
-- 若第一阶段发现新问题：回到普通裁决流程，修复后启动新常规评审轮（计入 5 轮上限），再重新进行最终审计
-- 最终审计最多 3 次尝试；若耗尽或超过第 5 轮上限，报告 INCOMPLETE
+- 若第一阶段发现新问题且 `current_round < 5`：回到普通裁决流程（adjudication phase），修复验证后启动新常规评审轮（`current_round + 1`，计入 5 轮上限），检查回归后重新进行最终审计（`final_audit_attempt + 1`）
+- 若第一阶段发现新问题但 `current_round >= 5`：直接裁决并修复（不启动新评审轮），修复验证后重新进行最终审计（`final_audit_attempt + 1`）
+- 最终审计最多 3 次尝试；若第 3 次尝试仍发现新问题，或 `final_audit_attempt` 耗尽，报告 INCOMPLETE
 
 **完成后**：进入收敛判定和最终报告。
 
 ### 6. 收敛判定与最终报告 (Phase: report)
 
 **收敛条件**（全部满足才是 CONVERGED）：
-- 所有范围内 P0/P1 已修复且验证通过
-- 所有 accepted finding 已 verified
-- 反例覆盖率 ≥80%
-- 最终审计两阶段完成且无新发现
+- 所有 accepted 且范围内的 P0/P1 已修复且验证通过（rejected/deferred 的不计入）
+- 所有 accepted finding（所有优先级）已 verified
+- 反例覆盖率（verified findings 的 reproduction 占 accepted findings 的比例）≥80%
+- 最终审计两阶段完成且无新 accepted findings
 
 **未满足时报告 INCOMPLETE**，列明残余风险、阻塞原因和未验证项。
 

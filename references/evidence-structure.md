@@ -117,6 +117,7 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 - overall_status: in_progress | waiting_on_evidence | incomplete | converged
 - current_phase: baseline | review | adjudication | replay_review | repair | verification | round_decision | final_audit | report
 - current_round: 1 (常规评审轮次，1-5)
+- final_audit_attempt: 0 (最终审计尝试次数，最多 3)
 - baseline_head: [初始 HEAD 或 unavailable]
 - current_head: [当前 HEAD 或 unavailable]
 - last_completed_event: [短摘要，包括完成的阶段和轮次]
@@ -130,7 +131,7 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 - Phase: adjudication → 复现审查必须委派给子代理，挑战必须委派给挑战代理
 - Phase: repair → 必须委派给实现子代理
 - Phase: verification → 必须委派给验证子代理（不能是实现代理）
-- Phase: round_decision → 检查是否满足进入最终审计的条件，否则进入下一轮
+- Phase: round_decision → 检查是否满足进入最终审计的条件，否则进入下一轮（若 current_round < 5）
 - Phase: final_audit → 必须委派给最终审计子代理
 
 ## Counts
@@ -143,7 +144,7 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 - counterexample_coverage: [百分比及分子/分母]
 
 ## Round History
-- Round 1: [评审角色数] roles, [accepted数] accepted, [verified数] verified, [新P0/P1数] new P0/P1
+- Round 1: [评审角色数] roles, [accepted数] accepted, [verified数] verified, [新accepted P0/P1数] new accepted P0/P1
 - Round 2: ...
 (用于判断提前收敛条件和轮次上限)
 ~~~
