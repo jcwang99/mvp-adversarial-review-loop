@@ -558,8 +558,11 @@ blockers:
 1. **复现原始缺陷**（在修复前的 commit）：确认 finding 确实存在
 2. **验证修复**（在修复后的 commit / HEAD）：确认 finding 已解决
 3. **生成相邻测试**（Adjacent Tests）：为相邻功能、边界情况、异常路径生成至少 2 个新测试用例
-4. **运行完整测试套件**：确认无回归
-5. **检查修复完整性**：是否遗漏相关场景
+4. **验证相邻测试**：对生成的新测试用例进行验证
+5. **合并测试**：若新测试用例通过，将新测试用例与原先的测试用例合并
+6. **运行完整测试套件**：确认无回归
+7. **检查修复完整性**：是否遗漏相关场景
+8. **提交合并改动**：提交格式：`add(adjacent): [ID] concise new test cases' description`
 
 ## 相邻测试要求
 
@@ -582,6 +585,7 @@ blockers:
 - 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/verify-[finding-id]/
 - 相邻测试写入：tests/review/verifications/r{round}_f{num}_{slug}_adjacent.test.{ext}
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
+
 
 ## 工作区保护（强制）
 
