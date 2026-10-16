@@ -60,13 +60,13 @@ final_audit
 ## 进入最终审计的条件（满足任一）
 
 1. **提前收敛**（第 2 轮后）：连续 1、2 轮无新 accepted P0/P1，且第 2 轮也无新 accepted P2
-2. **正常完成**（第 3-5 轮后）：本轮无新 accepted P0/P1
+2. **正常完成**（第 3-5 轮后）：本轮无新 accepted P0/P1，且所有 accepted finding 已 verified
 3. **达到上限**（第 5 轮后）：无论如何都必须进入最终审计
 
-**注意**：
-- 未解决的验证阻塞（inconclusive）会阻止进入最终审计
+**关键检查点**：
+- 未解决的验证阻塞（inconclusive，不包括 blocked_by_user_changes）会阻止进入最终审计
 - 检查 run-state.md 中的 `rounds_consumed` 和 `can_trigger_new_round` 字段
-- P2 needs-evidence 根据 `needs_evidence_clarity` 字段判断是否阻止收敛（详见 review-protocol.md）
+- 详细触发逻辑和优先级限制见 review-protocol.md 的"轮次上限与优先级"章节
 
 ## 收敛条件（全部满足才是 CONVERGED）
 
@@ -83,6 +83,7 @@ final_audit
 - **TDD 与提交规范**：`references/tdd-and-commit.md`
 - **证据结构和模板**：`references/evidence-structure.md`
 - **子代理提示模板与输出格式**：`references/agent-prompts.md`
+- **证据归档流程**：`references/archival.md`（可选，仅在评审完成后）
 - **当前运行状态**：`.review-evidence/run-state.md`
 
 ## 记住

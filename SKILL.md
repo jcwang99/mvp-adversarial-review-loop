@@ -29,6 +29,7 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 - [references/evidence-structure.md](references/evidence-structure.md)：证据目录、状态检查点、索引和记录格式。初始化证据目录时读取。
 - [references/tdd-and-commit.md](references/tdd-and-commit.md)：实现任务、RED-GREEN-REFACTOR、工作区隔离和提交验收。进入修复阶段时读取。
 - [references/agent-prompts.md](references/agent-prompts.md)：子代理提示模板与标准输出格式。委派子代理时按需参考。
+- [references/archival.md](references/archival.md)：证据归档流程（可选）。评审循环完成后按需参考。
 
 不要默认加载所有参考文件；只读取当前阶段需要的资料。详细规则以对应参考文件为准，不在本入口重复定义。
 
@@ -103,18 +104,15 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 - 若满足：进入最终审计，更新 run-state.md，设置 `current_phase: final_audit`, `final_audit_attempt: 1/3`, `next_action: "启动最终审计代理（盲扫）"`
 - 未解决的验证阻塞（inconclusive，不包括 blocked_by_user_changes）阻止进入最终审计，报告 INCOMPLETE
 
-**进入最终审计的条件**（满足其一即可）：
-1. **提前收敛**（仅在第 2 轮后检查）：连续第 1、2 轮本轮评审后均无新 accepted P0/P1，且第 2 轮也无新 accepted P2
-2. **正常完成**（第 3-5 轮后）：完成当前轮的所有修复和验证，且本轮评审后无新 accepted P0/P1。第 3 轮起，评审角色仅关注 P0/P1 风险，P2 类 findings 若无安全/数据影响可标记为 screened_out_low_priority
-3. **达到轮次上限**（第 5 轮后）：无论是否还有问题，都必须进入最终审计以评估最终状态
+**进入最终审计的条件**（满足其一即可，详见 review-protocol.md）：
+1. **提前收敛**（第 2 轮后）：连续两轮无新 accepted P0/P1，且第 2 轮也无新 accepted P2
+2. **正常完成**（第 3-5 轮后）：本轮无新 accepted P0/P1，且所有 accepted finding 已 verified
+3. **达到上限**（第 5 轮后）：无论如何都必须进入最终审计
 
-**最终审计流程（必须使用子代理）**：
-- **委派给最终审计代理**（未参与前序评审或实现的新代理），分两阶段：
-  1. 盲扫：不读取已有 findings，独立检查
-  2. 定向复核：检查已修复的 findings 是否真的有效
-- 若第一阶段发现新问题且 `can_trigger_new_round = true`：回到普通裁决流程（adjudication phase），修复验证后启动新常规评审轮（递增 `rounds_consumed`，计入 5 轮上限），检查回归后重新进行最终审计（递增 `final_audit_attempt`）
-- 若第一阶段发现新问题但 `can_trigger_new_round = false`（已达轮次上限）：直接裁决并修复（不启动新评审轮），修复验证后重新进行最终审计（递增 `final_audit_attempt`）
-- 最终审计最多 3 次尝试（`final_audit_attempt` 最大值 3）；若第 3 次尝试仍发现新问题，报告 INCOMPLETE
+**最终审计流程（必须使用子代理，详见 review-protocol.md）**：
+- 委派给最终审计代理（未参与前序评审或实现的新代理），分两阶段：盲扫、定向复核
+- 若发现新问题：回到裁决流程，修复验证后可能启动新常规评审轮（计入 5 轮上限）或重新审计
+- 最终审计最多 3 次尝试；若第 3 次尝试仍发现新问题，报告 INCOMPLETE
 
 **完成后**：进入收敛判定和最终报告。
 
@@ -126,8 +124,6 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 - 反例覆盖率（verified findings 的 reproduction 占 accepted findings 的比例）≥80%
 - 最终审计两阶段完成且无新 accepted findings
 - P2 needs-evidence 中，所有 `needs_evidence_clarity: unclear_claim` 的必须解决；`clear_claim_lacking_env` 的可作为残余风险
-- 反例覆盖率（verified findings 的 reproduction 占 accepted findings 的比例）≥80%
-- 最终审计两阶段完成且无新 accepted findings
 
 **未满足时报告 INCOMPLETE**，列明残余风险、阻塞原因和未验证项。
 
@@ -138,10 +134,15 @@ description: 对已完成的 MVP 执行有证据、可审计的多代理评审�
 - 保留项目正式测试文件中已合并的测试用例
 - 保留 `.review-evidence/` 目录作为审计证据
 
+**可选归档**（长期项目）：
+- 压缩轮次证据以节省存储空间（见 [references/archival.md](references/archival.md)）
+- 仅在评审循环完成（CONVERGED 或 INCOMPLETE）后执行
+- 保持核心索引文件（baseline.md、run-state.md、findings-index.md）可读
+
 ## 恢复检查点
 
-**压缩上下文后恢复时的强制步骤**：
+**压缩上下文后恢复时的强制步骤**（详见 AGENTS.md）：
 1. 立即读取 `.review-evidence/run-state.md`
-2. 确认 `current_phase`、`current_round`、`active_finding` 和 `next_action`
+2. 确认 `current_phase`、`current_round`、`rounds_consumed`、`can_trigger_new_round` 和 `next_action`
 3. 根据 `next_action` 继续执行，不要跳过或重复已完成的阶段
-4. 若 `current_round < 5` 且不满足提前收敛条件，必须继续下一轮常规评审
+4. 这是多轮循环流程（最少 2 轮，最多 5 轮），不要在第 1 轮后就结束
