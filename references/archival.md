@@ -70,6 +70,8 @@ tests/review/                      # 整个临时测试目录
 
 ## 归档流程
 
+（以下命令为 POSIX shell 示例；Windows PowerShell 使用等价命令，如 `Remove-Item -Recurse -Force`、`Get-ChildItem -Recurse`。）
+
 ### 1. 验证前置条件
 
 ```bash

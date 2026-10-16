@@ -96,7 +96,7 @@
      - 无法通过 `git add -p` 清晰分离
 
 3. **冲突解决流程**：
-   - **能安全分块**：主代理执行分块暂存并提交，更新 finding 状态为 `verified: pending`
+   - **能安全分块**：主代理执行分块暂存并提交，更新 finding 状态为 `verification: pending`
    - **不能安全分块**：
      - 更新 finding 状态为 `decision: accepted`, `verification: blocked_by_user_changes`
      - 在 findings-index.md 中记录 `Verification: blocked_by_user_changes`

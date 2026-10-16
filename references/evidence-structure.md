@@ -1,6 +1,6 @@
 # 证据目录与状态记录
 
-本文件只定义审计材料的存放方式和可恢复状态。角色、裁决、反例门槛与轮次判断以 review-protocol.md 为准；修复和提交以 tdd-and-commit.md 为准。
+本文件只定义审计材料的存放方式和可恢复状态。角色、裁决、反例门槛与轮次判断以 SKILL.md 为准；修复和提交以 tdd-and-commit.md 为准。
 
 ## 目录布局
 
@@ -21,7 +21,8 @@
     │   ├── challenge-R1-F001-SEC/          # 挑战代理的反例变体数据
     │   ├── verify-R1-F001-SEC/             # 修复验证的变体测试数据
     │   ├── impl-R1-F001-SEC/               # 实现代理的修复前后对比数据
-    │   └── final-audit-attempt-1/          # 最终审计的测试数据
+    │   └── final-audit/
+    │       └── attempt-1/                  # 最终审计的测试数据
     ├── inbox/
     │   ├── security/
     │   │   └── SEC-001/
@@ -35,18 +36,18 @@
     │   │   └── REL-001/
     │   │       ├── counterexample.md
     │   │       └── output.log
-    │   ├── api/
-    │   │   └── API-001/
-    │   │       ├── counterexample.md
-    │   │       └── output.log
-    │   └── final-audit-attempt-1/
-    │       └── SCAN-001/
+    │   └── api/
+    │       └── API-001/
     │           ├── counterexample.md
     │           └── output.log
     ├── final-audit/
     │   └── attempt-1/
     │       ├── blind-scan.md
-    │       └── targeted-verification.md
+    │       ├── targeted-review.md
+    │       └── inbox/
+    │           └── FA-001/
+    │               ├── counterexample.md
+    │               └── output.log
     └── R1-F001-SEC/
         ├── original-id.txt
         ├── counterexample.md
@@ -66,7 +67,7 @@ tests/                                      # 项目测试目录
     ├── reproductions/                      # adjudication accepted 后移动到这里
     │   └── r1_f001_auth_bypass.test.js    # 保留供 verification 使用
     └── verifications/                      # verification 阶段生成的相邻测试
-        └── r1_f001_adjacent.test.js       # 保留供最终合并
+        └── r1_f001_auth_bypass_adjacent.test.js   # 保留供最终合并
 ~~~
 
 **目录职责说明**：
@@ -74,7 +75,7 @@ tests/                                      # 项目测试目录
 - **inbox/[role-slug]/[临时_id]/**：评审代理提交的候选证据，包含 counterexample.md 和完整输出
 - **R[N]-F[XXX]-[CAT]/**：主代理分配标准 ID 后的正式 finding 目录，包含裁决、复现审查、挑战、实现、验证等完整生命周期记录
 - **_testdata/**（可选）：仅当需要隔离测试数据时使用，存放测试数据库文件、fixture、反例变体等
-  - 按代理类型和 finding ID 隔离：`[role-slug]/`、`replay-[id]/`、`challenge-[id]/`、`verify-[id]/`、`impl-[id]/`、`final-audit-attempt-[K]/`
+  - 按代理类型和 finding ID 隔离：`[role-slug]/`、`replay-[id]/`、`challenge-[id]/`、`verify-[id]/`、`impl-[id]/`、`final-audit/attempt-[K]/`
   - 不包含项目依赖、编译环境、构建产物
   - 若项目测试本身已支持临时数据（如 SQLite `:memory:`、Jest 隔离），不需要此目录
   - **清理规则**：
@@ -97,7 +98,7 @@ tests/                                      # 项目测试目录
   - **保留不删除**：供 verification 阶段使用（验证代理基于此生成相邻测试）
   - 测试框架配置中忽略此目录（或仅在 `ADVERSARIAL_REVIEW=true` 时运行）
 - **verifications/**：verification 阶段，验证代理写入相邻测试
-  - 命名规则：`r{round}_f{num}_adjacent.test.{ext}`（如 `r1_f001_adjacent.test.js`）
+  - 命名规则：`r{round}_f{num}_{slug}_adjacent.test.{ext}`（如 `r1_f001_auth_bypass_adjacent.test.js`）
   - 相邻测试通过后，验证代理复制到项目正式测试文件
   - **保留不删除**：供最终报告统计
   - 测试框架配置中忽略此目录（或仅在 `ADVERSARIAL_REVIEW=true` 时运行）
@@ -146,7 +147,7 @@ adversarial-review = []
 - **实现代理的测试合并**：从 `tests/review/reproductions/` 读取，复制测试用例到项目正式测试文件
 - 项目运行环境（如 Rust `target/`、Node `node_modules/`、Python `venv/`）由项目自身管理，不在 .review-evidence/ 中重复创建
 - 仅在需要避免数据冲突时使用 _testdata/，通过环境变量传递路径
-- 示例运行命令：
+- 示例运行命令（POSIX shell 语法；Windows PowerShell 请转换为等价命令，如 `$env:ADVERSARIAL_REVIEW='true'; npm test ...`）：
   ```bash
   # 运行正式测试（日常测试，跳过 tests/review/）
   npm test
@@ -162,7 +163,7 @@ adversarial-review = []
 **Reproduction 文件命名**：
 - **评审阶段（candidates/）**：`r{round}_{role}_{temp_id}.test.{ext}`（如 `r1_sec_001.test.js`）
 - **adjudication accepted（reproductions/）**：`r{round}_f{num}_{slug}.test.{ext}`（如 `r1_f001_auth_bypass.test.js`）
-- **verification 阶段（verifications/）**：`r{round}_f{num}_adjacent.test.{ext}`（如 `r1_f001_adjacent.test.js`）
+- **verification 阶段（verifications/）**：`r{round}_f{num}_{slug}_adjacent.test.{ext}`（如 `r1_f001_auth_bypass_adjacent.test.js`）
 - 按项目语言和测试约定选择扩展名：
   - JavaScript/TypeScript: `.test.js`, `.spec.ts`
   - Python: `_test.py`, `test_.py`
@@ -174,7 +175,7 @@ adversarial-review = []
 
 每个评审角色使用唯一的 role-slug 目录，例如 security、functionality、api。临时 ID 只需在该角色目录内唯一。不同角色即使都使用 SEC-001，也不会写入同一路径。
 
-主代理记录纯偏好和明确不构成现存风险的范围/契约请求后，对剩余候选去重；只有进入 finding 生命周期的独立候选才分配标准 ID，并将其 inbox 目录移动到该轮目录下的标准 ID 目录。之后即使 decision 为 rejected、deferred 或 needs-evidence，也保留 ID 和索引行。重复候选不另分配标准 ID：保留其 inbox 目录，在索引和主 finding 记录中标注 deduplicated_with。
+主代理记录纯偏好和明确不构成现存风险的范围/契约请求后，对剩余候选去重；只有进入 finding 生命周期的独立候选才分配标准 ID，并将其 inbox 目录移动到该轮目录下的标准 ID 目录。分配 ID 时同时将候选复现文件复制为标准 ID 目录中的 `reproduce.*`（tests/review/ 中的原始文件保留运行用，流程结束时删除；手工 finding 的 manual-steps.md 随 inbox 移动）。之后即使 decision 为 rejected、deferred 或 needs-evidence，也保留 ID 和索引行。重复候选不另分配标准 ID：保留其 inbox 目录，在索引和主 finding 记录中标注 deduplicated_with。
 
 经确认无法自动化的反例使用 manual-steps.md，并记录无法自动化的原因、前提、精确操作和观察点。自动化反例应保存完整可执行文件。完整命令输出保存在 finding 目录内，记录中引用路径并摘要关键结果。
 
@@ -188,10 +189,10 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 **这是一个多轮循环流程：最少 2 轮常规评审，最多 5 轮，然后进行最终审计。**
 
 - overall_status: in_progress | waiting_on_evidence | incomplete | converged
-- current_phase: baseline | review | adjudication | replay_review | repair | verification | round_decision | final_audit | report
+- current_phase: baseline | review | adjudication | repair | verification | round_decision | final_audit | report
 - current_round: 1 (常规评审轮次，1-5)
-- rounds_consumed: 1/5 (已完成的常规评审轮次 / 上限)
-- can_trigger_new_round: true (是否还能触发新的常规评审轮，取决于 rounds_consumed < 5)
+- rounds_consumed: 0/5 (已完成的常规评审轮次 / 上限；baseline 初始化为 0，每轮完成时更新为 current_round)
+- can_trigger_new_round: true (是否还能触发新的常规评审轮；每轮完成时重算 = rounds_consumed < 5)
 - final_audit_attempt: 0/3 (已完成的最终审计尝试 / 上限)
 - baseline_head: [初始 HEAD 或 unavailable]
 - current_head: [当前 HEAD 或 unavailable]
@@ -282,7 +283,7 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 | R1-F001-SEC | SEC-001 | security | P1 | accepted | pending | round-1/R1-F001-SEC/ | tests/auth.test.js | - | - |
 ~~~
 
-Decision 取 accepted、needs-evidence、rejected 或 deferred。验证结果单独取 pending、pass、fail 或 inconclusive；只有 accepted 且 verification 为 pass 时，用户报告中才可称 verified。记录验证执行者；主代理兜底适用相同的检查标准。verification 为 inconclusive 时仍是 accepted、未 verified，不是新的 decision 值。
+Decision 取 accepted、needs-evidence、rejected 或 deferred。验证结果单独取 pending、pass、fail、inconclusive 或 blocked_by_user_changes；只有 accepted 且 verification 为 pass 时，用户报告中才可称 verified（verified 是报告用词，不是 verification 枚举值）。记录验证执行者；主代理兜底适用相同的检查标准。verification 为 inconclusive 时仍是 accepted、未 verified，不是新的 decision 值。
 
 索引应保持精简。裁决理由、命令、输出、挑战过程、补强过程和验证细节写在对应 finding 目录的记录中，并在索引中链接相对路径。
 
@@ -314,7 +315,7 @@ screening-log.md 按轮次记录全部原始评审报告及其去重/筛查结�
 
 ## Final audit records
 
-每次最终审计记录放在 `round-[N]/final-audit/attempt-[K]/`，候选材料放在同轮的 `inbox/final-audit-attempt-[K]/`。重跑时递增 attempt，保留旧目录，不覆盖历史扫描或复核结果。
+每次最终审计记录放在 `round-[N]/final-audit/attempt-[K]/`，候选材料放在 `round-[N]/final-audit/attempt-[K]/inbox/`（临时 ID 使用 FA- 前缀，如 FA-001）。重跑时递增 attempt，保留旧目录，不覆盖历史扫描或复核结果。
 
 日志不得包含未脱敏的凭据、个人数据或秘密。若实际运行输出含敏感信息，先清理再保存；记录关键片段和退出状态，避免把整份日志贴入代理回复。
 

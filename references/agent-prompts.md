@@ -31,7 +31,7 @@
 - 存放位置：`tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext}`
   - 示例：`tests/review/candidates/r1_sec_001.test.js`
   - 使用项目测试格式，可以复用项目的测试环境、fixtures、辅助函数
-- **测试框架忽略此目录**：在项目测试配置中配置忽略 `tests/review/candidates/`，不会在日常测试中运行
+- **测试框架忽略此目录**：主代理已在 baseline 阶段确保项目测试配置忽略 `tests/review/`（或使用 ADVERSARIAL_REVIEW 开关）；若运行中发现临时测试会被日常测试收集，停止并报告阻塞，不要自行修改项目配置
 - 完整命令输出保存在：`.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/output.log`
 
 **证据文档**（仍在 .review-evidence/ 中）：
@@ -241,7 +241,7 @@ notes: "<简短说明，例如与原始证据的一致性>"
 ## 输出约定
 - 完整挑战报告写入：.review-evidence/round-[N]/[标准 ID]/challenge-result.md
 - 必要的命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log（如果有新的运行）
-- 返回 YAML 摘要：challenge_status、reproduction_replay_status、challenges、suggested_decision
+- 返回 YAML 摘要：challenge_status、challenge_verdict、reproduction_replay_status、challenges、suggested_decision
 - 不要在回复中粘贴完整日志或 reproduction 源码
 ~~~
 
@@ -250,6 +250,7 @@ notes: "<简短说明，例如与原始证据的一致性>"
 ~~~yaml
 finding_id: "<标准 ID>"
 challenge_status: "complete | blocked"
+challenge_verdict: "supports | disputes | inconclusive"
 reproduction_replay_status: "reproduced | not-reproduced | blocked | not_run"
 challenges:
   - aspect: "precondition | claim | severity | scope | evidence"
@@ -314,12 +315,12 @@ blockers: []
 ### 提示模板
 
 ~~~text
-你是补强代理。为 [标准 finding ID] 提供支持论据，强化其严重性、范围或影响评估。
+你是补强代理。为 [标准 finding ID] 修正反例的执行瑕疵（若有），并补充支持 finding 成立的证据。
 提供材料：[counterexample.md 路径、reproduction 路径、adjudication.md 路径、challenge-result.md 路径（如果有）]
-只读项目文件和测试；不要修改源代码、测试、配置或提交。
+可以修改标准 ID 目录内的 reproduction 或 counterexample.md；不要修改项目源代码、测试、配置或提交。
 
 ## 任务
-1. 独立重放 reproduction（如果可运行）
+1. 独立重放 reproduction；若复现失败或材料有瑕疵，直接修正标准 ID 目录内的 reproduction 或 counterexample.md
 2. 寻找类似或相关的缺陷模式
 3. 评估在不同条件下的影响范围
 4. 提供支持 severity 判断的额外证据
@@ -341,7 +342,7 @@ blockers: []
 
 ~~~yaml
 finding_id: "<标准 ID>"
-reinforce_status: "complete | blocked"
+reinforce_status: "fixed | cannot-fix | blocked"
 reproduction_replay_status: "reproduced | not-reproduced | blocked | not_run"
 reinforcements:
   - aspect: "impact | scope | related-issues | severity-justification"
@@ -408,7 +409,7 @@ blockers: []
 
 ### 提示模板
 
-见 `tdd-and-commit.md` 中的"实现任务模板"章节（L8-29），以及"TDD 工作流"章节（L31-71）。
+见 `tdd-and-commit.md` 中的"实现代理任务模板"与"RED-GREEN 循环与测试合并"章节。
 
 实现代理的任务是按照 TDD 流程（RED-GREEN-REFACTOR）修复已 accepted 的 finding。
 
@@ -429,9 +430,9 @@ blockers: []
    - 保持测试通过
    - 不要引入新的抽象或模式，除非修复本身需要
 
-4. **提交**：
+4. **提交**（提交规范以 tdd-and-commit.md 为准）：
    - 每个 finding 一个独立提交
-   - 提交消息格式：`fix(category): [claim summary]`
+   - 提交消息格式：`fix(review): [ID] concise behavior being corrected`
    - 提交体包含：finding ID、影响、修复说明、测试路径
 
 ### 输出格式（简短摘要）
@@ -579,6 +580,13 @@ blockers:
 - 相邻测试写入：tests/review/verifications/r{round}_f{num}_{slug}_adjacent.test.{ext}
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
+## 工作区保护（强制）
+- 不得在共享工作区直接 `git checkout` 修复前 commit。用独立 worktree 复现修复前状态：
+  `git worktree add <系统临时目录或仓库同级目录>/verify-[finding-id] [修复前 commit]`
+  在该 worktree 中运行复现命令，完成后 `git worktree remove <该路径>`
+- 无法使用 worktree 时（受控兜底，需主代理批准）：先记录原分支/HEAD 和 `git status --short`，用 `git stash push` 保存未提交改动；随后 `git checkout [修复前 commit]`（detached）运行复现；完成后 `git checkout [原分支或基线 HEAD]`，再 `git stash pop` 恢复，并对比确认工作区与开始时一致
+- 禁止 `git checkout --force`、`git reset --hard`、`git clean`；修复后状态直接在当前 HEAD 工作区验证；除上述受控兜底流程外不要移动 HEAD
+
 ## 输出约定
 - 完整验证报告写入：.review-evidence/round-[N]/[标准 ID]/verification-result.md
 - 必要的命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log
@@ -630,8 +638,9 @@ blockers: []
 
 ### Commands Run
 ```bash
-git checkout [SHA]
-[reproduction 命令]
+git worktree add <临时目录>/verify-[finding-id] [修复前 commit SHA]
+（在 worktree 中运行）[reproduction 命令]
+git worktree remove <临时目录>/verify-[finding-id]
 ```
 
 ### Observed Behavior
@@ -648,7 +657,7 @@ git checkout [SHA]
 
 ### Commands Run
 ```bash
-git checkout [SHA]
+# 当前 HEAD 工作区已包含修复提交，不要移动 HEAD
 [reproduction 命令]
 ```
 
@@ -716,7 +725,7 @@ git checkout [SHA]
 
 ## 7. 最终审计代理（Final Audit Agent）
 
-最终审计由未参与前序评审或实现的新代理完成，分两阶段：盲扫、定向复核。
+最终审计由未参与本流程任何阶段（评审、复现审查、挑战、补强、实现、验证）的新代理完成，分两阶段：盲扫、定向复核。
 
 ### 第一阶段提示模板（盲扫）
 
@@ -931,7 +940,8 @@ blockers: []
 
 - **评审代理**: review phase 开始时，委派至少 3 个角色
 - **复现审查代理**: adjudication phase，主代理筛查并分配标准 ID 后
-- **挑战/补强代理**: adjudication phase，主代理决定需要挑战或补强时
+- **挑战代理**: adjudication phase，必须挑战范围内的项必须委派（见 SKILL.md 2.4），其余按资源选择
+- **补强代理**: adjudication phase，仅当反例思路合理但有执行瑕疵时
 - **实现代理**: repair phase，逐个修复 accepted findings
 - **验证代理**: verification phase，每个修复完成后
 - **最终审计代理**: final_audit phase，满足进入最终审计条件时
@@ -976,6 +986,6 @@ blockers: []
 
 - 复现审查代理：不能是提交该候选的评审员
 - 验证代理：不能是实现该修复的代理
-- 最终审计代理：不能参与过前序评审或实现
+- 最终审计代理：不能参与过本流程任何阶段（评审、复现审查、挑战、补强、实现、验证）
 
 主代理在委派时必须检查并确保独立性。

@@ -24,9 +24,9 @@
 - **adjudication 中的复现审查和挑战**
 - **repair**: 实现代理（修复 finding）
 - **verification**: 验证代理（不能是实现代理）
-- **final_audit**: 最终审计代理（未参与前序评审或实现）
+- **final_audit**: 最终审计代理（未参与本流程任何阶段）
 
-**唯一例外**：当所有可用独立代理都已提交过相关候选时，主代理可以亲自复现，但必须在 adjudication.md 中明确记录并标注为高风险项。
+**唯一例外**：当所有可用独立代理都已提交过相关候选时，主代理经用户明确授权后可以亲自复现，但必须在 adjudication.md 中明确记录并标注为高风险项，并在最终报告中单独披露。
 
 ## 常见压缩后错误
 
@@ -46,40 +46,28 @@ baseline → review (委派) → adjudication (复现审查+裁决)
   ├─ 有 accepted → repair (委派) → verification (委派) → round_decision
   └─ 无 accepted → round_decision
   ↓
-round_decision (检查收敛条件)
+round_decision (检查轮次迭代条件)
   ↓
   ├─ 满足进入最终审计 → final_audit (委派)
   └─ 不满足且 < 5 轮 → review (下一轮)
   ↓
 final_audit
   ↓
-  ├─ 发现新问题 → 裁决修复验证 → 重新 final_audit (最多 3 次)
+  ├─ 发现新问题 → 裁决修复验证 → 若 <5 轮须先开新常规评审轮 → 重新 final_audit (最多 3 次)
   └─ 无新问题 → report (结束)
 ```
 
-## 进入最终审计的条件（满足任一）
+## 进入最终审计与收敛判定
 
-1. **提前收敛**（第 2 轮后）：连续 1、2 轮无新 accepted P0/P1，且第 2 轮也无新 accepted P2
-2. **正常完成**（第 3-5 轮后）：本轮无新 accepted P0/P1，且所有 accepted finding 已 verified
-3. **达到上限**（第 5 轮后）：无论如何都必须进入最终审计
-
-**关键检查点**：
-- 未解决的验证阻塞（inconclusive，不包括 blocked_by_user_changes）会阻止进入最终审计
-- 检查 run-state.md 中的 `rounds_consumed` 和 `can_trigger_new_round` 字段
-- 详细触发逻辑和优先级限制见 review-protocol.md 的"轮次上限与优先级"章节
-
-## 收敛条件（全部满足才是 CONVERGED）
-
-- 所有 accepted 且范围内的 P0/P1 已修复且验证通过
-- 所有 accepted finding（所有优先级）已 verified 或 blocked_by_user_changes（后者在最终报告中单独披露）
-- 反例覆盖率 ≥80%（verified findings 的 reproduction 占 accepted findings 的比例）
-- 最终审计两阶段完成且无新 accepted findings
-- P2 needs-evidence 中，所有 `needs_evidence_clarity: unclear_claim` 的必须解决；`clear_claim_lacking_env` 的可作为残余风险
+- **进入最终审计的条件、轮次上限与优先级**：见 `SKILL.md` 的"轮次迭代与最终审计"章节
+- **收敛条件（CONVERGED）**：见 `SKILL.md` 的"收敛判定与最终报告"章节
+- **关键检查点**：
+  - 未解决的验证阻塞（inconclusive，不包括 blocked_by_user_changes）会使结论只能为 INCOMPLETE（不阻止终审执行）
+  - 检查 run-state.md 中的 `rounds_consumed` 和 `can_trigger_new_round` 字段
 
 ## 详细文档
 
-- **流程和阶段详情**：`SKILL.md`
-- **评审协议和交接格式**：`references/review-protocol.md`
+- **流程、阶段详情与评审协议**：`SKILL.md`
 - **TDD 与提交规范**：`references/tdd-and-commit.md`
 - **证据结构和模板**：`references/evidence-structure.md`
 - **子代理提示模板与输出格式**：`references/agent-prompts.md`
