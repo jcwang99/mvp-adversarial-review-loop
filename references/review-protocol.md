@@ -1,60 +1,25 @@
-# 评审、裁决与收敛协议
+# 评审协议与交接格式
 
-本文件是评审角色、finding 状态、证据裁决和轮次边界的权威定义。完整记录格式见 evidence-structure.md；实现和提交规则见 tdd-and-commit.md。
+本文件定义评审角色、finding 裁决流程、挑战/补强机制、验证要求、轮次边界和收敛规则。
 
-## 角色选择
+**所有子代理的完整提示模板和输出格式**见 `agent-prompts.md`。本文件只保留协议规则和流程说明。
 
-按项目实际风险选择 3 到 6 个互补角色，避免职责重复。至少覆盖产品/契约、功能/边界、安全/权限三个角度；对小型或不涉及某领域的 MVP，可说明为何某角色不适用。每轮至少安排一个角色作为反证视角，主动检查常见风险假设是否有正常行为或无效前提；仍不得向其透露其他角色的 findings。
+## 评审角色选择
 
-**第 3 轮起的优先级限制**：第 3 轮及以后的常规评审轮次，评审角色仅关注可能导致数据破坏、安全事故、核心功能不可用或越权的 P0/P1 风险。P2/P3 类 findings 若无安全或数据完整性影响，可在初筛时标记为 screened_out_low_priority，不进入修复流程，在最终报告中汇总供用户决策。
+根据 MVP 范围选择角色，每轮至少 3 个角色，不同角色不能重复：
 
-| 角色 | 检查重点 |
-|------|----------|
-| 产品与契约 | 用户故事、验收标准、非目标、错误提示 |
-| 功能与边界 | 空值、极值、重复调用、非法状态、失败恢复 |
-| 安全与隐私 | 身份、授权、注入、秘密、敏感数据、信任边界 |
-| 可靠性与一致性 | 超时、重试、并发、幂等、事务、部分失败 |
-| API 与兼容性 | schema、版本、序列化、错误码、旧客户端 |
-| 性能与资源 | 复杂度、查询、内存、连接、限流和 MVP 设计负载 |
-| UX 与可访问性 | 键盘、读屏、焦点、移动布局、空/错/载状态 |
-| 测试与运维 | 可观测性、部署、迁移、回滚、配置、测试盲区 |
+- **SEC** (security)：认证、授权、数据保护、注入、XSS、CSRF、敏感信息泄露
+- **FUNC** (functionality)：核心功能契约、业务逻辑、边界条件、数据验证
+- **REL** (reliability)：错误处理、并发、资源清理、数据一致性、幂等性
+- **API** (api-compatibility)：版本兼容、废弃声明、破坏性变更、响应格式
+- **PERF** (performance)：响应时间、查询效率、资源占用、扩展性瓶颈
+- **UX** (accessibility)：键盘导航、屏幕阅读器、ARIA、颜色对比、焦点管理
+- **OPS** (operations)：日志、监控、可调试性、部署、配置、测试覆盖
+- **PROD** (product)：产品契约、用户体验一致性、错误消息清晰度
 
-**默认串行策略（算力限制）**：默认一次只启动一个评审角色，串行完成所有角色的评审。用户明确授权并行时（例如"可以并行评审"），可同时启动多个评审角色。每个评审角色有唯一的 role-slug，写入独立 inbox 子目录。不得把先前代理的发现或主代理预期告诉后续评审员。
-
-**复现审查采用单代理批量处理**：主代理启动一个独立复现审查员，一次性给它多个 findings（例如 3-5 个）的标准目录列表，让该代理依次复现每个 finding。默认不同时启动多个复现审查代理（算力限制），除非用户明确授权并行。每个 finding 的复现结果写入对应的标准目录，避免在主上下文中展开所有命令输出。
-
-独立复现审查员必须与提交原始候选的评审员不同，一次只读取一个标准 finding 目录及必要的基线/契约；只报告重放观察，不裁决范围、严重性或最终 decision。主代理仍负责检查证据并作出所有 finding 决定。
-
-若所有可用独立代理都已提交过相关候选，主代理必须亲自复现；P0/P1 及权限/数据完整性类 finding 若由主代理单独复现，需在 adjudication.md 中明确记录并标注为高风险项，在最终报告中单独披露。
-
-## 严重性与证据门槛
-
-| 级别 | 判断依据 |
-|------|----------|
-| P0 | 数据破坏、重大安全事故、核心功能完全不可用 |
-| P1 | 核心验收路径失败、越权或广泛的崩溃/部署阻断 |
-| P2 | 有限条件下的非核心功能、性能、兼容性或可访问性缺陷 |
-| P3 | 轻微体验、文档、风格或可选改进 |
-
-严重性按可重复影响定级，不按最坏想象。除纯偏好和仅文档措辞的 P3 外，候选意见必须描述具体前提、执行路径和可观察的期望/实际差异。优先提交可运行 reproduction；只有确认无法自动化时才提交手工步骤，并说明原因、环境、操作和观察点。
-
-**偏好类建议 (kind: preference)** 不进入修复流程，但收集在 screening-log.md 作为 screened_out_preference。达到收敛条件或轮次上限后，主代理将所有 preference 建议汇总交给用户决定是否采纳。
-
-每条候选 finding 包含：
-
-~~~text
-finding_id: [该角色内唯一临时 ID，如 SEC-001]
-severity: P0 | P1 | P2 | P3
-claim: [一句话描述可观察的问题]
-location: [文件、符号或行号]
-preconditions: [触发前提]
-counterexample: [输入/状态/时序/权限/环境及步骤]
-expected_vs_actual: [期望与实际]
-reproduction_path: [该角色 inbox 目录中的文件路径]
-impact: [对用户、数据、权限、可用性的实际影响]
-confidence: high | medium | low
-kind: defect | spec-gap | risk | preference
-~~~
+第 1、2 轮默认选择：SEC、FUNC、REL，根据项目特点补充其他角色。
+第 3 轮起：根据前序发现的高风险区域，选择针对性角色。
+第 4、5 轮：仅检查回归，选择与已修复 findings 相关的角色。
 
 ## 评审代理提示模板
 
@@ -72,20 +37,8 @@ kind: defect | spec-gap | risk | preference
 
 每个代理只需在自身 role-slug 目录内保证临时 ID 唯一，例如：
 
-~~~
-.review-evidence/round-1/inbox/security/SEC-001/
-.review-evidence/round-1/inbox/functionality/FUNC-001/
-~~~
-
-主代理先筛掉纯偏好和明确不构成现存风险的范围/契约请求，再对剩余候选去重并分配标准 ID；只有进入 finding 生命周期的候选有标准 ID 和索引行。将对应 inbox 目录移动为：
-
-~~~
-.review-evidence/round-[N]/R[N]-F[全局序号]-[类别]/
-~~~
-
-格式为 R[轮次]-F[全局递增序号]-[类别]，如 R1-F001-SEC。序号跨轮次递增。标准 ID 在实质裁决前分配，即使最终 decision 是 rejected、deferred 或 needs-evidence，也保留该 ID 和证据目录。original-id.txt 记录 role-slug 与临时 ID。
-
-重复候选不另分标准 ID；保留其 inbox 目录，在 findings-index.md 中引用 canonical ID，并在 canonical adjudication.md 中记录来源及去重理由。不得覆盖、合并丢失或删除原始候选证据。
+- security 角色：SEC-001、SEC-002、...
+- functionality 角色：FUNC-001、FUNC-002、...
 
 类别代码：SEC 安全隐私；FUNC 功能边界；REL 可靠性一致性；API API兼容性；PERF 性能资源；UX 可访问性；OPS 测试运维；PROD 产品契约。
 
@@ -156,182 +109,70 @@ kind: defect | spec-gap | risk | preference
   - **反例（不筛除）**："当前的密码登录没有长度限制，可以设置单字符密码"（当前行为存在，影响安全）
 
 - **针对当前已存在的行为但无实际影响**：若该行为仅在 MVP 承诺范围外的场景触发，且不影响已承诺边界、数据、权限或用户，记为 screened_out_scope。
-  - **示例（筛除）**："管理员看不到已删除用户的历史操作"（MVP 不承诺软删除功能）
-  - **反例（不筛除）**："管理员删除用户后，该用户仍能登录"（影响已承诺的删除功能）
+  - **示例（筛除）**："导出为 XML 格式时，特殊字符未转义"（MVP 只承诺 JSON 导出）
+  - **反例（不筛除）**："导出为 XML 格式时，数据库凭据泄露到输出"（安全问题，即使功能不在承诺内）
 
-- **无契约依据但有具体损害**：不能仅因契约未明说就筛除。若 finding 指出当前行为的具体损害（数据、权限、可用性、安全），继续调查并标记为 needs-evidence，列出需要的契约依据或产品决策。
-  - **示例（不筛除）**："API 无速率限制，单个用户可耗尽服务器资源"（即使契约未提及速率限制，损害明确）
-  - **反例（筛除）**："应该使用 GraphQL 而非 REST"（无具体损害，纯偏好）
+- **期望行为无契约支持但指出具体损害**：若候选指出当前行为可能造成数据丢失、安全风险、用户困惑或违反常规期望，即使无明确契约，也应继续筛查。
+  - **示例（不筛除）**："删除操作无确认提示，用户可能误删数据"（无明确契约，但有损害）
+  - **反例（筛除）**："按钮颜色应该是蓝色而不是绿色"（无契约，无损害，纯偏好）
 
-- **前提或证据不充分**：decision 为 needs-evidence，列出需要的证据。可派补强代理修正小缺陷。根本无法运行但仍有合理方向的，保留 needs-evidence；补强代理不能修正本身不证明问题不存在。
+### 2. 优先级与严重性判定
 
-**不得仅因某条功能不在 MVP 承诺内，就拒绝检查该功能当前已存在的行为。** 若该行为可能影响已承诺边界、数据、权限或用户，可验证时继续筛查和重放；只有确认问题真实且仅在 MVP 范围外场景触发后，才可标 deferred（而非 screened_out）。
+- **P0** (critical)：数据丢失/泄露、认证绕过、权限提升、完全不可用、公开 API 破坏性变更
+- **P1** (high)：部分功能失效、安全漏洞（非完全绕过）、数据不一致、明显性能问题、可访问性阻断
+- **P2** (medium)：边界条件失败、错误消息不清晰、日志缺失、次要功能缺陷
+- **P3** (low)：优化建议、测试覆盖改进、文档缺失、代码风格
 
-### 2. 复现与主代理裁决
+### 3. 复现与独立验证
 
 通过筛查的候选必须由独立复现审查员、挑战代理或主代理之一运行 reproduction；执行者必须与提出候选的评审员不同。**主代理启动一个复现审查代理，一次性给它多个 findings 的任务列表（推荐 3-5 个），由该代理依次处理；默认不同时启动多个复现审查代理（算力限制），除非用户明确授权并行。** 手工步骤仅在已确认无法自动化时使用。记录精确命令/操作、环境、退出状态、观察结果及证据路径。主代理必须检查证据与 claim 相符，且在 adjudication.md 中注明复现者和证据路径；不要求主代理重复每条常规命令。
 
-- 重放观察到承诺范围内的缺陷：进入挑战判断。
-- 有效前提下未观察到所述缺陷，且断言与描述正确并有明确反证：rejected，记录反证。
-- 脚本错误、依赖缺失、服务不可用或观察不充分：needs-evidence，不得伪称为缺陷不存在。
-- 缺陷真实但仅在 MVP 范围外的场景触发：deferred，记录触发条件、风险和复查条件。
+**裁决逻辑**（主代理综合筛查、复现审查、挑战/补强结果后决定）：
 
-decision 只取 accepted、needs-evidence、rejected 或 deferred。修复验证另记 verification 状态；inconclusive 是一次验证的结果，不是 finding decision。
+- **reproduced 且范围契约相符**：decision 为 accepted，安排修复。P0/P1 优先；P2 根据轮次和资源决定；P3 一般 deferred，在最终报告中披露。
+- **reproduced 但范围不符或影响低于声称严重性**：修订 severity 或 claim 后 deferred，或降级后 accepted。
+- **not-reproduced 且有明确反证**：decision 为 rejected，写明理由和反证路径。
+- **blocked 或 reproduction 不完整**：decision 为 needs-evidence，列出需要的证据。可派补强代理修正小缺陷。根本无法运行但仍有合理方向的，保留 needs-evidence；补强代理不能修正本身不证明问题不存在。
 
-**临时测试文件的移动**（主代理在裁决阶段执行）：
-- **时机**：在所有候选的 decision 确定后，进入 repair 阶段前，主代理批量处理临时测试文件
-- **decision 为 accepted**：
-  - 将 `tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext}` 移动到 `tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}`
-  - 示例：`tests/review/candidates/r1_sec_001.test.js` → `tests/review/reproductions/r1_f001_auth_bypass.test.js`
-  - 使用 finding 的标准 ID 和简短 slug 命名
-  - 移动后的文件供 implementation 和 verification 阶段使用，不删除
-- **decision 为 rejected、needs-evidence 或 deferred**：
-  - 删除 `tests/review/candidates/` 中的临时测试文件
-  - 保留 `.review-evidence/round-[N]/[标准 ID]/` 中的证据记录
-- **更新 run-state.md**：临时测试文件移动完成后，设置 `current_phase: repair`, `next_action: "修复第一个 accepted finding"`
-
-### 3. 裁决记录字段
-
-主代理在标准 ID 目录的 adjudication.md 中记录（完整路径：`.review-evidence/round-[N]/[标准 ID]/adjudication.md`）：
-
-~~~text
-finding_id:
-original_id_and_role:
-deduplicated_with:
-change_origin: pre-existing | regression | undetermined
-severity_after_review:
-scope_and_contract:
-evidence_screen:
-replay_status: reproduced | not-reproduced | blocked | not-required
-replay_reviewer: [role-slug 或 main-agent]
-replay_evidence_path: [replay-review.md 或其他完整证据路径]
-replay_command_or_steps:
-replay_result_and_evidence_path:
-challenge_result: not-triggered | supports | disputes | inconclusive
-decision: accepted | needs-evidence | rejected | deferred
-needs_evidence_clarity: clear_claim_lacking_env | unclear_claim | n/a
-reasoning:
-next_action:
-verification: not-applicable | pending | pass | fail | inconclusive
-merge_conflict: false | true
-user_changes_files: []
-~~~
-
-**needs_evidence_clarity 字段说明**：
-- `clear_claim_lacking_env`：claim、前提、触发路径和潜在影响已明确记录，仅缺少运行环境或外部依赖。P2 类 finding 使用此值时，可作为残余风险披露而不阻止收敛。
-- `unclear_claim`：claim、范围或契约解释本身不明确。使用此值的 P2 finding 阻止收敛，必须补充证据或明确定义。
-- `n/a`：decision 不是 needs-evidence 时使用。
+**注意**：
+- 前提或证据不充分：decision 为 needs-evidence，列出需要的证据。可派补强代理修正小缺陷。根本无法运行但仍有合理方向的，保留 needs-evidence；补强代理不能修正本身不证明问题不存在。
 
 ### 4. 挑战代理
 
-**必须挑战的触发条件**（在 accepted 前满足任一项即触发）：
-
-- P0/P1 且 confidence 为 medium 或 low。
-- 涉及权限、数据完整性或公开 API 兼容性的 finding，即使 confidence 为 high。
-
-触发后不得因为主代理已成功重放、已有失败测试或生产日志而跳过挑战；这些只证明现象，不能替代独立的反证尝试。对同一根因可由一个挑战任务覆盖多个 finding，但主代理仍须逐条确认适用性和影响。
+**完整提示模板和输出格式**见 `agent-prompts.md` 的"挑战代理（Challenge Agent）"章节。
 
 **挑战代理采用单代理批量处理**：主代理启动一个挑战代理，一次性给它多个需要挑战的 findings（推荐 2-4 个），由该代理依次挑战；默认不同时启动多个挑战代理（算力限制），除非用户明确授权并行。优先挑战最高严重性或最敏感领域的 findings。
 
-提示模板：
-
-~~~text
-你是独立挑战代理。只读检查 [标准 ID] 及当前 HEAD，不要修改项目或提交。
-原始 finding：[claim、范围、契约和前提]
-只读文件：[counterexample.md 与 reproduce.* 或 manual-steps.md 的准确路径]
-
-先独立重放 reproduce；若明确无法自动化，执行 manual-steps.md。
-随后尝试证明 claim 不成立：查规范、检查前提、尝试反例变体、寻找符合契约的正常行为。
-不要读取 adjudication.md、replay-review.md、其他代理的结论或主代理的裁决理由。
-
-## 运行约定
-- 从项目根目录运行，使用项目自身的测试框架和依赖
-- 若需要隔离测试数据或尝试反例变体，可放在：.review-evidence/round-[N]/_testdata/challenge-[finding-id]/
-- 无法隔离持久数据或外部写入时，停止并返回 inconclusive
-
-## 输出约定
-- 完整挑战报告写入：.review-evidence/round-[N]/[标准 ID]/challenge-result.md
-- 必要的完整命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log
-- 返回 supports、disputes 或 inconclusive；附证据路径、命令/退出状态和必要的短输出摘要
-- 不要在回复中粘贴完整代码和日志
-~~~
-
-`supports` 表示挑战者有效重放了 claim，且未找到足以推翻它的证据。`disputes` 必须附具体反证，证明前提不成立、行为符合契约或影响/严重性需要修订；单纯重放失败、环境不可用或观察不确定不能标为 disputes，必须标 `inconclusive`。
-
-- supports：主代理确认挑战未推翻 finding 后，decision 可为 accepted。
-- disputes：主代理审查双方证据；证据充分时 rejected，影响较小则降级/修订后 accepted，争议未解决则 needs-evidence。若修订改变了 claim、触发条件或期望行为，且修订后仍满足挑战触发条件，须针对修订版重新挑战再 accepted。
-- inconclusive：不是自动接受。主代理基于已有重放证据作决定；证据仍不足则 needs-evidence。
+**结果解释**：
+- `supports`：挑战者有效重放了 claim，且未找到足以推翻它的证据。主代理确认挑战未推翻 finding 后，decision 可为 accepted。
+- `disputes`：必须附具体反证，证明前提不成立、行为符合契约或影响/严重性需要修订。主代理审查双方证据；证据充分时 rejected，影响较小则降级/修订后 accepted，争议未解决则 needs-evidence。
+- `inconclusive`：单纯重放失败、环境不可用或观察不确定不能标为 disputes，必须标 `inconclusive`。不是自动接受。主代理基于已有重放证据作决定；证据仍不足则 needs-evidence。
 
 挑战代理不得修改项目代码、测试或 finding 的原始 reproduction。
 
 ### 5. 补强代理
 
-仅在反例思路合理但有小的执行瑕疵时使用。**补强代理采用单代理批量处理**：主代理启动一个补强代理，一次性给它多个需要补强的 findings（推荐 2-3 个），由该代理依次处理；默认不同时启动多个补强代理（算力限制），除非用户明确授权并行。补强代理只修改标准 ID 目录内的 reproduction 或 counterexample.md，不改项目文件。返回 fixed 或 cannot-fix，并把完整结果写入 `.review-evidence/round-[N]/[标准 ID]/reinforce-result.md`。
+**完整提示模板和输出格式**见 `agent-prompts.md` 的"补强代理（Reinforce Agent）"章节。
 
-- fixed：主代理重新检查并重放；补强成功本身不等于 finding 成立。
-- cannot-fix：保留 needs-evidence，说明未解决部分；不能仅因代理补强失败而 rejected。
-- 如果补强结果证明原假设错误，再由主代理基于该证据裁决 rejected。
+**仅在反例思路合理但有小的执行瑕疵时使用**。补强代理采用单代理批量处理：主代理启动一个补强代理，一次性给它多个需要补强的 findings（推荐 2-3 个），由该代理依次处理；默认不同时启动多个补强代理（算力限制），除非用户明确授权并行。补强代理只修改标准 ID 目录内的 reproduction 或 counterexample.md，不改项目文件。
+
+**结果解释**：
+- `fixed`：主代理重新检查并重放；补强成功本身不等于 finding 成立
+- `cannot-fix`：保留 needs-evidence，说明未解决部分；不能仅因代理补强失败而 rejected
+- 如果补强结果证明原假设错误，再由主代理基于该证据裁决 rejected
 
 ## 修复验证
+
+**完整提示模板和输出格式**见 `agent-prompts.md` 的"验证代理（Verification Agent）"章节。
 
 **验证代理采用单代理批量处理**：主代理启动一个验证代理，一次性给它多个修复提交的验证任务（推荐 3-5 个），由该代理依次验证；默认不同时启动多个验证代理（算力限制），除非用户明确授权并行。每个修复提交后，使用未参与该 finding 实现的验证代理。提供当前 HEAD、commit、原始 finding、原始 reproduction 路径、修复后的项目测试路径和必要的运行入口。不要把实现代理的结论当作验证结果。
 
 若所有可用代理都已参与该 finding 的实现，由主代理执行验证，并在 verification-result.md 标注 verified_by: main-agent。主代理按相同的检查要求和证据标准判定 pass、fail 或 inconclusive；最终报告列明由主代理验证的 finding。
 
-~~~text
-你是独立修复验证员。只读检查当前 HEAD 和 commit [hash]，不要编辑或提交。
-Finding：[标准 ID、原始 claim、验收契约和前提]
-临时测试文件：tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}
-修复后的项目测试：[项目正式测试文件路径，如 tests/auth.test.js]
-
-## 验证步骤
-
-1. **检查 RED 证据**：读取 implementation-result.md 中的 RED 证据，确认它覆盖原始 claim
-
-2. **验证修复**：
-   - 运行临时测试文件：`ADVERSARIAL_REVIEW=true npm test tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}`
-   - 确认测试通过（问题已修复）
-   
-3. **生成相邻测试**：
-   - 基于临时测试文件（reproductions/），生成相邻测试用例
-   - 写入 `tests/review/verifications/r{round}_f{num}_adjacent.test.{ext}`
-   - 相邻测试应验证：
-     - 修复没有破坏相邻功能（正常情况仍然工作）
-     - 修复没有过度限制（over-fix）
-     - 边界情况都覆盖了
-   
-4. **运行相邻测试**：
-   - 运行 verifications/ 中的相邻测试
-   - 如果相邻测试失败，返回 fail，说明修复不完整或过度限制
-   
-5. **合并相邻测试到项目测试**：
-   - 如果相邻测试全部通过，将相邻测试用例复制到项目正式测试文件
-   - 调整导入路径、格式以符合项目风格
-   - 在测试用例中添加注释标注 finding ID
-   
-6. **运行完整测试套件**：
-   - 运行 `npm test`（或项目的测试命令）
-   - 确认所有测试通过（无回归）
-
-## 运行约定
-- 从项目根目录运行，使用项目自身的测试框架和依赖
-- 若需要隔离测试数据或尝试变体，可放在：.review-evidence/round-[N]/_testdata/verify-[finding-id]/
-- 若验证会改写持久数据或调用真实外部服务，停止并返回 inconclusive
-
-## 输出约定
-- 完整验证报告写入：.review-evidence/round-[N]/[标准 ID]/verification-result.md
-- 必要的完整命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log
-- 只返回 pass、fail 或 inconclusive、命令/退出状态摘要、证据路径和阻塞项
-- verification-result.md 应包括：
-  - 相邻测试数量和描述
-  - 相邻测试运行结果
-  - 已合并到哪个项目正式测试文件
-- 不要在回复中粘贴完整日志
-~~~
-
-- pass：验证执行者完成所有要求的检查，且主代理确认记录和证据后，verification 记 pass，finding 可标 verified。执行者为主代理时，按上述兜底规则记录。
-- fail：verification 记 fail，保持未 verified，回到修复或创建新的回归 finding。
-- inconclusive：保持 accepted 但未 verified，记录环境/证据阻塞；不得把它作为 pass 或直接开始收敛终审。
+**结果解释**：
+- **pass**：验证执行者完成所有要求的检查，且主代理确认记录和证据后，verification 记 pass，finding 可标 verified。执行者为主代理时，按上述兜底规则记录。
+- **fail**：verification 记 fail，保持未 verified，回到修复或创建新的回归 finding。
+- **inconclusive**：保持 accepted 但未 verified，记录环境/证据阻塞；不得把它作为 pass 或直接开始收敛终审。
 
 ## 覆盖率与轮次记录
 
@@ -363,6 +204,8 @@ counterexample_coverage = 已由主代理或独立执行者重放并留证的 re
 
 ## 最终审计与收敛
 
+**完整提示模板和输出格式**见 `agent-prompts.md` 的"最终审计代理（Final Audit Agent）"章节。
+
 **最终审计的触发时机**：
 - 最终审计不属于常规评审轮（不计入 5 轮上限），而是在满足特定条件后触发的独立阶段
 - **提前触发**：第 2 轮后若连续两轮没有新的范围内 P0/P1 且无新 accepted P2，可跳过第 3-5 轮直接进入最终审计
@@ -379,64 +222,23 @@ counterexample_coverage = 已由主代理或独立执行者重放并留证的 re
 
 最终审计由未参与前序评审或实现的新代理完成，分两阶段，防止历史结论锚定宽泛扫描。同一个终审代理先完成第一阶段，保存结果后，主代理才发送第二阶段材料。每次审计使用新目录 `.review-evidence/round-[N]/final-audit/attempt-[K]/`，不得覆盖之前轮次或尝试的结果：
 
-1. **未提示历史的扫描**：只提供 MVP 范围、验收标准、当前 HEAD 和测试/构建命令。不给 finding 列表、adjudication、历史评审结论或修复清单；要求先完成并保存独立扫描。不要让审计员读取 .review-evidence/ 中的历史 finding 材料。
+1. **未提示历史的扫描（盲扫）**：只提供 MVP 范围、验收标准、当前 HEAD 和测试/构建命令。不给 finding 列表、adjudication、历史评审结论或修复清单；要求先完成并保存独立扫描。不要让审计员读取 .review-evidence/ 中的历史 finding 材料。
 2. **定向复核**：扫描结果已保存后，再提供所有 accepted finding、原始证据路径、修复测试路径和提交，要求逐项复核，并检查完整测试、构建、适用静态检查及遗留风险。
 
 主代理预先提供新的输出路径。第一阶段代理不得读取任何已有 `.review-evidence/` 内容，但可以把本阶段结果写入指定文件；完整候选证据写在 inbox，摘要只在 blind-scan.md 记录一次。
 
-第一阶段提示：
+**关键规则**：
+- 第一阶段扫描已保存后，再给同一审计员第二阶段提示，不要改写第一阶段结论
+- 不得询问 "是否还有其他问题" 或依赖对话记忆；所有 finding 必须写在指定证据文件中
+- 第一阶段结果是基线，第二阶段逐项复核但不必重复第一阶段已列举的 finding
 
-~~~text
-你是独立最终审计员。检查 [MVP 范围和验收标准] 在当前 HEAD 的整体行为。
-可运行的验证命令：[测试/构建/静态检查命令]
-不要读取 .review-evidence/ 中任何已有内容、历史 finding、修复清单或以前的裁决；不要编辑项目文件或提交。
+## 收敛条件
 
-## 文件组织约定
-- 候选证据写入：.review-evidence/round-[N]/inbox/final-audit-attempt-[K]/[临时_id]/
-- 扫描摘要写入：.review-evidence/round-[N]/final-audit/attempt-[K]/blind-scan.md
-- 从项目根目录运行，使用项目自身的测试框架和依赖
-- 若需要隔离测试数据，可放在：.review-evidence/round-[N]/_testdata/final-audit-attempt-[K]/
-- 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止并记录阻塞
+**全部满足才能标记 CONVERGED**：
+- 所有 accepted 且范围内的 P0/P1 已修复且验证通过
+- 所有 accepted finding（所有优先级）已 verified 或 blocked_by_user_changes（后者在最终报告中单独披露）
+- 反例覆盖率 ≥80%
+- 最终审计两阶段完成且无新 accepted findings
+- P2 needs-evidence 中，所有 `needs_evidence_clarity: unclear_claim` 的必须解决；`clear_claim_lacking_env` 的可作为残余风险
 
-执行全新只读扫描和可用的整体验证。每条具体候选及完整反例写入对应 inbox 目录；在 blind-scan.md 中只写范围、命令摘要、候选临时 ID 和阻塞项，不记录 inbox 路径；主代理分配标准 ID 后在 screening-log.md 记录稳定的证据路径。
-返回 SCAN_COMPLETE 或 BLOCKED、finding 摘要/证据路径、命令退出状态和阻塞项。此阶段不得判定整体 CONVERGED，也不要核验历史 finding。
-~~~
-
-第一阶段扫描已保存后，再给同一审计员第二阶段提示：
-
-~~~text
-现在执行定向复核。第一阶段扫描已保存，不要改写其结论。
-第一阶段记录：[.review-evidence/round-[N]/final-audit/attempt-[K]/blind-scan.md]
-已修复 finding 及其原始证据、项目测试、commit：[由主代理提供的列表]
-遗留 needs-evidence、rejected、deferred 风险：[由主代理提供的索引摘要]
-可以读取第一阶段记录和主代理提供的 finding 裁决/证据；不要改写 blind-scan.md。
-
-## 运行约定
-- 从项目根目录运行，使用项目自身的测试框架和依赖
-- 若需要隔离测试数据，继续使用：.review-evidence/round-[N]/_testdata/final-audit-attempt-[K]/
-- 若验证会改写持久数据或调用真实外部服务，停止并记录阻塞
-
-复核所有 accepted finding 和盲扫候选的最终裁决；运行每条 accepted finding 的原始反例和修复测试，再运行完整测试、构建和适用静态检查。
-逐项处理 finding，只按需读取当前 finding 的证据并立即写入该项结果；不要一次性加载全部 reproduction 或日志。
-把逐项结果及风险检查写入 `.review-evidence/round-[N]/final-audit/attempt-[K]/targeted-verification.md`。
-只返回状态、finding ID、命令退出状态摘要、证据路径和阻塞项；不得编辑或提交。
-~~~
-
-终审代理的回复同样只返回状态、finding ID、命令/退出状态摘要、证据路径和阻塞项；完整记录保存在证据文件。
-
-任一终审阶段发现的每个具体问题都必须由主代理以 `final-audit-attempt-[K]` 作为 role-slug 记录到 screening-log.md，并进入普通去重、ID 分配、筛查、重放和裁决流程。它不能停留在终审报告之外，也不能被直接放入 accepted 清单。若成为 accepted，修复并验证通过后，当前终审失效；必须启动新的常规评审轮，由相关互补角色检查受影响区域和修复回归，再由新的终审代理重跑两阶段审计。
-
-**终审发现触发的新常规评审轮计入 5 轮上限**：
-- 若此时已达第 5 轮上限，报告 INCOMPLETE 并列出未完成修复的终审发现
-- **终审重试上限**：最终审计最多重试 2 次（即最多 3 次终审尝试）。若第 3 次终审仍发现需要修复的问题，且已达轮次上限无法启动新常规评审轮，报告 INCOMPLETE；若未达轮次上限但第 3 次终审后又触发修复，报告 INCOMPLETE 并说明原因（"终审重试次数已耗尽"）。
-
-终审发现的 P1/P2 即使出现在原本第 3-5 轮的时间点，也不能因常规扫描优先级限制而被丢弃；若轮次上限不允许完成后续互补复核和新终审，报告 INCOMPLETE。若终审发现仍为 needs-evidence，整体不得报告 CONVERGED；若因明确反证而 rejected 或真实范围外而 deferred，则记录后可继续第二阶段终审。
-
-只有同时满足以下条件才报告 CONVERGED：
-
-1. 达到可提前结束条件的一整轮独立评审（第 2 轮后连续 2 轮无新 P0/P1 且无新 accepted P2），或完成规定的最后回归轮；没有未解决的范围内 P0/P1，也没有未解决 accepted P2。范围外且已证实的 deferred 不阻止收敛，但必须列为残余风险。
-2. 所有历史 accepted finding 均按上述规则验证 pass；没有 fail 或 inconclusive 被当作通过。
-3. 反例覆盖率至少 80%；若分母为 0，按前述规则报告 N/A，且每个原始候选均有 screening-log 结果。所有进入 finding 生命周期的候选均有当前 decision，所有筛除项/重复项均有筛查记录。范围内 P0/P1 needs-evidence 阻止收敛；常规轮中的 P2 needs-evidence 按其明确性处理：前提和影响已明确但缺环境的可作残余风险，claim 或契约解释本身不明确的阻止收敛。
-4. 最终审计两阶段完成，盲扫中的候选均已裁决且没有 needs-evidence；完整测试/构建结果和所有 rejected、deferred、needs-evidence 风险均有记录。
-
-最终报告包含每轮 finding 状态、关键证据路径、测试/提交、遗留风险、覆盖率和 CONVERGED/INCOMPLETE。**如果收敛或达到上限，附上所有 screened_out_preference 建议的汇总清单供用户决策。** CONVERGED 只表示本流程达到约定条件，不代表形式化证明或生产安全保证。
+**未满足时标记 INCOMPLETE**，列明残余风险、阻塞原因和未验证项。
