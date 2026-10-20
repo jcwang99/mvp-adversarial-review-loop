@@ -1,6 +1,8 @@
 # Main Agent Recovery Guide - MVP Adversarial Review Loop
 
-**这是一个多轮循环流程，最少 2 轮常规评审，最多 max_rounds 轮（默认 5，用户可在 baseline 指定），然后进行最终审计。**
+**本文件是压缩上下文恢复指南。完整流程、阶段详情与评审协议见 SKILL.md。**
+
+**这是一个多轮循环流程，最少 2 轮常规评审，最多 max_rounds 轮（默认 5，与用户在 baseline 确认并记入 run-state.md），然后进行最终审计。**
 
 ## 压缩上下文后立即做的 3 件事
 
@@ -9,7 +11,7 @@
 获取当前状态：
 - `current_phase`: 当前在哪个阶段
 - `current_round`: 当前是第几轮（1 至 max_rounds）
-- `max_rounds`: 常规评审轮上限（默认 5，用户可在 baseline 指定）
+- `max_rounds`: 常规评审轮上限（默认 5，与用户在 baseline 确认并记入 run-state.md）
 - `next_action`: 下一步应该做什么（包括需要委派的子代理类型）
 
 ### 2. 确认你在循环中的位置

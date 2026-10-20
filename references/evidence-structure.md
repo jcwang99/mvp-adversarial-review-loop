@@ -80,14 +80,13 @@ tests/                                      # 项目测试目录
   - 若项目测试本身已支持临时数据（如 SQLite `:memory:`、Jest 隔离），不需要此目录
   - **清理规则**：
     - **保留条件**：_testdata/ 必须保留直到该轮所有 accepted findings 验证完成
-    - **清理时机**：
-      - 每轮评审和修复验证完全完成后，可清理该轮的 `_testdata/` 目录
-      - 若该轮有 verification: fail 或 inconclusive 的 findings，保留对应的 _testdata/ 子目录
-      - 进入下一轮常规评审时，可清理上一轮已验证的 _testdata/
+    - **清理时机与执行者**（主代理执行）：
+      - 每轮 round_decision 时，清理上一轮已验证 findings 的 _testdata/（保留 fail/inconclusive 的）
+      - 进入 final_audit 时，清理所有已验证轮次的 _testdata/
+      - 最终报告阶段，清理所有 _testdata/（如果所有 findings 已终结）
     - **清理前检查**：
       - 确认所有证据文件（counterexample.md、output.log、*-result.md）已保存在 inbox/ 或标准 ID 目录
       - 确认不需要复现失败或 inconclusive 的 finding
-    - **最终清理**：最终审计通过且收敛后，可清理所有 _testdata/
     - **版本控制**：_testdata/ 应列入 .gitignore，不提交到版本控制
 
 **tests/review/ 临时测试目录**（评审流程专用，结束后删除）：
@@ -149,6 +148,12 @@ adversarial-review = []
 - 仅在需要避免数据冲突时使用 _testdata/，通过环境变量传递路径
 - 示例运行命令（POSIX shell 语法；Windows PowerShell 请转换为等价命令，如 `$env:ADVERSARIAL_REVIEW='true'; npm test ...`）：
   ```bash
+  # 以下为 POSIX shell 示例
+  # Windows PowerShell 用户请转换：
+  #   ENVVAR=value cmd → $env:ENVVAR='value'; cmd
+  #   /tmp/... → $env:TEMP\...
+  #   变量赋值 var=$(cmd) → $var = cmd
+  
   # 运行正式测试（日常测试，跳过 tests/review/）
   npm test
   
@@ -163,6 +168,11 @@ adversarial-review = []
 **Reproduction 文件命名**：
 - **评审阶段（candidates/）**：`r{round}_{role}_{temp_id}.test.{ext}`（如 `r1_sec_001.test.js`）
 - **adjudication accepted（reproductions/）**：`r{round}_f{num}_{slug}.test.{ext}`（如 `r1_f001_auth_bypass.test.js`）
+  - **slug 生成规则**：从 finding 的 claim 中提取 2-4 个关键词（小写、下划线分隔、最多 20 字符）：
+    - claim: "已登录用户可读取其无权访问的项目详情" → slug: `auth_bypass` 或 `unauth_access`
+    - claim: "删除操作无确认提示" → slug: `delete_no_confirm`
+    - 或使用类别代码：`r1_f001_sec.test.js`（使用 SEC 类别）
+  - 主代理在分配标准 ID 时同时生成 slug，记录在 finding 的 adjudication.md 中
 - **verification 阶段（verifications/）**：`r{round}_f{num}_{slug}_adjacent.test.{ext}`（如 `r1_f001_auth_bypass_adjacent.test.js`）
 - 按项目语言和测试约定选择扩展名：
   - JavaScript/TypeScript: `.test.js`, `.spec.ts`

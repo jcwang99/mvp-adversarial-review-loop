@@ -578,7 +578,10 @@ blockers:
 
 **失败处理**：
 - 如果无法生成有意义的相邻测试（例如：finding 的修复已覆盖所有相关路径），说明理由，verification 仍可 pass
-- 如果生成的相邻测试失败，verification 状态为 fail，不合并测试文件
+- 如果生成的相邻测试失败，分析失败原因：
+  - **修复不完整**（相邻路径仍有问题）：verification 状态为 fail，不合并测试文件，回到 repair 阶段
+  - **测试本身有问题**（断言错误、fixture 问题、环境问题）：重新生成测试或标记为 inconclusive，说明原因
+  - **发现无关的新问题**（与当前 finding 不相关的独立缺陷）：标记为新 finding（在 verification-result.md 中记录并建议主代理创建新 finding），当前 verification 仍可 pass（不合并失败的测试）
 
 ## 运行约定
 - 从项目根目录运行，使用项目自身的测试框架和依赖
@@ -797,12 +800,20 @@ git worktree remove <临时目录>/verify-[finding-id]
 
 ### 第一阶段提示模板（盲扫）
 
-主代理预先提供新的输出路径。第一阶段代理不得读取任何已有 `.review-evidence/` 内容，但可以把本阶段结果写入指定文件；完整候选证据写在 inbox，摘要只在 blind-scan.md 记录一次。
+主代理从 baseline.md 中提取 MVP 范围和验收标准，直接在提示中提供给审计代理。审计代理不读取任何 .review-evidence/ 内容（包括 baseline.md）。第一阶段代理可以把本阶段结果写入主代理指定的证据文件路径；完整候选证据写在 inbox，摘要只在 blind-scan.md 记录一次。
 
 ~~~text
-你是独立最终审计员。检查 [MVP 范围和验收标准] 在当前 HEAD 的整体行为。
+你是独立最终审计员。检查以下 MVP 范围和验收标准在当前 HEAD 的整体行为。
+
+## MVP 范围和验收标准
+[主代理从 baseline.md 中提取并提供，包括：
+- MVP 包含功能、明确排除功能
+- 验收标准和来源
+- 设计负载或兼容性承诺
+]
+
 可运行的验证命令：[测试/构建/静态检查命令]
-不要读取 .review-evidence/ 中任何已有内容、历史 finding、修复清单或以前的裁决；不要编辑项目文件或提交。
+不要读取 .review-evidence/ 中任何已有内容（包括 baseline.md）、历史 finding、修复清单或以前的裁决；不要编辑项目文件或提交。
 
 ## 任务
 1. 独立检查当前 HEAD 是否满足 MVP 承诺
