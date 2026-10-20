@@ -2,11 +2,13 @@
 
 **本文件是压缩上下文恢复指南。控制面见 `<skill-dir>/SKILL.md`，阶段操作见 `<skill-dir>/references/phase-playbooks.md`。`<skill-dir>` 指本技能目录（通常为 `~/.claude/skills/mvp-adversarial-review-loop/`）。**
 
-**这是多轮循环：最少 2 轮常规评审，最多 max_rounds 轮（默认 5，与用户在 baseline 确认并记入 run-state.md），然后进行最终审计。**
+**这是多轮循环：最少 2 轮常规评审，最多 max_rounds 轮（默认 5，与用户在 baseline 确认并记入 state.json），然后进行最终审计。**
 
 ## 压缩上下文后立即做的 3 件事
 
-### 1. 读取并校验 `.review-evidence/run-state.md`
+### 1. 读取并校验 `.review-evidence/state.json`
+
+`state.json` 和 `findings.json` 是事实来源；`run-state.md` / `findings-index.md` 是生成视图。
 
 获取当前状态：
 
@@ -20,10 +22,11 @@
 校验命令：
 
 ```bash
-node <skill-dir>/scripts/validate-run-state.js .review-evidence/run-state.md
+node <skill-dir>/scripts/reviewctl.js status
+node <skill-dir>/scripts/reviewctl.js validate
 ```
 
-无 Node 时人工对照 `<skill-dir>/references/evidence-structure.md` 的模板。
+校验失败先修复状态，不要继续委派。无 Node 时人工对照 `<skill-dir>/references/evidence-structure.md`。
 
 ### 2. 确认你在循环中的位置
 
@@ -38,7 +41,7 @@ node <skill-dir>/scripts/validate-run-state.js .review-evidence/run-state.md
 
 | 阶段 | 必须委派 | 先读 |
 |------|----------|------|
-| review | 至少 3 个独立评审代理 | `phase-playbooks.md` §1 |
+| review | 至少 3 个独立评审代理；用 `reviewctl new-inbox` 建路径 | `phase-playbooks.md` §1 |
 | adjudication | 独立复现审查代理；必须范围内的挑战代理；必要时补强代理 | `phase-playbooks.md` §2 |
 | repair | 实现代理（一个 finding 一个代理） | `phase-playbooks.md` §3 + `tdd-and-commit.md` |
 | verification | 验证代理（不能是实现者） | `phase-playbooks.md` §4 |
@@ -54,7 +57,8 @@ node <skill-dir>/scripts/validate-run-state.js .review-evidence/run-state.md
 | 自己做评审 | 主代理自己读代码、写 counterexample | 委派至少 3 个评审子代理 |
 | 修复后不验证 | 实现完成后直接进入下一个 finding | 每个修复后必须委派独立验证代理 |
 | 跳过 adjudication | 评审完成后直接进入 repair 或 round_decision | 先筛查、去重、独立复现、必要挑战 |
-| 忘记更新状态 | 完成阶段后没有更新 run-state.md | 每个阶段切换后立即更新 |
+| 忘记更新状态 | 完成阶段后没有更新状态 | 用 `reviewctl advance` / `record-*` |
+| 手改生成文件 | 直接编辑 run-state.md 或 findings-index.md | 运行 `reviewctl render` |
 | `blocked` 当 `rejected` | 复现环境不可用却直接拒绝 | 保留 `needs-evidence` |
 | 到 max_rounds 仍开新轮 | 终审发现新问题后启动第 max_rounds+1 轮 | 报告 INCOMPLETE |
 
@@ -69,6 +73,7 @@ baseline → review (委派) → adjudication (复现审查+裁决)
 round_decision (检查提前收敛/轮次上限)
   ↓
   ├─ 进入最终审计 → final_audit (新代理，两阶段)
+  ├─ 终审新问题且无预算 → report (INCOMPLETE)
   └─ 未满足且未达上限 → review (下一轮)
   ↓
 final_audit
@@ -89,13 +94,14 @@ final_audit
 ## 详细文档
 
 - **控制面、阶段状态机、轮次策略、收敛判定**：`<skill-dir>/SKILL.md`
+- **状态操作、校验、提交守卫**：`<skill-dir>/scripts/reviewctl.js`
 - **阶段操作细节**：`<skill-dir>/references/phase-playbooks.md`
 - **TDD 与提交规范**：`<skill-dir>/references/tdd-and-commit.md`
 - **证据结构和 run-state 模板**：`<skill-dir>/references/evidence-structure.md`
 - **子代理提示模板与输出格式**：`<skill-dir>/references/agent-prompts.md`
 - **证据归档**：`<skill-dir>/references/archival.md`（可选，仅在评审完成后）
-- **当前运行状态**：`.review-evidence/run-state.md`
+- **当前运行状态**：`.review-evidence/state.json`（人读视图：`.review-evidence/run-state.md`）
 
 ## 记住
 
-**压缩后先读并校验 run-state.md；不要在第 1 轮后就结束；不要跳过阶段；不要自己做评审/修复/验证。**
+**压缩后先读并校验 state.json / run-state.md；不要在第 1 轮后就结束；不要跳过阶段；不要自己做评审/修复/验证。**

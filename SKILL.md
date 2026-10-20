@@ -7,7 +7,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 以可重放证据确认缺陷，以 TDD 修复，以独立验证确认修复，多轮有界，最后进行盲扫审计。主代理保留判断权；子代理提供独立评审、挑战、实现或验证结果。
 
-**控制面与细节分离**：本文件只保留常驻的硬规则、阶段状态机、轮次策略和收敛判定。进入具体阶段前，读取 `references/phase-playbooks.md` 的对应章节；委派模板只从 `references/agent-prompts.md` 取。
+**控制面与细节分离**：本文件只保留常驻的硬规则、阶段状态机、轮次策略和收敛判定。进入具体阶段前，读取 `references/phase-playbooks.md` 的对应章节；委派模板只从 `references/agent-prompts.md` 取。**状态和格式由 `scripts/reviewctl.js` 约束**：类型化状态只写 JSON，`run-state.md` / `findings-index.md` 是生成视图。
 
 ## 0. 启动与恢复
 
@@ -15,24 +15,24 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 **压缩上下文后恢复**：
 
-1. 立即读取 `.review-evidence/run-state.md`。
-2. 运行 `node <skill-dir>/scripts/validate-run-state.js .review-evidence/run-state.md`；无 Node 时人工对照 `references/evidence-structure.md` 的模板。
+1. 立即读取 `.review-evidence/run-state.md` 和 `.review-evidence/state.json`。
+2. 运行 `node <skill-dir>/scripts/reviewctl.js status` 和 `node <skill-dir>/scripts/reviewctl.js validate`；校验失败先修复状态，不要继续委派。
 3. 按 `current_phase` 和 `next_action` 继续；不要跳阶段，不要在第 1 轮后就结束。
 4. 若项目级指令文件既无标记 `mvp-adversarial-review-loop-recovery-guide` 也无标题 `Main Agent Recovery Guide - MVP Adversarial Review Loop`，先按 `references/phase-playbooks.md` §0 重新部署。
 
-**每次阶段切换后立即更新** `run-state.md`：`current_phase`、`current_round`、`rounds_consumed`、`can_trigger_new_round`、`active_finding`、`last_completed_event`、`next_action`、`updated_at`。
+**每次阶段切换后**运行 `reviewctl advance` / `record-*`；脚本更新 `state.json`、`findings.json` 和生成视图。不要手改这些文件。
 
 ## 1. 不可违反的约束
 
 1. **主代理裁决**：子代理结论只是输入；范围、契约、状态和收敛由主代理决定。任何 finding 进入修复前必须有主代理确认的失败证据。
-2. **证据持久化**：`.review-evidence/` 是事实来源。完整复现、命令输出和阶段记录写入文件；对话只留摘要和路径；敏感值先脱敏。
+2. **证据持久化**：`.review-evidence/state.json` 和 `findings.json` 是事实来源；`run-state.md` / `findings-index.md` 由 `reviewctl` 生成，禁止手改。完整复现、命令输出和阶段记录写入文件；对话只留摘要和路径；敏感值先脱敏。
 3. **独立性**：评审员不能复现或裁决自己的 finding；复现审查员不能是提出者；验证代理不能是实现者；最终审计代理不能参与过本流程任何阶段。
 4. **先证明再修复**：每个 accepted finding 必须先确认 RED，再按 `references/tdd-and-commit.md` 完成 RED-GREEN-REFACTOR、回归和隔离提交。
 5. **失败、未知、阻塞分开**：环境不可用或证据不足不能标 rejected 或 verified；未完成核验保持未完成并记录阻塞。
 6. **默认串行**：一次一个子代理；评审角色串行，复现/挑战/补强/验证/实现按批次串行。只有用户明确授权且有独立 worktree 隔离时才并行；未经授权不得并发评审或进行真实外部写入。
 7. **不覆盖用户改动**：修复提交只含当前 finding 的代码和正式测试；`.review-evidence/` 不进修复提交；禁止强制 checkout、reset、clean。
 8. **真实报告**：没有完成要求的验证时报告 INCOMPLETE；不把测试绿灯或“未发现问题”当成收敛证据。
-9. **授权留痕**：需要用户授权时使用 AskUserQuestion；决策写入 `run-state.md` 的 `blockers`（格式：`[事项] - user authorized|declined on [ISO 8601]`），最终报告披露。
+9. **授权留痕**：需要用户授权时使用 AskUserQuestion；决策用 `reviewctl authorize --action ... --decision authorized|declined` 写入状态和 `blockers`，最终报告披露。
 10. **轮次有界**：最少 2 轮常规评审，最多 `max_rounds`（默认 5，最小 2）；最终审计不计入轮次，但终审触发的新常规轮计入。
 
 ## 2. 阶段状态机
@@ -44,7 +44,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 | `adjudication` | 筛查、去重、分配标准 ID、检查证据、裁决 | 独立复现审查代理；必须范围内的挑战代理；必要时补强代理 | 有 accepted → `repair`；否则 → `round_decision` |
 | `repair` | 一次一个 finding，检查 RED 和提交 | 实现代理 | `verification`（或 cannot_fix 时重新裁决） |
 | `verification` | 检查证据、更新 finding 状态 | 验证代理（不能是实现者） | 下一个 finding；fail 回到 `repair`；全部终结后 `round_decision` |
-| `round_decision` | 计数、判断提前收敛/轮次上限 | 无 | 下一轮 `review` 或 `final_audit` |
+| `round_decision` | 计数、判断提前收敛/轮次上限 | 无 | 下一轮 `review`、`final_audit`，或终审后的 `report` |
 | `final_audit` | 提供盲扫材料、保存两阶段结果 | 未参与过本流程的新审计代理 | `report` 或（有预算时）新常规轮 |
 | `report` | 收敛判定、报告、清理、还原指令文件 | 无 | 结束 |
 
@@ -61,17 +61,19 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 | `final_audit` | `references/phase-playbooks.md` §6 |
 | `report` | `references/phase-playbooks.md` §7 |
 | 委派任何子代理 | `references/agent-prompts.md` 对应模板 |
-| 证据目录、run-state 模板 | `references/evidence-structure.md` |
+| 状态操作、校验、提交守卫 | `scripts/reviewctl.js`（`reviewctl help`） |
+| 证据目录、JSON 状态模板 | `references/evidence-structure.md` |
 | 完成后归档（可选） | `references/archival.md` |
 
 不要默认加载所有 reference；只读当前阶段需要的章节。
 
 ## 3. 委派硬门禁
 
-- **review**：每个角色一个独立、只读子代理；至少 3 个不同角色；临时测试只写 `tests/review/candidates/`；证据写各自 inbox。
+- **所有阶段**：状态只通过 `reviewctl` 修改；进入下一阶段前运行 `reviewctl validate`；修复提交前运行 `reviewctl guard-commit`。
+- **review**：每个角色一个独立、只读子代理；至少 3 个不同角色；用 `reviewctl new-inbox` 创建 inbox；临时测试只写 `tests/review/candidates/`；每个代理必须写 `handoff.json`。
 - **adjudication**：复现必须由未提出该候选的独立代理执行；提出者不能单独决定自己的 finding；P0/P1、权限/数据完整性/公开 API 或证据异常项，主代理必须亲自加验或再委派第二个独立审查。
 - **必须挑战**：拟 accepted 的 P0、涉及安全/权限/数据完整性/公开 API 的 P1、复现结果矛盾或不寻常的证据。无法挑战必须范围项时，必须获得用户明确授权并留痕。
-- **repair**：一个实现代理只处理一个 finding；必须按 TDD 先 RED 后 GREEN；一个 finding 一个提交。
+- **repair**：一个实现代理只处理一个 finding；必须按 TDD 先 RED 后 GREEN；一个 finding 一个提交；blocked/unresolved 后用 `reviewctl next-finding` 切换。
 - **verification**：验证代理不能是实现者；必须在修复前 commit 重放原始反例（默认独立 worktree，兜底方案需主代理批准）；至少生成 2 个相邻测试（正常 + 边界）；同一 finding 最多 2 次修复-验证循环。
 - **final_audit**：审计代理不得参与过评审、复现、挑战、补强、实现或验证；第一阶段盲扫不得读取 `.review-evidence/` 历史内容；第一阶段保存后才发第二阶段材料；最多 3 次尝试。
 - **主代理兜底**：只有没有未参与该 finding 的独立代理可用（所有可用代理都提交过相关候选，或没有代理可用）且用户明确授权时，主代理才能亲自复现或验证；必须在 `adjudication.md` 标为高风险，并在最终报告单独披露。
@@ -131,6 +133,8 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 | 评审后跳过 adjudication | 先筛查、去重、独立复现、必要挑战 |
 | 修复后不验证 | 委派未参与实现的验证代理 |
 | 把 `blocked` 当 `rejected` | 保留 `needs-evidence` |
-| 忘记更新 run-state | 每个阶段切换后立即更新 |
+| 忘记更新状态 | 用 `reviewctl advance` / `record-*`，不要手改 JSON |
+| 手改 `run-state.md` / `findings-index.md` | 运行 `reviewctl render` 重新生成 |
+| 跳过 `reviewctl validate` | 每个阶段边界和提交前都运行 |
 | 到 `max_rounds` 仍启动新常规轮 | 报告 INCOMPLETE |
-| 把 `.review-evidence/` 混入修复提交 | 证据单独提交或保留在工作区 |
+| 把 `.review-evidence/` 混入修复提交 | `reviewctl guard-commit` 会拒绝 |

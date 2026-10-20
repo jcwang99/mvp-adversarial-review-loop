@@ -19,9 +19,13 @@
 
 ```
 .review-evidence/
+├── review-config.json             # max_rounds 和用户确认
+├── state.json                     # 最终状态（事实来源）
+├── findings.json                  # findings 生命周期（事实来源）
+├── render.json                    # 生成视图 hash
 ├── baseline.md                    # 基线信息
-├── run-state.md                   # 最终状态
-├── findings-index.md              # findings 索引
+├── run-state.md                   # 生成的状态视图
+├── findings-index.md              # 生成的 findings 索引
 ├── screening-log.md               # 筛查日志
 └── ARCHIVE-README.md              # 归档说明（归档时生成）
 ```
@@ -114,7 +118,7 @@ ls tests/review/                           # 应该报错：目录不存在
 ## Directory Structure
 - `baseline.md`: 评审基线和初始状态
 - `run-state.md`: 最终运行状态
-- `findings-index.md`: 所有 findings 的索引和状态
+- `findings.json` / `findings-index.md`: findings 生命周期和生成的索引
 - `screening-log.md`: 筛查和去重日志
 - `final-report.md`: 最终报告
 - `archives/`: 压缩的轮次证据（如果启用压缩）
@@ -195,7 +199,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - [ ] `tests/review/` 目录已删除
 - [ ] 所有 `_testdata/` 目录已删除
 - [ ] `ARCHIVE-README.md` 已生成
-- [ ] 核心索引文件（baseline.md、run-state.md、findings-index.md、screening-log.md）保持可读
+- [ ] 核心状态文件（review-config.json、state.json、findings.json、baseline.md、run-state.md、findings-index.md、screening-log.md）保持可读
 - [ ] 如果启用压缩：所有 `archives/*.tar.gz` 可以正常解压
 - [ ] 如果启用压缩：每个压缩的轮次目录都有 `.archived` 标记文件
 - [ ] 归档状态已提交到版本控制
@@ -234,7 +238,7 @@ done
 对于长期项目，可以将归档进一步迁移到冷存储：
 
 1. **保留在主仓库**：
-   - baseline.md、run-state.md、findings-index.md、screening-log.md
+   - review-config.json、state.json、findings.json、baseline.md、run-state.md、findings-index.md、screening-log.md
    - final-report.md
    - ARCHIVE-README.md
 
@@ -327,7 +331,7 @@ echo "Review directory: $REVIEW_DIR"
 ### 推荐做法
 
 - **提交到版本控制**：
-  - 所有核心索引文件（baseline.md、run-state.md、findings-index.md、screening-log.md）
+  - 所有核心状态文件（review-config.json、state.json、findings.json、baseline.md、run-state.md、findings-index.md、screening-log.md）
   - 最终报告（final-report.md）
   - ARCHIVE-README.md
   - 小型压缩包（< 10 MB）

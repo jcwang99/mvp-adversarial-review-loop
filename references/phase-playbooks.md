@@ -2,6 +2,28 @@
 
 本文件是 `SKILL.md` 的阶段展开。进入某个阶段前，只读取对应章节；规则冲突时，以 `SKILL.md` 的硬门禁和收敛判定为准。
 
+## 命令入口
+
+所有状态变更通过 `node <skill-dir>/scripts/reviewctl.js <command>`：
+
+| 动作 | 命令 |
+|------|------|
+| 初始化/确认 max_rounds | `reviewctl init --max-rounds N --user-confirmed`（或 `--interactive`） |
+| 查看/校验 | `reviewctl status`、`reviewctl validate` |
+| 创建评审 inbox | `reviewctl new-inbox --round N --role SEC --temp-id SEC-001` |
+| 记录轮次计数 | `reviewctl record-round --round N --raw N --duplicates N --screened N --new-p0p1p2 N` |
+| 记录 finding | `reviewctl record-finding --id ... --decision ...` |
+| 记录实现/验证 | `reviewctl record-implementation ...`、`reviewctl record-verification ...` |
+| 下一个 finding | `reviewctl next-finding` |
+| 标记未解决 | `reviewctl mark-unresolved --id ID --reason TEXT` |
+| 记录终审 | `reviewctl record-audit --attempt N --status complete --new-issues N` |
+| 授权留痕 | `reviewctl authorize --action NAME --decision authorized 或 declined` |
+| 阶段转移 | `reviewctl advance --to PHASE` |
+| 覆盖率/收尾 | `reviewctl coverage`、`reviewctl finalize --status ...` |
+| 提交守卫/重绘 | `reviewctl guard-commit --finding ID --test PATH`、`reviewctl render` |
+
+`reviewctl help` 输出完整参数。不要手改 `state.json`、`findings.json`、`run-state.md` 或 `findings-index.md`。
+
 ## 0. baseline
 
 **主代理执行**，不委派评审。
@@ -9,8 +31,8 @@
 1. 确认 MVP 范围、明确排除项、验收标准及来源、技术栈、入口和关键数据流、外部服务与认证边界、部署方式。
 2. 记录仓库路径、分支、`baseline_head`、初始 `git status`、已有用户改动。
 3. 确认测试/构建/类型检查/lint/安全扫描命令，并运行基线；完整日志路径写入 `baseline.md`。
-4. 与用户确认 `max_rounds`：默认 5，用户可指定，最小 2；小于 2 时按 2 处理并记录。
-5. 创建 `.review-evidence/`，初始化 `baseline.md`、`run-state.md`、`findings-index.md`、`screening-log.md`。
+4. 与用户确认 `max_rounds`：默认 5，用户可指定，最小 2；小于 2 时 `reviewctl init` 会拒绝。然后运行 `reviewctl init --max-rounds N --user-confirmed`（终端场景可用 `--interactive`），由脚本创建 `review-config.json`、`state.json`、`findings.json` 和生成视图。
+5. 填写 `init` 创建的 `baseline.md` 和 `screening-log.md` 模板。
 6. 确保项目测试配置忽略 `tests/review/`（或使用 `ADVERSARIAL_REVIEW` 等开关），把方式和结束时如何还原写入 `baseline.md`；无法确保时记录阻塞。
 7. 部署恢复指南（幂等，可重复运行）：
    - 目标是项目根目录的 `AGENTS.md`；若项目以 `CLAUDE.md` 为项目级指令文件（存在 `CLAUDE.md` 且无 `AGENTS.md`），以 `CLAUDE.md` 为目标。
@@ -18,7 +40,7 @@
    - 目标文件不存在：复制技能目录的 `AGENTS.md`，并在前后加 `<!-- BEGIN mvp-adversarial-review-loop-recovery-guide -->` / `<!-- END mvp-adversarial-review-loop-recovery-guide -->`。
    - 目标文件已存在：先把原内容备份到 `.review-evidence/baseline-project-instructions.bak`，再把带标记的恢复指南追加到末尾。
    - 把目标文件、模式（created / appended / skipped）、标记和备份路径写入 `baseline.md` 的 "Recovery Guide Deployment"。
-8. 更新 `run-state.md`：`overall_status: in_progress`、`current_phase: review`、`current_round: 1`、`max_rounds`、`rounds_consumed: 0`、`can_trigger_new_round: true`、`final_audit_attempt: 0`、`baseline_head`、`current_head`、`last_completed_event: "baseline complete"`、`active_finding: none`、`next_action: "启动第 1 轮评审角色"`、`blockers: none`、`updated_at`（ISO 8601）。
+8. 运行 `reviewctl validate`，然后运行 `reviewctl advance --to review`；脚本会设置 `current_round: 1`、`rounds_consumed: 0`、`can_trigger_new_round: true` 和 `next_action`。
 
 启动部署对项目级指令文件的改动属于本流程引入的临时改动，不提交，结束时还原。
 
@@ -27,17 +49,17 @@
 **必须委派**：每个角色一个独立、只读的评审子代理。
 
 - 每轮至少 3 个不同角色，最多 6 个；角色表见 `SKILL.md`。
-- 默认串行；每个角色使用独立 inbox 目录。临时 ID 只需在角色目录内唯一，例如 SEC-001、FUNC-001。
+- 默认串行；用 `reviewctl new-inbox --round N --role SEC --temp-id SEC-001` 创建独立 inbox 和 `meta.json`。临时 ID 只需在角色目录内唯一。
 - 评审代理不得修改源代码、测试、配置，不得安装依赖或提交；不得查看其他角色的 findings，也不要把个人偏好当缺陷。
 - 临时测试写入 `tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext}`；若发现临时测试会被日常测试收集，停止并报告阻塞，不要自行修改项目配置。
 - 从项目根目录运行，使用项目自身的测试框架和依赖；需要隔离数据时放在 `.review-evidence/round-[N]/_testdata/[role-slug]/`。
-- 证据写入 `.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/`，完整命令输出写 `output.log`，不要粘贴到回复。
-- 使用 `agent-prompts.md` 的"评审代理"模板；回复必须是固定 YAML 摘要。
+- 证据写入脚本创建的 inbox，完整命令输出写 `output.log`，不要粘贴到回复。
+- 使用 `agent-prompts.md` 的"评审代理"模板；代理必须把同一结构写入 inbox 的 `handoff.json`，聊天里的 YAML 摘要只作交接提示。
 - 轮次策略、最后两轮回归检查和角色选择见 `SKILL.md` 的轮次策略表。
 - 被判定为回归检查的轮次只提供待检查的修复提交/变更路径，不提供历史 finding、裁决或预期结论。
 - 要求代理记录 `uncovered_paths` 和 `blockers`；没有发现时返回 `findings: []`，不要用偏好凑数。
 
-**完成后**：`current_phase: adjudication`，`next_action: "筛选、去重并裁决候选 findings"`。
+**完成后**：运行 `reviewctl record-round --round N --raw N --duplicates N --screened N --new-p0p1p2 N`，再运行 `reviewctl advance --to adjudication`。
 
 ## 2. adjudication
 
@@ -47,7 +69,7 @@
 
 1. 把纯偏好、措辞建议、明确不在 MVP 范围内的功能请求筛到 `screening-log.md`，写明依据；不分配标准 ID，不进入覆盖率分母，也无需运行反例。
 2. 对其余候选去重；重复项指向 canonical ID，保留原始 inbox。
-3. 进入生命周期的候选分配标准 ID（`R[N]-F[XXX]-[CAT]`），把 inbox 移到 `.review-evidence/round-[N]/[标准 ID]/`，并把候选复现文件复制为 `reproduce.*`；`tests/review/` 中的原文件保留运行用。
+3. 进入生命周期的候选分配标准 ID（`R[N]-F[XXX]-[CAT]`），把 inbox 移到 `.review-evidence/round-[N]/[标准 ID]/`，并把候选复现文件复制为 `reproduce.*`；`tests/review/` 中的原文件保留运行用。然后运行 `reviewctl record-finding --id ... --decision ...` 写入状态。
 4. 标准 ID 一旦分配，永久计入覆盖率分母，即使后来 rejected 或 deferred。
 
 筛查决策流程：
@@ -108,7 +130,7 @@
 - 记录精确命令/操作、环境、退出状态、观察结果和证据路径；主代理必须检查证据与 claim 相符，并在 `adjudication.md` 注明执行者和证据路径。不要求主代理重复每条常规命令，但证据必须与 claim 相符。
 - 手工步骤仅在确认无法自动化时使用，并在 `manual-steps.md` 记录无法自动化的原因、前提、精确操作和观察点。
 - P0/P1、权限/数据完整性/公开 API、高影响或证据异常项：主代理必须亲自加验或再委派第二个独立审查。
-- 没有未参与该 finding 的独立代理可用（所有可用代理都提交过相关候选，或没有代理可用）时，主代理经用户明确授权后才能亲自复现；在 `adjudication.md` 标为高风险，最终报告单独披露。有独立代理可用时不得使用兜底。
+- 没有未参与该 finding 的独立代理可用（所有可用代理都提交过相关候选，或没有代理可用）时，主代理经用户明确授权后才能亲自复现；用 `reviewctl authorize --action main-agent-reproduction --decision authorized` 留痕，并在 `record-finding` 时加 `--reproduced-by main-agent`，在 `adjudication.md` 标为高风险，最终报告单独披露。有独立代理可用时不得使用兜底。
 
 复现结果：
 
@@ -144,7 +166,7 @@
   - `supports`：有效重放且未找到推翻证据；主代理确认后可 accepted。
   - `disputes`：必须附具体反证；主代理审查双方证据后 rejected、降级/修订后 accepted，或争议未解决时 needs-evidence。
   - `inconclusive`：重放失败、环境不可用或观察不确定；不是自动接受，也不是 disputes。主代理基于已有重放证据裁决；证据仍不足则 needs-evidence。
-- 确因资源限制无法挑战必须范围项时，必须获得用户明确授权，在 `adjudication.md` 记录，并在最终报告列出。
+- 确因资源限制无法挑战必须范围项时，必须获得用户明确授权，用 `reviewctl authorize --action skip-mandatory-challenge --decision authorized` 留痕，在 `adjudication.md` 记录，并在最终报告列出。
 
 ### 2.6 补强
 
@@ -161,7 +183,7 @@
 - accepted：移到 `tests/review/reproductions/`。
 - rejected / needs-evidence / deferred：删除临时测试文件。
 
-**完成后**：有 accepted → `current_phase: repair`，`next_action: "修复第一个 accepted finding: [ID]"`；无 accepted → `current_phase: round_decision`。
+**完成后**：有 accepted → `reviewctl advance --to repair`；无 accepted → `reviewctl advance --to round_decision`。
 
 ## 3. repair
 
@@ -169,11 +191,13 @@
 
 - 实现代理只处理当前 finding；RED 必须先确认，测试必须合并到项目正式测试文件。
 - 提交只包含当前 finding 的源代码、正式测试和必要配置；不包含 `.review-evidence/` 或 `tests/review/` 临时文件。
+- 提交前运行 `reviewctl guard-commit --finding [ID] --test [PATH]`；脚本会拒绝证据目录和临时测试目录。
+- 提交后运行 `reviewctl record-implementation --id [ID] --status fixed|already_fixed --commit [SHA] --test [PATH]`。
 - `already_fixed`：确认现有提交覆盖后进入验证。
-- `cannot_fix`：主代理重新裁决（deferred/rejected，或保留 accepted 并登记未解决），更新 `findings-index.md` 和 `run-state.md`，不得静默跳过。
-- `blocked_by_user_changes`：按 `tdd-and-commit.md` 处理，提供手工合并建议；可能导致 `CONVERGED_WITH_MANUAL_MERGE`。
+- `cannot_fix`：主代理重新裁决（deferred/rejected，或保留 accepted 并登记未解决），用 `reviewctl` 更新状态，不得静默跳过。
+- `blocked_by_user_changes`：按 `tdd-and-commit.md` 处理，提供手工合并建议；用 `record-verification --status blocked_by_user_changes` 记录；有下一个 finding 时运行 `next-finding`，否则 `advance --to round_decision`。可能导致 `CONVERGED_WITH_MANUAL_MERGE`。
 
-**完成后**：`current_phase: verification`，`active_finding: [ID]`。
+**完成后**：`reviewctl advance --to verification`。
 
 ## 4. verification
 
@@ -181,17 +205,18 @@
 
 - 一个验证代理一次处理 3-5 个已修复 findings，依次验证；默认串行。
 - 使用 `agent-prompts.md` 的验证代理模板，并按其 YAML 结构回收摘要；提供原始 counterexample、reproduction、修复 commit、当前 HEAD、正式测试路径和运行入口。
+- 验证代理写 `verification-result.md`；主代理用 `reviewctl record-verification --id [ID] --status pass|fail|inconclusive|blocked_by_user_changes` 写入状态。pass 时必须提供至少 2 个 `--adjacent-test`，或用 `--adjacent-reason` 说明无法生成的理由。
 - 检查 RED 证据、在修复前 commit 重放原始反例（默认独立 worktree；兜底 stash + checkout 必须经主代理批准）、在修复后验证、生成至少 2 个相邻测试（正常 + 边界）、运行完整回归。不得把实现代理的结论当作验证结果。
 - 验证代理不得强制清理或以任何方式覆盖用户改动；兜底流程必须记录原 HEAD 并验证恢复结果。
 - 无法生成有意义的相邻测试时，必须说明理由才能 pass。
-- 若所有可用代理都已参与该 finding 的实现，先获得用户明确授权后由主代理执行验证；在 `verification-result.md` 标注 `verified_by: main-agent`，在 `adjudication.md` 标为高风险，并在最终报告列明。
+- 若所有可用代理都已参与该 finding 的实现，先获得用户明确授权，用 `reviewctl authorize --action main-agent-verification --decision authorized` 留痕，再由主代理执行验证；`record-verification` 加 `--verified-by main-agent`，在 `verification-result.md` 标注 `verified_by: main-agent`，在 `adjudication.md` 标为高风险，并在最终报告列明。
 - 验证开始前对照 `baseline_head` 运行 `git status --short`；发现与被验 finding 相关的新外部改动时，记为 `inconclusive`，在 `blockers` 说明并列出冲突文件。不要使用 `blocked_by_user_changes`（该状态只用于 repair 无法提交）。
 - 结果：
   - `pass`：完成所有检查，主代理确认证据后 finding 可标 verified。
-  - `fail`：保持未 verified，回到 repair；同一 finding 最多 2 次修复-验证循环，第 2 次仍 fail 时创建更高优先级回归 finding 并登记原 finding 未解决。
-  - `inconclusive`：保持 accepted 但未 verified；最多重新委派 1 次，仍无法判定则登记未解决并继续其他项；不得当作 pass 或 CONVERGED 依据。
+  - `fail`：保持未 verified，回到 repair；同一 finding 最多 2 次修复-验证循环，第 2 次仍 fail 时创建更高优先级回归 finding，并用 `reviewctl mark-unresolved --id [ID] --reason ...` 登记原 finding 未解决。
+  - `inconclusive`：保持 accepted 但未 verified；最多重新委派 1 次，仍无法判定则用 `reviewctl mark-unresolved` 登记未解决并继续其他项；不得当作 pass 或 CONVERGED 依据。
 
-**完成后**：更新 `findings-index.md` 的 verification 状态；处理下一个 finding，或在本轮所有 accepted findings 终结后进入 `round_decision`。
+**完成后**：还有待修复 accepted finding 时运行 `reviewctl advance --to repair` 选择下一个；本轮所有 accepted findings 终结后运行 `reviewctl advance --to round_decision`。
 
 ## 5. round_decision
 
@@ -202,14 +227,15 @@
 ### 5.2 决策
 
 1. 确认本轮所有 accepted findings 已终结。
-2. 设置 `rounds_consumed = current_round`，重算 `can_trigger_new_round = (rounds_consumed < max_rounds)`。
+2. `reviewctl advance` 在进入 `round_decision` 时自动设置 `rounds_consumed = current_round` 并重算 `can_trigger_new_round`。
 3. 检查进入最终审计的条件：
    - 提前收敛：从第 2 轮起，最近连续两轮都没有新找到的、范围内的 P0/P1/P2。
    - 达到上限：完成 `max_rounds` 轮。
 4. 分支：
-   - 不满足且 `can_trigger_new_round = true`：进入下一轮常规评审（`current_round` 递增 1，`current_phase: review`）。
-   - 满足：进入 `final_audit`。首次进入设 `final_audit_attempt: 1`；终审发现新问题并完成新的常规评审轮后重新进入时递增，最多 3 次。
-5. 未解决的验证阻塞（inconclusive，不含 blocked_by_user_changes）不阻止最终审计执行，但使最终结论只能为 INCOMPLETE。
+   - 不满足且 `can_trigger_new_round = true`：`reviewctl advance --to review`。
+   - 满足：`reviewctl advance --to final_audit`。首次进入设置 `final_audit_attempt: 1`；终审发现新问题并完成新的常规评审轮后重新进入时递增，最多 3 次。
+   - 终审新问题已处理，但已达到 `max_rounds` 或审计尝试已达 3 次：`reviewctl advance --to report`，再 `finalize --status incomplete`。
+5. 未解决的验证阻塞（inconclusive，不含 blocked_by_user_changes）不阻止最终审计执行，但使最终结论只能为 INCOMPLETE。运行 `reviewctl validate` 检查。
 
 提前收敛判定口径：被筛除或去重的候选、最终 rejected 的 finding 不算；P3 不算。
 
@@ -226,11 +252,12 @@
 - 分母：所有获得标准 ID 的独立 finding（screened_out 和 duplicate 不算）。
 - 分子：accepted（必须有 reproduced 证据）、rejected（必须有 not-reproduced 反证）、deferred（已复现）算分子；needs-evidence 缺少证据不算。
 - 每轮分别报告 raw_candidates、duplicates、screened_out 和 replay-eligible 独立 finding 数；被筛除/重复项不进入分母，但必须单独计数并写入 `screening-log.md`。
-- 进入 finding 生命周期的候选（包括 needs-evidence 及之后 rejected/deferred 的）必须获得标准 ID 和 `findings-index.md` 索引行。
+- 进入 finding 生命周期的候选（包括 needs-evidence 及之后 rejected/deferred 的）必须获得标准 ID，并写入 `findings.json`。
 - 原始覆盖率 = 分子 / 分母；自动化与手工复现分别报告；分母为 0 时报告 N/A，不视为自动通过，并确认每个原始候选都已处理且要求的评审与终审已完成。
 - 调整后覆盖率 = 分子 / (分母 - 豁免项)；豁免项为 `clear_claim_lacking_env` 的 P2/P3 needs-evidence。
 - 调整后覆盖率低于 80% 时不得声称评审充分或收敛。
 - decision 或分类变更不得用于缩小分母。
+- 运行 `reviewctl coverage` 获取脚本计算值。
 
 ### 5.5 回归与 needs-evidence
 
@@ -260,17 +287,18 @@
 - 第一阶段保存后，提供所有 accepted finding、未结的范围内 needs-evidence P0/P1、原始证据路径、修复测试路径和提交。
 - 要求逐项复核修复有效性、回归、测试覆盖、遗留风险，并运行完整测试、构建和适用静态检查。
 - 结果写入 `targeted-review.md`；不得改写第一阶段结论。
+- 运行 `reviewctl record-audit --attempt K --status complete --new-issues N` 记录结果。
 
 ### 6.3 发现新问题
 
-1. 回到裁决流程（更新 `current_phase: adjudication`）；accepted 的问题修复并由验证代理验证。
-2. 若 `rounds_consumed < max_rounds`：必须启动新的常规评审轮（`current_round` 递增 1，`current_phase: review`），按问题性质选择策略：
+1. 运行 `reviewctl advance --to adjudication`；accepted 的问题修复并由验证代理验证。
+2. 若 `rounds_consumed < max_rounds`：必须运行 `reviewctl advance --to review` 启动新的常规评审轮，按问题性质选择策略：
    - 新 P0/P1 或多个高风险区域问题 → 常规广扫（覆盖受影响区域）。
    - 仅回归或单个修复引入的问题 → 回归检查。
    - 不受"倒数第 N 轮"规则限制，但计入 `max_rounds`。
    随后重新审计，递增 attempt，最多共 3 次。
-3. 若已达 `max_rounds`：不再启动常规评审轮，报告 INCOMPLETE，并标注"已修复验证、但缺少独立互补评审轮复核"的项及未修复项。
-4. 第 3 次尝试仍发现需修复的问题：报告 INCOMPLETE；问题仍按裁决 → 修复 → 独立验证流程处理并标注，但不再进行第 4 次审计。
+3. 若已达 `max_rounds`：不再启动常规评审轮；问题仍按裁决 → 修复 → 独立验证处理，完成后从 `round_decision` 运行 `reviewctl advance --to report`，再 `reviewctl finalize --status incomplete`，并标注"已修复验证、但缺少独立互补评审轮复核"的项及未修复项。
+4. 第 3 次尝试仍发现需修复的问题：同样处理并报告 INCOMPLETE，不再进行第 4 次审计。
 
 关键规则：所有 finding 必须写在指定证据文件；不得问"是否还有其他问题"或依赖对话记忆；第二阶段只复核，不重复第一阶段已列出的 finding。
 
@@ -285,7 +313,7 @@
 
 ### 7.2 报告内容
 
-写入 `.review-evidence/final-report.md`，汇总轮次、状态、证据、测试、提交、风险和收敛结论，并把 run-state 的 `overall_status` 设为 `converged`、`converged_with_manual_merge` 或 `incomplete`。
+运行 `reviewctl finalize --status converged|converged_with_manual_merge|incomplete`。脚本会写 `.review-evidence/final-report.md`、设置 `overall_status`，并在不满足收敛条件时拒绝 converged 状态。
 
 必须包含：
 
@@ -312,8 +340,8 @@
 
 压缩上下文后：
 
-1. 立即读取 `.review-evidence/run-state.md`。
-2. 运行 `node <skill-dir>/scripts/validate-run-state.js .review-evidence/run-state.md`（无 Node 时人工对照 `evidence-structure.md` 的模板）。
+1. 立即读取 `.review-evidence/run-state.md` 和 `.review-evidence/state.json`。
+2. 运行 `reviewctl status` 和 `reviewctl validate`（无 Node 时人工对照 `evidence-structure.md`）。
 3. 确认 `current_phase`、`current_round`、`max_rounds`、`rounds_consumed`、`can_trigger_new_round`、`final_audit_attempt` 和 `next_action`。
 4. 按 `next_action` 继续；不要跳过或重复已完成的阶段。
 5. 这是多轮循环：最少 2 轮，最多 `max_rounds` 轮，不要在第 1 轮后就结束。

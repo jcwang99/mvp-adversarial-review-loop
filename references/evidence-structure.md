@@ -4,13 +4,17 @@
 
 ## 目录布局
 
-评审开始时创建：
+评审开始时用 `reviewctl init` 创建核心文件：
 
 ~~~
 .review-evidence/
+├── review-config.json                      # max_rounds、用户确认记录
+├── state.json                              # 当前阶段、轮次、审计尝试、授权记录
+├── findings.json                           # finding 生命周期
+├── render.json                             # 生成视图的 hash
 ├── baseline.md
-├── run-state.md
-├── findings-index.md
+├── run-state.md                            # 由 reviewctl 生成，禁止手改
+├── findings-index.md                       # 由 reviewctl 生成，禁止手改
 ├── screening-log.md
 └── round-1/
     ├── _testdata/                          # 可选：需要隔离的测试数据
@@ -26,18 +30,26 @@
     ├── inbox/
     │   ├── security/
     │   │   └── SEC-001/
+    │   │       ├── meta.json                # reviewctl new-inbox 创建
+    │   │       ├── handoff.json             # 代理写出的结构化交接
     │   │       ├── counterexample.md
     │   │       └── output.log              # 完整命令输出
     │   ├── functionality/
     │   │   └── FUNC-001/
+    │   │       ├── meta.json
+    │   │       ├── handoff.json
     │   │       ├── counterexample.md
     │   │       └── manual-steps.md
     │   ├── reliability/
     │   │   └── REL-001/
+    │   │       ├── meta.json
+    │   │       ├── handoff.json
     │   │       ├── counterexample.md
     │   │       └── output.log
     │   └── api/
     │       └── API-001/
+    │           ├── meta.json
+    │           ├── handoff.json
     │           ├── counterexample.md
     │           └── output.log
     ├── final-audit/
@@ -189,76 +201,48 @@ adversarial-review = []
 
 经确认无法自动化的反例使用 manual-steps.md，并记录无法自动化的原因、前提、精确操作和观察点。自动化反例应保存完整可执行文件。完整命令输出保存在 finding 目录内，记录中引用路径并摘要关键结果。
 
-## run-state.md 检查点
+## 状态文件与生成视图
 
-run-state.md 是当前执行位置的短检查点，不是完整历史日志。每次代理交接、状态变化、提交、验证和轮次切换后更新。**压缩上下文后恢复时，主代理必须立即读取此文件确认当前位置。**
+`state.json` 是当前执行位置的事实来源，`findings.json` 是 finding 生命周期的事实来源。`run-state.md` 和 `findings-index.md` 由 `reviewctl` 生成，禁止手改；`render.json` 保存生成视图的 hash。
 
-~~~markdown
-# Review Run State
+`review-config.json` 关键字段：
 
-**这是一个多轮循环流程：最少 2 轮常规评审，最多 max_rounds 轮（默认 5，用户在 baseline 指定），然后进行最终审计。**
+| 字段 | 说明 |
+|------|------|
+| `max_rounds` | 常规评审轮上限，>= 2 |
+| `confirmed_by_user` | 必须为 true |
+| `confirmed_at` | ISO 8601 |
+| `confirmation_mode` | `interactive` 或 `agent_declared` |
+| `baseline_head` | 初始 HEAD 或 `unavailable` |
 
-- overall_status: in_progress | waiting_on_evidence | incomplete | converged | converged_with_manual_merge
-- current_phase: baseline | review | adjudication | repair | verification | round_decision | final_audit | report
-- current_round: 1 (常规评审轮次，整数 1 至 max_rounds)
-- max_rounds: 5 (常规评审轮上限；默认 5，用户在 baseline 指定，最小值 2)
-- rounds_consumed: 0 (整数 0 至 max_rounds；baseline 初始化为 0，每轮进入 round_decision 时更新为 current_round)
-- can_trigger_new_round: true (布尔值；每轮完成时重算 = rounds_consumed < max_rounds)
-- final_audit_attempt: 0 (整数 0 至 3，已完成的最终审计尝试)
-- baseline_head: [初始 HEAD 或 unavailable]
-- current_head: [当前 HEAD 或 unavailable]
-- last_completed_event: [短摘要，包括完成的阶段和轮次]
-- active_finding: [标准 ID 或 none]
-- next_action: [一个明确动作及所需文件路径，包括需要委派的子代理类型]
-- blockers: [无，或阻塞事项和负责人]
-- updated_at: [ISO 8601]
+`state.json` 关键字段：
 
-## Workflow Reminder
-- Phase: review → 必须使用独立评审子代理（至少 3 个角色）
-- Phase: adjudication → 复现审查必须委派给子代理，挑战必须委派给挑战代理；**主代理负责移动 accepted findings 的临时测试文件（从 candidates/ 到 reproductions/）**
-- Phase: repair → 必须委派给实现子代理（前置：临时测试已在 reproductions/）
-- Phase: verification → 必须委派给验证代理（不能是实现代理）；**验证代理必须使用 worktree 或经批准的 stash 兜底方案**
-- Phase: round_decision → **轮次完成定义：所有 accepted findings 已终结**；检查是否满足进入最终审计的条件，否则进入下一轮（若 can_trigger_new_round = true）
-- Phase: final_audit → 必须委派给最终审计子代理
+| 字段 | 说明 |
+|------|------|
+| `overall_status` | in_progress / waiting_on_evidence / incomplete / converged / converged_with_manual_merge |
+| `current_phase` | baseline / review / adjudication / repair / verification / round_decision / final_audit / report |
+| `current_round` / `max_rounds` | 当前轮次 / 上限 |
+| `max_rounds_at_init` | 初始化时的上限，用于发现配置被改 |
+| `rounds_consumed` | 已完成常规评审轮数（整数） |
+| `can_trigger_new_round` | 由脚本重算，等于 `rounds_consumed < max_rounds` |
+| `final_audit_attempt` | 0..3 |
+| `active_finding` | 当前修复/验证的 finding ID 或 null |
+| `next_action` | 下一步动作 |
+| `blockers` / `authorizations` | 阻塞和用户授权记录 |
+| `rounds` | 每轮计数和角色 |
+| `final_audit` | 审计尝试和重入状态 |
 
-## Rounds Budget
-- 常规评审轮：最多 max_rounds 轮（默认 5，用户在 baseline 指定；rounds_consumed 计数）
-- 最终审计尝试：最多 3 次（final_audit_attempt 计数）
-- 当 rounds_consumed = max_rounds 时，can_trigger_new_round = false，无法再启动新的常规评审轮
-- 当 final_audit_attempt = 3 且仍发现问题时，报告 INCOMPLETE
+`findings.json` 每个 finding 至少包含：`id`、`original_ids`、`role`、`severity`、`decision`、`verification`、`evidence_dir`、`reproduced`、`reproduced_by`、`reproduction_status`、`challenge_required`、`challenge_result`、`change_origin`、`implementation_status`、`commit`、`test_files`、`verification_attempts`、`verified_by`、`adjacent_tests`、`adjacent_reason`、`unresolved`。
 
-## Round Completion Checklist (for main agent)
-- [ ] 当前轮所有 accepted findings 已处理完毕（verified / blocked_by_user_changes / 已登记未解决）
-- [ ] 更新 rounds_consumed = current_round
-- [ ] 重算 can_trigger_new_round = (rounds_consumed < max_rounds)
-- [ ] 检查进入最终审计的条件
-- [ ] 更新 current_phase 为 final_audit 或下一轮的 review
-
-## Counts
-- raw_candidates: [数量]
-- duplicates: [数量]
-- screened_out: [数量]
-- independently_replayed: [自动化数量 / 手工数量]
-- decisions: [accepted / needs-evidence / rejected / deferred 数量]
-- verification: [pending / pass / fail / inconclusive 数量]
-- verification_blocked_by_user_changes: [数量] (因工作区冲突无法提交的 findings)
-- counterexample_coverage: [百分比及分子/分母]
-
-## Round History
-- Round 1: [评审角色数] roles, [accepted数] accepted, [verified数] verified, [新找到的范围内 P0/P1/P2 问题数] new in-scope P0/P1/P2 findings
-- Round 2: ...
-(用于判断提前收敛条件（最近连续两轮是否没有新找到 P0/P1/P2）和轮次上限)
-~~~
-
-不要把 reproduction 源码或完整命令输出复制进 run-state.md。摘要必须足以判断当前阶段、待办和阻塞，但具体依据留在 finding 记录中。
-
-**校验**：恢复或阶段切换后运行：
+**操作**：
 
 ```bash
-node <skill-dir>/scripts/validate-run-state.js .review-evidence/run-state.md
+node <skill-dir>/scripts/reviewctl.js status
+node <skill-dir>/scripts/reviewctl.js validate
+node <skill-dir>/scripts/reviewctl.js render
 ```
 
-脚本检查必填字段、枚举值、轮次范围和 `rounds_consumed` / `can_trigger_new_round` 的一致性。没有 Node 时人工对照上方模板。校验失败先修正状态，不要继续委派。
+状态变更只能通过 `reviewctl advance` / `record-*`。校验失败先修复状态，不要继续委派。没有 Node 时人工对照 JSON 字段和 `reviewctl help`。
 
 ## baseline.md
 
@@ -295,7 +279,7 @@ node <skill-dir>/scripts/validate-run-state.js .review-evidence/run-state.md
 ## Review
 - Started at:
 - Assumptions:
-- max_rounds: [默认 5，或用户指定值]
+- max_rounds: [见 review-config.json]
 
 ## Recovery Guide Deployment
 - Target file: [AGENTS.md | CLAUDE.md | none]
@@ -309,17 +293,11 @@ node <skill-dir>/scripts/validate-run-state.js .review-evidence/run-state.md
 
 ## findings-index.md
 
-每条独立候选一行，维护唯一的当前状态。至少记录：
+由 `reviewctl` 从 `findings.json` 生成，禁止手改。索引包含 Finding ID、Role、Severity、Decision、Verification、Evidence 和 Commit。
 
-~~~markdown
-| Finding ID | Original ID(s) | Role | Severity | Decision | Verification | Evidence | Regression test | Commit | Duplicate of |
-|------------|----------------|------|----------|----------|--------------|----------|-----------------|--------|--------------|
-| R1-F001-SEC | SEC-001 | security | P1 | accepted | pending | round-1/R1-F001-SEC/ | tests/auth.test.js | - | - |
-~~~
+Decision 取 accepted、needs-evidence、rejected 或 deferred。验证结果单独取 pending、pass、fail、inconclusive 或 blocked_by_user_changes；只有 accepted 且 verification 为 pass 时，用户报告中才可称 verified（verified 是报告用词，不是 verification 枚举值）。verification 为 inconclusive 时仍是 accepted、未 verified，不是新的 decision 值。
 
-Decision 取 accepted、needs-evidence、rejected 或 deferred。验证结果单独取 pending、pass、fail、inconclusive 或 blocked_by_user_changes；只有 accepted 且 verification 为 pass 时，用户报告中才可称 verified（verified 是报告用词，不是 verification 枚举值）。记录验证执行者；主代理兜底适用相同的检查标准。verification 为 inconclusive 时仍是 accepted、未 verified，不是新的 decision 值。
-
-索引应保持精简。裁决理由、命令、输出、挑战过程、补强过程和验证细节写在对应 finding 目录的记录中，并在索引中链接相对路径。
+裁决理由、命令、输出、挑战过程、补强过程和验证细节写在对应 finding 目录的记录中。
 
 ## screening-log.md
 
@@ -330,7 +308,7 @@ screening-log.md 按轮次记录全部原始评审报告及其去重/筛查结�
 - 重复报告：记录为 duplicate，并指向 canonical ID；原始 inbox 文件保留。
 - 进入 finding 生命周期的候选：记录 canonical ID 和证据目录路径。
 
-这样 raw_candidates 的计数可审计，同时 findings-index.md 只维护实际进入 finding 生命周期的唯一候选。
+这样 raw_candidates 的计数可审计，同时 `findings.json` 只维护实际进入 finding 生命周期的唯一候选。
 
 ## Finding 记录
 
@@ -380,7 +358,7 @@ screening-log.md 按轮次记录全部原始评审报告及其去重/筛查结�
 
 ## 审计材料的 Git 生命周期
 
-审计材料应纳入版本控制以保持追溯。可在每轮评审结束时单独提交证据记录；实现修复提交只包含当前 finding 的产品代码、可行的项目回归测试及必要配置，不包含 .review-evidence/。若无法安全区分用户已有改动，不提交并在 run-state.md 记录阻塞。
+审计材料应纳入版本控制以保持追溯。可在每轮评审结束时单独提交证据记录；实现修复提交只包含当前 finding 的产品代码、可行的项目回归测试及必要配置，不包含 .review-evidence/。若无法安全区分用户已有改动，不提交并在 `state.json` 记录阻塞。
 
 **证据与代码的历史一致性**：修复 commit 引用的证据路径在该 commit 快照中不存在（证据在独立的评审 commit 中）。这是有意的设计取舍：避免混淆审计证据与产品代码边界。在 commit message 中使用相对引用（如"证据见前一次评审 commit 的 .review-evidence/round-1/R1-F001-SEC/"）帮助定位。checkout 旧修复 commit 时，需同时参考时间上相邻的评审 commit 获取完整证据。
 

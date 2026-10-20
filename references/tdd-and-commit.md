@@ -111,8 +111,8 @@
      - 在 implementation-result.md 记录："工作区冲突已通过分块暂存解决"
    - **不能安全分块**：
      - 更新 finding 状态为 `decision: accepted`, `verification: blocked_by_user_changes`
-     - 在 findings-index.md 中记录 `Verification: blocked_by_user_changes`
-     - 在 run-state.md 中递增 `verification_blocked_by_user_changes` 计数
+     - 用 `reviewctl record-verification --id [ID] --status blocked_by_user_changes` 记录
+     - 最终报告和 `reviewctl coverage` 会统计这类 finding
      - **可能导致 CONVERGED_WITH_MANUAL_MERGE**：这类 finding 在最终报告中单独章节披露，作为"需要用户手工合并的修复"
      - 在 adjudication.md 中添加字段：`merge_conflict: true`, `user_changes_files: [列表]`, `chunk_attempt_result: "<git add -p 的具体失败原因>"`
      - 实现代理必须在 implementation-result.md 提供详细的手工合并建议（见下方"手工合并建议要求"）
@@ -134,12 +134,13 @@
 提交前至少执行：
 
 ```text
+node <skill-dir>/scripts/reviewctl.js guard-commit --finding [ID] --test [PATH]
 git diff --check
 git diff --cached --stat
 git diff --cached
 ```
 
-检查秘密、凭据、生成物、日志和大文件没有被暂存。提交信息应包含 finding ID，推荐格式：
+`guard-commit` 会拒绝暂存 `.review-evidence/` 或 `tests/review/`，并检查 finding 的 `implementation-result.md`、测试路径和源代码改动。检查秘密、凭据、生成物、日志和大文件没有被暂存。提交信息应包含 finding ID，推荐格式：
 
 ```text
 fix(review): [ID] concise behavior being corrected
@@ -155,7 +156,7 @@ fix(review): [ID] concise behavior being corrected
 - 修复 commit 只包含源代码和正式测试文件的修改
 - 整个评审流程结束后，`tests/review/` 目录会被删除
 
-提交成功后返回完整哈希，并更新 run-state.md 与 findings-index.md。若提交钩子失败，修复钩子报告的问题并重新检查差异；不要绕过钩子。若仓库没有 Git 或用户明确要求不提交，返回 commit: unavailable，由主代理在最终报告说明。
+提交成功后运行 `reviewctl record-implementation --id [ID] --status fixed --commit [SHA] --test [PATH]`，由脚本更新 `state.json` / `findings.json` 和生成视图。若提交钩子失败，修复钩子报告的问题并重新检查差异；不要绕过钩子。若仓库没有 Git 或用户明确要求不提交，返回 commit: unavailable，由主代理在最终报告说明。
 
 ## 失败处理
 
@@ -174,5 +175,5 @@ fix(review): [ID] concise behavior being corrected
 - 修复最小、可读、符合现有契约，且新增测试锁定回归；无法自动化的手工 finding 有明确理由和修复后复测证据。
 - 聚焦和回归命令的实际结果已记录；失败/跳过没有被隐藏。
 - **提交只包含当前 finding（源代码 + 正式测试文件修改）**，`git diff --check` 通过，用户改动未被覆盖。
-- commit、测试、反例和 finding ID 已写入 findings-index.md 与 run-state.md。
+- commit、测试、反例和 finding ID 已通过 `reviewctl` 写入 `findings.json` / `state.json`。
 - **临时文件 `tests/review/reproductions/` 保留在工作区**（不提交，供 verification 使用）。

@@ -37,6 +37,8 @@
 **证据文档**（仍在 .review-evidence/ 中）：
 - counterexample.md：`.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/counterexample.md`
 - output.log：完整命令输出，不要粘贴到回复或 counterexample.md 中
+- handoff.json：把下方 YAML 的等价 JSON 写入同一 inbox；这是 `reviewctl validate` 读取的结构化交接
+- 主代理会用 `reviewctl new-inbox` 预先创建目录；不要自行创建其他路径
 
 **运行 reproduction**：
 - 从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
@@ -60,7 +62,7 @@
 不要查看其他角色的 findings，也不要把个人偏好作为缺陷。
 
 每条 finding 的 counterexample.md 按上方字段 schema 填写；完整 reproduction 测试写入 `tests/review/candidates/`，经确认无法自动化时的 manual-steps.md 放在 `.review-evidence/` inbox 目录。按以下固定 YAML 结构交接，保留所有字段；无内容使用 [] 或 none，不省略字段。没有发现时 findings 写 []；未覆盖的路径及原因写入 uncovered_paths；无法完成检查的部分写入 blockers。
-不要在回复中粘贴 reproduction 源码或完整命令输出。回复中的命令仅给命令、退出状态和必要的短输出摘要，详细记录放在证据文件。
+不要在回复中粘贴 reproduction 源码或完整命令输出。回复中的命令仅给命令、退出状态和必要的短输出摘要，详细记录放在证据文件。回复中的 YAML 同时写入 `handoff.json`；两者内容必须一致。
 
 ~~~yaml
 review_status: "complete | partial | blocked"
