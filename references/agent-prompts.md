@@ -479,7 +479,32 @@ blockers: []
 
 **Notes**: [如果 not_confirmed，说明原因，可能是 already_fixed]
 
-## GREEN Phase
+## already_fixed 处理（仅在 RED 阶段测试通过时填写）
+**如果 RED 阶段测试直接通过，说明 finding 已被历史修复解决，填写以下信息：**
+
+### Evidence Test File
+**Path**: [证明修复的测试文件路径，从 tests/review/reproductions/ 移动到项目正式测试文件的路径]
+
+**Test Output**:
+```bash
+[运行测试的命令和输出]
+```
+
+**Exit Status**: [退出码，应该是 0]
+
+### Analysis
+[简要说明为什么测试通过，是否能确认 finding 确实被修复（而不是测试本身有问题）]
+
+**提供给验证代理的信息**：
+- **Test Path**: [测试文件路径]
+- **Test Command**: [运行测试的命令]
+- **Counterexample Reference**: [原始 counterexample.md 路径]
+
+**注意**：already_fixed 情况下，不需要找历史修复 commit，验证代理会检查测试覆盖度。
+
+---
+
+## GREEN Phase（仅在 RED confirmed 时填写）
 ### Implementation Approach
 [简要描述修复方法]
 
@@ -522,6 +547,41 @@ blockers: []
 - 依赖项缺失
 - 测试环境问题
 ]
+
+## Manual Merge Guidance (required if blocked_by_user_changes)
+**仅在 implementation_status 为 blocked 且 blockers 包含 user_changes_conflict 时填写此节，否则省略**
+
+### Conflict Files
+- [文件路径 1]
+- [文件路径 2]
+
+### Fix Diff Patch
+```diff
+[git diff 输出，仅包含修复改动，不含用户改动]
+```
+
+或者，如果 diff 不清晰，提供代码片段：
+
+```[language]
+// 修复代码片段
+```
+
+### Suggested Steps
+1. 打开 [文件路径]
+2. 找到第 [行号] 行（或搜索 [关键字]）
+3. 插入/修改以下代码：
+   ```[language]
+   [代码片段]
+   ```
+4. 运行测试验证：`[测试命令]`
+
+### Verification
+- **测试路径**：[修复测试的文件路径]
+- **预期结果**：[测试应该通过的描述]
+- **验证命令**：`[运行测试的命令]`
+
+### Risks
+[如果用户改动可能与修复冲突，明确说明冲突点和注意事项]
 ~~~
 
 ### 工作区冲突处理
@@ -530,7 +590,8 @@ blockers: []
 
 1. 检查是否可以安全分块（见 `tdd-and-commit.md` 的"工作区冲突处理"章节）
 2. 如果不能安全分块，将 finding 标记为 `blocked_by_user_changes`
-3. 输出格式中增加字段：
+3. **必须在 implementation-result.md 的 "Manual Merge Guidance" 章节提供详细的手工合并建议**（见上方模板）
+4. 输出格式中增加字段：
 
 ~~~yaml
 implementation_status: "blocked"
@@ -539,6 +600,7 @@ blockers:
     affected_files: []
     can_chunk: false
     notes: "<说明冲突的性质>"
+    manual_merge_guidance_provided: true
 ~~~
 
 ---
@@ -551,10 +613,12 @@ blockers:
 你是验证代理。检查 [标准 finding ID] 的修复是否有效、完整、无回归。你未参与该 finding 的实现，必须独立验证。
 提供材料：
 - 原始 counterexample.md 和 reproduction 路径
-- 实现代理的修复提交 SHA 和实现报告路径
-- 当前 HEAD（应该包含修复提交）
+- 实现代理的修复提交 SHA 和实现报告路径（如果是 already_fixed，则没有新的修复提交）
+- 当前 HEAD（应该包含修复提交，或在 already_fixed 情况下已经包含历史修复）
 
 ## 任务
+
+### 正常修复流程（implementation_status: fixed）
 1. **复现原始缺陷**（在修复前的 commit）：确认 finding 确实存在
 2. **验证修复**（在修复后的 commit / HEAD）：确认 finding 已解决
 3. **生成相邻测试**（Adjacent Tests）：为相邻功能、边界情况、异常路径生成至少 2 个新测试用例
@@ -563,6 +627,21 @@ blockers:
 6. **运行完整测试套件**：确认无回归
 7. **检查修复完整性**：是否遗漏相关场景
 8. **提交合并改动**：提交格式：`add(adjacent): [ID] concise new test cases' description`
+
+### already_fixed 流程（implementation_status: already_fixed）
+当实现代理发现测试已经通过（finding 在评审前已被修复）时：
+1. **验证测试覆盖**：读取实现代理提供的测试文件，确认测试确实覆盖了 finding 的 claim（检查 counterexample.md 和测试代码的对应关系）
+2. **重新运行测试**：在当前 HEAD 确认测试通过，验证测试确实有效
+3. **生成相邻测试**：与正常流程相同，生成至少 2 个相邻测试用例
+4. **验证相邻测试**：对生成的新测试用例进行验证
+5. **合并测试**：若新测试用例通过，将新测试用例与原先的测试用例合并
+6. **运行完整测试套件**：确认无回归
+7. **提交合并改动**：提交格式：`add(adjacent): [ID] concise new test cases' description`
+
+**already_fixed 的关键区别**：
+- **不需要找历史修复 commit**：修复已经在代码库中，无需定位是哪个 commit 修掉的
+- **不需要复现修复前状态**：无需 worktree 或 checkout，因为测试通过就是证据
+- **重点在测试覆盖度检查**：确保测试真的覆盖了 finding，而不是偶然通过
 
 ## 相邻测试要求
 
@@ -700,47 +779,72 @@ blockers: []
 ## Finding Summary
 - **Claim**: [claim 原文]
 - **Severity**: [P0/P1/P2/P3]
-- **Fix Commit**: [SHA]
+- **Implementation Status**: [fixed | already_fixed]（来自实现代理报告）
+- **Fix Commit**: [SHA]（如果是 already_fixed，填写 "N/A - already fixed in codebase"）
 - **Verification Date**: [ISO 8601]
 
-## Step 1: Reproduce Before Fix
-### Commit
-**SHA**: [修复前的 commit]
+## Verification Flow
 
-### Commands Run
+### 正常修复验证（implementation_status: fixed）
+
+#### Step 1: Reproduce Before Fix
+**Commit SHA**: [修复前的 commit]
+
+**Commands Run**:
 ```bash
 git worktree add <临时目录>/verify-[finding-id] [修复前 commit SHA]
 （在 worktree 中运行）[reproduction 命令]
 git worktree remove <临时目录>/verify-[finding-id]
 ```
 
-### Observed Behavior
-[观察到的行为]
+**Observed Behavior**: [观察到的行为]
 
-### Status
 **Result**: observed | not_observed | blocked
 
 **Notes**: [如果 not_observed，说明原始 finding 可能无效或已被其他修复解决]
 
-## Step 2: Verify After Fix
-### Commit
-**SHA**: [修复后的 commit / HEAD]
+#### Step 2: Verify After Fix
+**Commit SHA**: [修复后的 commit / HEAD]
 
-### Commands Run
+**Commands Run**:
 ```bash
 # 当前 HEAD 工作区已包含修复提交，不要移动 HEAD
 [reproduction 命令]
 ```
 
-### Observed Behavior
-[观察到的行为]
+**Observed Behavior**: [观察到的行为]
 
-### Status
 **Result**: not_observed | still_observed | blocked
 
 **Notes**: [如果 still_observed，说明修复无效或不完整]
 
-## Step 3: Adjacent Tests
+### already_fixed 验证（implementation_status: already_fixed）
+
+#### Step 1: Test Coverage Check
+**Test File**: [实现代理提供的测试文件路径]
+
+**Coverage Analysis**:
+- **Counterexample Claim**: [从 counterexample.md 提取的 claim]
+- **Test Assertion**: [测试中的关键断言]
+- **Coverage Assessment**: [测试是否确实覆盖了 claim 的逻辑]
+
+**Result**: covers_claim | insufficient_coverage | unclear
+
+**Notes**: [如果 insufficient_coverage，说明测试可能偶然通过，建议重新裁决]
+
+#### Step 2: Re-run Test
+**Commands Run**:
+```bash
+[运行测试的命令]
+```
+
+**Exit Status**: [退出码]
+
+**Result**: pass | fail
+
+**Notes**: [如果 fail，说明测试不稳定或环境问题]
+
+### Step 3: Adjacent Tests（两种流程共用）
 ### Generated Tests
 **File Path**: [测试文件路径 | none]
 

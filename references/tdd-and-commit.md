@@ -111,12 +111,22 @@
      - 更新 finding 状态为 `decision: accepted`, `verification: blocked_by_user_changes`
      - 在 findings-index.md 中记录 `Verification: blocked_by_user_changes`
      - 在 run-state.md 中递增 `verification_blocked_by_user_changes` 计数
-     - **不阻止收敛**：这类 finding 在最终报告中单独披露，作为"需要用户手工合并的修复"
+     - **可能导致 CONVERGED_WITH_MANUAL_MERGE**：这类 finding 在最终报告中单独章节披露，作为"需要用户手工合并的修复"
      - 在 adjudication.md 中添加字段：`merge_conflict: true`, `user_changes_files: [列表]`, `chunk_attempt_result: "<git add -p 的具体失败原因>"`
+     - 实现代理必须在 implementation-result.md 提供详细的手工合并建议（见下方"手工合并建议要求"）
 
-4. **最终报告处理**：
-   - 单独章节列出所有 `blocked_by_user_changes` 的 findings
-   - 提供手工合并建议：具体文件、冲突位置、推荐修复代码
+4. **手工合并建议要求**（blocked_by_user_changes 时必须提供）：
+   - **冲突文件列表**：所有无法安全暂存的文件
+   - **修复 diff patch**：`git diff` 输出（不含用户改动的部分），或清晰的代码片段
+   - **建议步骤**：用户如何手工合并（例如：打开文件、找到第 X 行、插入代码片段、运行测试）
+   - **验证方法**：用户合并后如何验证修复生效（运行哪个测试、预期结果）
+   - **风险提示**：如果用户改动可能与修复冲突，明确说明冲突点
+
+5. **最终报告处理**：
+   - 如果有任何 `blocked_by_user_changes` 的 finding，收敛状态为 `CONVERGED_WITH_MANUAL_MERGE`（而非 `CONVERGED`）
+   - 单独章节（"需要手工合并的修复"）列出所有 `blocked_by_user_changes` 的 findings
+   - 每个 finding 包含完整的手工合并建议（从 implementation-result.md 提取）
+   - 章节开头警告："在完成手工合并前，不要部署此版本"
    - 这些 findings 不计入"未验证"统计，但必须明确披露
 
 提交前至少执行：

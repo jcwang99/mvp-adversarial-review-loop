@@ -331,7 +331,32 @@ screening-log.md 按轮次记录全部原始评审报告及其去重/筛查结�
 - original-id.txt：来源角色和原始临时 ID。
 - counterexample.md：前提、步骤、期望/实际行为、影响和置信度。
 - reproduce.* 或 manual-steps.md：原始复现材料。
-- adjudication.md：主代理的范围/契约筛查、复现证据引用、裁决及理由。
+- adjudication.md：主代理的范围/契约筛查、复现证据引用、裁决及理由。格式：
+  ```markdown
+  # Adjudication: [标准 finding ID]
+  
+  ## Scope & Contract Check
+  [是否符合评审范围和契约承诺]
+  
+  ## Reproduction Evidence
+  - **Replay Review**: [replay-review.md 路径]
+  - **Challenge Result**: [challenge-result.md 路径，如果有]
+  - **Reinforce Result**: [reinforce-result.md 路径，如果有]
+  
+  ## Decision
+  **Status**: accepted | deferred | rejected | needs-evidence
+  
+  **Severity**: [P0/P1/P2/P3]（如果修订）
+  
+  **Rationale**: [裁决理由]
+  
+  ## Deferred Reason（仅在 decision: deferred 时填写）
+  **Why Deferred**: [推迟原因：资源限制、优先级排序、等待外部依赖、需要架构重构等]
+  
+  **Disposition Plan**: [后续处置建议：下一轮修复、建议用户在 vX.Y 版本修复、等待依赖库升级后处理等]
+  
+  **Impact Assessment**: [推迟修复的风险评估]
+  ```
 - replay-review.md：独立复现审查的命令、观察、结果和证据路径。
 - challenge-result.md：触发挑战时的短结论和证据路径。
 - reinforce-result.md：需要补强时的修改摘要和运行结果。

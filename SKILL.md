@@ -191,10 +191,18 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 **裁决逻辑**（主代理综合筛查、复现审查、挑战/补强结果后决定）：
 
-- **reproduced 且范围契约相符**：decision 为 accepted，安排修复。P0/P1 优先；P2 默认 accepted，确因资源限制推后修复的仍在后续轮次或最终报告处置并披露；P3 一般 deferred，在最终报告中披露。
+- **reproduced 且范围契约相符**：decision 为 accepted，安排修复。P0/P1 优先；P2 默认 accepted（在本轮修复），确因资源限制推后修复的**必须改为 deferred**（不阻塞本轮收敛，在最终报告披露推迟原因和后续处置建议）；P3 一般 deferred，在最终报告中披露。
 - **reproduced 但范围不符或影响低于声称严重性**：修订 severity 或 claim 后 deferred，或降级后 accepted。
 - **not-reproduced 且有明确反证**：decision 为 rejected，写明理由和反证路径。
 - **blocked、reproduction 不完整，或前提/证据不充分**：decision 为 needs-evidence，列出需要的证据。可派补强代理修正小缺陷。根本无法运行但仍有合理方向的，保留 needs-evidence；补强代理不能修正本身不证明问题不存在。
+
+**decision 语义明确定义**：
+- **accepted**：决定在本轮修复（必须验证，否则阻塞收敛）
+- **deferred**：决定推迟修复（不阻塞本轮收敛，但必须在 adjudication.md 记录推迟原因和后续处置建议，并在最终报告单独章节披露）
+  - 推迟原因示例：资源限制、优先级排序、等待外部依赖、需要架构重构
+  - 后续处置建议示例：下一轮修复、建议用户在 vX.Y 版本修复、等待依赖库升级后处理
+- **rejected**：决定不修（有反证证明不是真实问题）
+- **needs-evidence**：尚未决定（缺少复现证据或前提不明确）
 
 #### 2.4 挑战代理
 
@@ -236,7 +244,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 **必须使用子代理**：每次处理一个 accepted finding，**委派给实现代理**按 tdd-and-commit.md 执行 RED-GREEN-REFACTOR、提交。
 
-**结果处理**：already_fixed（测试直接通过）时，确认现有提交覆盖后进入验证；cannot_fix 或 blocked 时，主代理重新裁决（改为 deferred/rejected，或保留 accepted 并登记未解决），更新 findings-index.md 与 run-state.md，不得静默跳过。
+**结果处理**：already_fixed（测试直接通过）时，确认现有提交覆盖后进入验证；cannot_fix 时，主代理重新裁决（改为 deferred/rejected，或保留 accepted 并登记未解决），更新 findings-index.md 与 run-state.md，不得静默跳过；blocked_by_user_changes 时，按 tdd-and-commit.md 执行（最终报告提供手工合并建议，可能导致 CONVERGED_WITH_MANUAL_MERGE）。
 
 **完成后**：更新 run-state.md，设置 `current_phase: verification`, `active_finding: [ID]`, `next_action: "验证 finding [ID] 的修复"`。
 
@@ -300,9 +308,10 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
   - **rejected**：必须有复现证据（not-reproduced，即有反证）才能拒绝，算在分子
   - **deferred**：已复现但推迟修复，算在分子
   - **needs-evidence**：缺少复现证据（blocked），不算在分子
-- **计算公式**：counterexample_coverage = 分子 / 分母
+- **计算公式（原始覆盖率）**：counterexample_coverage = 分子 / 分母
+- **豁免机制（解决覆盖率与残余风险冲突）**：见下方"收敛判定与最终报告"章节的"覆盖率豁免机制"
 - **自动化与手工复现分别报告**。分母为 0 时报告 N/A，不视为自动通过；须确认每个原始候选都已在 screening-log.md 有明确处理结果，并完成要求的评审与终审。
-- **覆盖率低于 80% 时不得声称评审充分或收敛**；补足证据或在最终报告中标记 INCOMPLETE。
+- **覆盖率低于 80% 时不得声称评审充分或收敛**（使用调整后覆盖率判断，见豁免机制）；补足证据或在最终报告中标记 INCOMPLETE。
 - **decision 或分类变更不得用于缩小分母**：一旦获得标准 ID，finding 永久计入分母，即使后续改为 rejected 或 deferred。
 
 **回归 finding**：每条新 finding 在 adjudication.md 标记 `change_origin: regression | pre-existing | undetermined`。只有证据表明问题由本轮修复引入时才标 regression；无法确定时保持 undetermined，并将 decision 设为 needs-evidence。回归 finding 按实际影响评估严重性，不自动升高一级。
@@ -336,16 +345,54 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 ### 6. 收敛判定与最终报告 (Phase: report)
 
-**收敛条件**（全部满足才是 CONVERGED）：
-- 所有 accepted 且范围内的 P0/P1 已修复且验证通过，或为 blocked_by_user_changes（后者在最终报告单独披露并提供手工合并建议）；rejected/deferred 的不计入；范围内 P0/P1 不得停留在 needs-evidence（须升级为 accepted 并验证，或有反证后 rejected）
-- 所有 accepted finding（所有优先级）已 verified 或 blocked_by_user_changes（后者在最终报告中单独披露，提供手工合并建议）
-- 反例覆盖率（replay-eligible findings 中已重放并留下证据的比例）≥80%
+**收敛状态定义**：
+- **CONVERGED**：所有 P0/P1 已修复且验证通过，所有修复已进入 git 历史，可以安全部署
+- **CONVERGED_WITH_MANUAL_MERGE**：所有 P0/P1 已修复或有手工合并建议（blocked_by_user_changes），但需要用户手工合并后才能安全部署
+- **INCOMPLETE**：有未解决的 P0/P1，或验证阻塞（inconclusive），或覆盖率不足
+
+**CONVERGED 的条件**（全部满足）：
+- 所有 accepted 且范围内的 P0/P1 已修复且验证通过（verified）；rejected/deferred 的不计入；范围内 P0/P1 不得停留在 needs-evidence（须升级为 accepted 并验证，或有反证后 rejected）
+- 所有 accepted finding（所有优先级）已 verified
+- 没有任何 blocked_by_user_changes 的 finding
+- 反例覆盖率（调整后，见下方覆盖率豁免机制）≥80%
 - 最终审计两阶段完成且无新 accepted findings
 - P2 needs-evidence 中，所有 `needs_evidence_clarity: unclear_claim` 的必须解决；`clear_claim_lacking_env` 的可作为残余风险
 
-**未满足时报告 INCOMPLETE**，列明残余风险、阻塞原因和未验证项。
+**CONVERGED_WITH_MANUAL_MERGE 的条件**（全部满足）：
+- 所有 accepted 且范围内的 P0/P1 已修复且验证通过（verified），或为 blocked_by_user_changes（后者有手工合并建议）；rejected/deferred 的不计入；范围内 P0/P1 不得停留在 needs-evidence（须升级为 accepted 并验证，或有反证后 rejected）
+- 所有 accepted finding（所有优先级）已 verified 或 blocked_by_user_changes
+- 至少有一个 blocked_by_user_changes 的 finding
+- 反例覆盖率（调整后，见下方覆盖率豁免机制）≥80%
+- 最终审计两阶段完成且无新 accepted findings
+- P2 needs-evidence 中，所有 `needs_evidence_clarity: unclear_claim` 的必须解决；`clear_claim_lacking_env` 的可作为残余风险
 
-**最终报告**：将最终报告写入 `.review-evidence/final-report.md`（从 screening-log.md、findings-index.md 和 run-state.md 汇总轮次、状态、证据、测试、提交、风险和收敛结论），把 run-state.md 的 `overall_status` 更新为 `converged` 或 `incomplete`，并对照基线列出评审期间未纳入本流程的用户改动。无论 CONVERGED 或 INCOMPLETE，都附上所有 screened_out_preference 建议的汇总清单供用户决策。
+**INCOMPLETE 的条件**（任一满足）：
+- 有未解决的范围内 P0/P1（accepted 但未 verified/blocked_by_user_changes，或 needs-evidence 且 unclear_claim）
+- 有未解决的验证阻塞（inconclusive，不包括 blocked_by_user_changes）
+- 调整后覆盖率 < 80%
+- 达到 max_rounds 但最终审计未完成或仍有新 accepted findings
+
+**覆盖率豁免机制**（解决覆盖率与残余风险冲突）：
+- **原始覆盖率** = 分子（已复现）/ 分母（所有标准 ID finding）
+- **豁免项**：`clear_claim_lacking_env` 的 P2/P3 needs-evidence（已明确记录但缺少复现环境）
+- **调整后覆盖率** = 分子 / (分母 - 豁免项数量)
+- 最终报告必须同时披露原始覆盖率、豁免项数量和调整后覆盖率（透明度）
+- 豁免项必须在最终报告单独章节（"残余风险：已记录但无法复现的 findings"）列明
+
+**最终报告**：将最终报告写入 `.review-evidence/final-report.md`（从 screening-log.md、findings-index.md 和 run-state.md 汇总轮次、状态、证据、测试、提交、风险和收敛结论），把 run-state.md 的 `overall_status` 更新为 `converged`、`converged_with_manual_merge` 或 `incomplete`，并对照基线列出评审期间未纳入本流程的用户改动。
+
+**最终报告必须包含的章节**：
+1. **收敛状态与汇总**：CONVERGED / CONVERGED_WITH_MANUAL_MERGE / INCOMPLETE
+2. **覆盖率透明披露**：原始覆盖率、豁免项数量、调整后覆盖率
+3. **所有 findings 的最终状态**：按优先级和 decision 分组（accepted/deferred/rejected/needs-evidence）
+4. **CONVERGED_WITH_MANUAL_MERGE 专用章节**（如适用）：
+   - 所有 blocked_by_user_changes 的 findings 列表
+   - 每个 finding 的详细手工合并指南（diff patch、冲突文件列表、建议步骤）
+   - 警告："在完成手工合并前，不要部署此版本"
+5. **残余风险章节**：
+   - 已记录但无法复现的 findings（clear_claim_lacking_env 的 P2/P3 needs-evidence）
+   - deferred 的 findings（推迟修复原因和后续处置建议）
+6. **screened_out_preference 建议汇总**：无论 CONVERGED 或 INCOMPLETE，都附上所有偏好性建议的汇总清单供用户决策
 
 **清理临时文件**：
 - 删除 `tests/review/` 整个目录（candidates/、reproductions/、verifications/）
