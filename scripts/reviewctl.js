@@ -14,9 +14,12 @@ const {
   SEVERITIES,
   CHANGE_ORIGINS,
   NEEDS_CLARITY,
+  SOURCES,
+  IMPLEMENTATION_STATUSES,
   ROLES,
   FINDING_ID,
   TEMP_ID,
+  AUDIT_TEMP_ID,
   now,
   ensureDir,
   writeTextAtomic,
@@ -46,9 +49,20 @@ const {
   convergenceReasons,
 } = require("./lib/state");
 const { writeViews } = require("./lib/render");
-const { validateProject, validateInbox, guardCommit } = require("./lib/validate");
+const {
+  validateProject,
+  validateInbox,
+  guardCommit,
+  isAdjacentTestFile,
+  isFormalTestFile,
+  gitTracks,
+  inside,
+  stagedFiles,
+  verdictIsPass,
+  extractSection,
+} = require("./lib/validate");
 
-const REPEATABLE = new Set(["test", "original-id", "adjacent-test"]);
+const REPEATABLE = new Set(["test", "original-id", "adjacent-test", "merged-test"]);
 
 function parseArgs(argv) {
   const flags = {};
@@ -149,23 +163,38 @@ function initTemplates(project) {
         "- Included: [TODO]",
         "- Explicitly excluded: [TODO]",
         "- Acceptance criteria and source: [TODO]",
+        "- Design load or compatibility promises: [TODO]",
+        "",
+        "## System",
+        "- Language/runtime and key dependencies: [TODO]",
+        "- Entry points and critical data flows: [TODO]",
+        "- External services and auth boundaries: [TODO]",
+        "- Deployment model: [TODO]",
         "",
         "## Repository",
+        "- Repository path: [TODO]",
+        "- Branch: [TODO]",
         "- Baseline HEAD: [TODO]",
         "- Initial git status: [TODO]",
+        "- Existing user changes: [TODO]",
         "",
         "## Verification",
         "- Unit/integration/E2E commands: [TODO]",
         "- Build/type-check/lint/security commands: [TODO]",
         "- Baseline results: [TODO]",
+        "- Known environment limits: [TODO]",
         "",
         "## Review",
+        "- Started at: [TODO]",
+        "- Assumptions: [TODO]",
         "- max_rounds: [见 review-config.json]",
         "",
         "## Recovery Guide Deployment",
         "- Target file: [TODO]",
         "- Mode: [TODO]",
+        "- Marker: mvp-adversarial-review-loop-recovery-guide",
         "- Backup: [TODO]",
+        "- Notes: [TODO]",
         "",
       ].join("\n")
     );
@@ -182,13 +211,15 @@ function initTemplates(project) {
 async function commandInit(flags) {
   const project = projectRoot(flags);
   const evidence = path.join(project, EVIDENCE);
-  if (fs.existsSync(path.join(evidence, "review-config.json"))) {
-    fail("review-config.json 已存在；不能重复 init");
+  for (const name of ["review-config.json", "state.json", "findings.json", "run-state.md", "render.json"]) {
+    if (fs.existsSync(path.join(evidence, name))) {
+      fail(`${name} 已存在；不能重复 init，请先归档或手动清理 .review-evidence/`);
+    }
   }
 
   let maxRounds;
   let mode;
-  if (flags.interactive) {
+  if (boolFlag(flags.interactive, "interactive")) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const answer = await rl.question("常规评审轮上限 max_rounds（默认 5，最小 2）: ");
     rl.close();
@@ -196,7 +227,9 @@ async function commandInit(flags) {
     mode = "interactive";
   } else {
     if (flags["max-rounds"] === undefined) fail("缺少 --max-rounds（或使用 --interactive）");
-    if (!flags["user-confirmed"]) fail("缺少 --user-confirmed：必须先向用户确认 max_rounds");
+    if (!boolFlag(flags["user-confirmed"], "user-confirmed")) {
+      fail("缺少 --user-confirmed=true：必须先向用户确认 max_rounds");
+    }
     maxRounds = intFlag(flags["max-rounds"], "max-rounds");
     mode = "agent_declared";
   }
@@ -217,7 +250,7 @@ async function commandInit(flags) {
 function commandStatus(flags) {
   const project = projectRoot(flags);
   const { config, state, data } = loadAll(project);
-  if (flags.json) {
+  if (boolFlag(flags.json, "json")) {
     console.log(JSON.stringify({ config, state, findings: data.findings }, null, 2));
     return;
   }
@@ -241,18 +274,16 @@ function commandNewInbox(flags) {
   const dir = path.join(project, EVIDENCE, `round-${round}`, "inbox", roleSlug(role), tempId);
   ensureDir(dir);
   const metaPath = path.join(dir, "meta.json");
-  if (fs.existsSync(metaPath)) {
-    console.log(path.relative(project, dir).split(path.sep).join("/"));
-    return;
+  if (!fs.existsSync(metaPath)) {
+    const meta = {
+      round,
+      role,
+      role_slug: roleSlug(role),
+      temp_id: tempId,
+      created_at: now(),
+    };
+    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n", "utf8");
   }
-  const meta = {
-    round,
-    role,
-    role_slug: roleSlug(role),
-    temp_id: tempId,
-    created_at: now(),
-  };
-  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n", "utf8");
   console.log(path.relative(project, dir).split(path.sep).join("/"));
 }
 
@@ -282,10 +313,12 @@ function findingById(data, id) {
   return data.findings.find((finding) => finding.id === id) || null;
 }
 
-function hasAuthorization(state, action) {
+function hasAuthorization(state, action, findingId = null) {
   return state.authorizations.some(
     (authorization) =>
-      authorization.action === action && authorization.decision === "authorized"
+      authorization.action === action &&
+      authorization.decision === "authorized" &&
+      (!findingId || !authorization.scope || authorization.scope === findingId)
   );
 }
 
@@ -296,6 +329,44 @@ function hasFormalReproduction(project, round, number) {
   return fs.readdirSync(dir).some((file) => file.startsWith(prefix));
 }
 
+function testMatchesFinding(file, id) {
+  const match = String(id).match(FINDING_ID);
+  if (!match) return false;
+  const name = path.basename(String(file));
+  const target = name.match(/^r(\d+)_f(\d{3})_/i);
+  return Boolean(target && target[1] === match[1] && target[2] === match[2]);
+}
+
+function originalScope(original, finding) {
+  if (TEMP_ID.test(String(original))) {
+    const match = String(finding.id).match(FINDING_ID);
+    return `round-${match ? match[1] : "unknown"}`;
+  }
+  if (AUDIT_TEMP_ID.test(String(original))) {
+    return `attempt-${finding.audit_attempt || "unknown"}`;
+  }
+  return "unknown";
+}
+
+function auditFindingsFor(data, audit) {
+  return data.findings.filter(
+    (finding) => finding.source === "final-audit" && finding.audit_attempt === audit.attempt
+  );
+}
+
+function auditCountSatisfied(data, audit) {
+  return auditFindingsFor(data, audit).length >= audit.new_issues;
+}
+
+function assertAuditCount(data, audit, context) {
+  const recorded = auditFindingsFor(data, audit).length;
+  if (recorded < audit.new_issues) {
+    fail(
+      `${context}：最终审计报告了 ${audit.new_issues} 个新问题，但只记录了 ${recorded} 个 finding；先补齐裁决`
+    );
+  }
+}
+
 function commandRecordFinding(flags) {
   const project = projectRoot(flags);
   const { config, state, data } = loadAll(project);
@@ -303,7 +374,10 @@ function commandRecordFinding(flags) {
   const id = String(stringFlag(flags, "id", { required: true })).toUpperCase();
   const match = id.match(FINDING_ID);
   if (!match) fail(`finding ID 非法：${id}`);
-  if (Number(match[1]) !== state.current_round) fail(`finding ID 的轮次必须是当前轮 ${state.current_round}`);
+  const existingFinding = findingById(data, id);
+  if (!existingFinding && Number(match[1]) !== state.current_round) {
+    fail(`新 finding ID 的轮次必须是当前轮 ${state.current_round}`);
+  }
   const role = String(stringFlag(flags, "role", { required: true })).toUpperCase();
   if (!isRole(role)) fail(`未知角色：${role}`);
   if (match[3] !== role) fail(`finding ID 的类别 ${match[3]} 与 role ${role} 不一致`);
@@ -312,10 +386,24 @@ function commandRecordFinding(flags) {
   if (!SEVERITIES.includes(severity)) fail(`severity 非法：${severity}`);
   const decision = stringFlag(flags, "decision", { required: true });
   if (!DECISIONS.includes(decision)) fail(`decision 非法：${decision}`);
+  const source = stringFlag(flags, "source", { fallback: "review" });
+  if (!SOURCES.includes(source)) fail("source 必须是 review 或 final-audit");
+  const auditAttemptFlag = stringFlag(flags, "audit-attempt", { fallback: null });
+  const auditAttempt = auditAttemptFlag === null ? null : intFlag(auditAttemptFlag, "audit-attempt");
+  if (source === "final-audit" && auditAttempt === null) {
+    fail("final-audit finding 必须提供 --audit-attempt");
+  }
+  if (source === "final-audit") {
+    const audit = state.final_audit.attempts.find((item) => item.attempt === auditAttempt);
+    if (!audit) fail(`不存在 final-audit attempt ${auditAttempt}`);
+  }
   const reproduced = boolFlag(flags.reproduced, "reproduced");
   const reproductionStatus = stringFlag(flags, "reproduction-status", { required: true });
   const changeOrigin = stringFlag(flags, "change-origin", { fallback: "undetermined" });
   if (!CHANGE_ORIGINS.includes(changeOrigin)) fail(`change-origin 非法：${changeOrigin}`);
+  if (decision !== "needs-evidence" && changeOrigin === "undetermined") {
+    fail("非 needs-evidence 的 finding 必须提供 --change-origin regression|pre-existing");
+  }
 
   const canonical = path.join(project, EVIDENCE, `round-${match[1]}`, id);
   const evidenceDir = path.resolve(project, stringFlag(flags, "evidence-dir", { fallback: path.relative(project, canonical) }));
@@ -326,11 +414,19 @@ function commandRecordFinding(flags) {
   for (const required of ["counterexample.md", "adjudication.md"]) {
     if (!fs.existsSync(path.join(evidenceDir, required))) fail(`缺少 ${required}`);
   }
+  const adjudicationText = readText(path.join(evidenceDir, "adjudication.md"));
+  const adjudicationStatus = adjudicationText.match(/\*\*Status\*\*\s*:\s*(accepted|deferred|rejected|needs-evidence)/i);
+  if (adjudicationStatus && adjudicationStatus[1].toLowerCase() !== decision) {
+    fail(`adjudication.md 的 Status (${adjudicationStatus[1]}) 与 --decision ${decision} 不一致`);
+  }
   const hasReproduction =
     fs.existsSync(path.join(evidenceDir, "manual-steps.md")) ||
     fs.readdirSync(evidenceDir).some((file) => /^reproduce\..+$/i.test(file));
   if (decision !== "needs-evidence" && !hasReproduction) {
     fail("缺少 reproduce.* 或 manual-steps.md");
+  }
+  if (decision !== "needs-evidence" && !fs.existsSync(path.join(evidenceDir, "replay-review.md"))) {
+    fail("非 needs-evidence 的 finding 必须由独立复现审查代理写入 replay-review.md");
   }
 
   if (reproduced && reproductionStatus !== "reproduced") fail("reproduced=true 时 reproduction-status 必须是 reproduced");
@@ -349,6 +445,13 @@ function commandRecordFinding(flags) {
   if (decision === "needs-evidence" && ["P2", "P3"].includes(severity)) {
     if (!NEEDS_CLARITY.includes(needsClarity)) fail("P2/P3 needs-evidence 必须提供 --needs-evidence-clarity");
   }
+  if (
+    decision === "needs-evidence" &&
+    ["P0", "P1"].includes(severity) &&
+    needsClarity === "unclear_claim"
+  ) {
+    fail("P0/P1 needs-evidence 不能使用 unclear_claim；必须补证据或裁决");
+  }
   if (decision === "needs-evidence" && !["blocked", "not_run"].includes(reproductionStatus)) {
     fail("needs-evidence 的 reproduction-status 必须是 blocked 或 not_run");
   }
@@ -360,18 +463,26 @@ function commandRecordFinding(flags) {
 
   const challengeFlag = boolFlag(flags["challenge-required"], "challenge-required");
   const challengeRequired =
-    challengeFlag ||
-    (decision === "accepted" && (severity === "P0" || (severity === "P1" && role === "SEC")));
-  const challengeResult = stringFlag(flags, "challenge-result", { fallback: "none" });
+    challengeFlag || (decision === "accepted" && ["P0", "P1"].includes(severity));
+  const challengeSkipped = hasAuthorization(state, "skip-mandatory-challenge", id);
+  const providedChallenge = stringFlag(flags, "challenge-result", { fallback: null });
+  const challengeResult =
+    providedChallenge || (challengeRequired && challengeSkipped ? "skipped" : "none");
   const reproducedBy = stringFlag(flags, "reproduced-by", { fallback: "agent" });
   if (!["agent", "main-agent"].includes(reproducedBy)) {
     fail("reproduced-by 必须是 agent 或 main-agent");
   }
-  if (reproducedBy === "main-agent" && !hasAuthorization(state, "main-agent-reproduction")) {
-    fail("主代理复现前必须先用 reviewctl authorize 记录用户授权");
+  if (reproducedBy === "main-agent" && !hasAuthorization(state, "main-agent-reproduction", id)) {
+    fail("主代理复现前必须先用 reviewctl authorize 记录该 finding 的用户授权");
   }
-  if (challengeRequired && !["supports", "disputes", "inconclusive"].includes(challengeResult)) {
-    fail("必须挑战项需要 --challenge-result supports|disputes|inconclusive");
+  if (
+    challengeRequired &&
+    !["supports", "disputes", "inconclusive", "skipped"].includes(challengeResult)
+  ) {
+    fail("必须挑战项需要 --challenge-result supports|disputes|inconclusive（或先授权 skip-mandatory-challenge）");
+  }
+  if (challengeResult === "skipped" && !challengeSkipped) {
+    fail("challenge-result=skipped 需要先授权 skip-mandatory-challenge");
   }
 
   const originalIds = Array.isArray(flags["original-id"])
@@ -380,13 +491,35 @@ function commandRecordFinding(flags) {
       ? [flags["original-id"]]
       : [];
   if (originalIds.length === 0) fail("缺少 --original-id");
+  const seenOriginalIds = new Set();
   for (const original of originalIds) {
     const normalized = String(original).toUpperCase();
-    if (!TEMP_ID.test(normalized)) fail(`original-id 非法：${original}`);
-    if (normalized.split("-")[0] !== role) fail(`original-id 前缀必须是 ${role}-`);
+    if (!TEMP_ID.test(normalized) && !AUDIT_TEMP_ID.test(normalized)) {
+      fail(`original-id 非法（需要 ROLE-001 或 FA-001）：${original}`);
+    }
+    if (seenOriginalIds.has(normalized)) fail(`original-id 重复：${normalized}`);
+    seenOriginalIds.add(normalized);
+    if (TEMP_ID.test(normalized)) {
+      if (normalized.split("-")[0] !== role) {
+        fail(`original-id ${normalized} 的前缀必须与 role ${role} 一致；跨角色重复请记录在 screening-log.md`);
+      }
+      if (source === "final-audit") fail("final-audit finding 必须使用 FA-001 形式的 original-id");
+    } else if (source !== "final-audit") {
+      fail("FA-001 形式的 original-id 只能用于 --source final-audit");
+    }
+    const scope = TEMP_ID.test(normalized)
+      ? `round-${match[1]}`
+      : `attempt-${auditAttempt || "unknown"}`;
+    const duplicate = data.findings.find(
+      (item) =>
+        item.id !== id &&
+        (item.original_ids || []).includes(normalized) &&
+        originalScope(normalized, item) === scope
+    );
+    if (duplicate) fail(`original-id ${normalized} 已属于 ${duplicate.id}（同一轮/同一审计尝试）`);
   }
 
-  let finding = findingById(data, id);
+  let finding = existingFinding;
   const isNew = !finding;
   if (!finding) {
     finding = {
@@ -402,9 +535,33 @@ function commandRecordFinding(flags) {
       created_at: now(),
     };
     data.findings.push(finding);
+  } else {
+    const existingSource = finding.source || "review";
+    if (existingSource !== source) {
+      fail(`${id}: 已存在 finding 的 source 不能从 ${existingSource} 改为 ${source}`);
+    }
+    if ((finding.audit_attempt || null) !== (source === "final-audit" ? auditAttempt : null)) {
+      fail(`${id}: 已存在 finding 的 audit_attempt 不能改变`);
+    }
+    finding.verification = "pending";
+    finding.implementation_status = "none";
+    finding.manual = false;
+    finding.commit = null;
+    finding.test_files = [];
+    finding.verification_attempts = 0;
+    finding.unresolved = false;
+    finding.unresolved_reason = null;
+    finding.verified_at = null;
+    delete finding.verified_by;
+    finding.adjacent_tests = [];
+    finding.adjacent_reason = null;
+    finding.merged_tests = [];
+    finding.merge_conflict = false;
   }
   Object.assign(finding, {
     original_ids: originalIds.map((value) => String(value).toUpperCase()),
+    source,
+    audit_attempt: source === "final-audit" ? auditAttempt : null,
     role,
     severity,
     decision,
@@ -447,19 +604,49 @@ function commandRecordImplementation(flags) {
   if (finding.decision !== "accepted") fail(`${id} 不是 accepted`);
   if (state.active_finding !== id) fail(`active_finding 是 ${state.active_finding}，不是 ${id}`);
   const status = stringFlag(flags, "status", { required: true });
-  if (!["fixed", "already_fixed"].includes(status)) fail("status 必须是 fixed 或 already_fixed");
+  if (!["fixed", "already_fixed", "prepared", "blocked", "cannot_fix"].includes(status)) {
+    fail("status 必须是 fixed、already_fixed、prepared、blocked 或 cannot_fix");
+  }
   const evidenceDir = path.resolve(project, finding.evidence_dir);
   if (!fs.existsSync(path.join(evidenceDir, "implementation-result.md"))) {
     fail(`${id}: 缺少 implementation-result.md`);
   }
+  const manual = boolFlag(flags.manual, "manual", false);
   const tests = Array.isArray(flags.test) ? flags.test : flags.test ? [flags.test] : [];
-  if (tests.length === 0) fail("缺少 --test");
+  const reason = stringFlag(flags, "reason", { fallback: null });
+  if (["prepared", "blocked", "cannot_fix"].includes(status) && !reason) {
+    fail(`${status} 必须提供 --reason`);
+  }
+  if (["fixed", "already_fixed"].includes(status) && tests.length === 0 && !manual) {
+    fail("缺少 --test（确实无法自动化时使用 --manual 并说明理由）");
+  }
+  if (manual && !/manual/i.test(readText(path.join(evidenceDir, "implementation-result.md")))) {
+    fail("manual finding 的 implementation-result.md 必须包含 Manual 说明");
+  }
+  if (status === "prepared") {
+    const implementation = readText(path.join(evidenceDir, "implementation-result.md"));
+    if (!/RED/i.test(implementation) || !/Manual Merge Guidance/i.test(implementation)) {
+      fail("prepared（用户改动冲突）必须包含 RED 和 Manual Merge Guidance");
+    }
+  }
   for (const testFile of tests) {
     const normalized = String(testFile).replace(/\\/g, "/");
-    if (normalized.startsWith("tests/review/")) fail(`正式测试不能位于 tests/review/：${testFile}`);
+    if (!inside(project, path.resolve(project, testFile))) fail(`测试文件必须在项目内：${testFile}`);
+    if (!isFormalTestFile(normalized)) fail(`不是正式测试文件：${testFile}`);
     if (!fs.existsSync(path.resolve(project, testFile))) fail(`测试文件不存在：${testFile}`);
   }
+  if (status === "already_fixed") {
+    for (const testFile of tests) {
+      if (!gitTracks(project, String(testFile).replace(/\\/g, "/"))) {
+        fail(`already_fixed 的测试文件必须已提交到 git：${testFile}`);
+      }
+    }
+  }
   const commit = stringFlag(flags, "commit", { fallback: "none" });
+  if (status === "already_fixed" && commit !== "none") {
+    if (!/^[0-9a-f]{7,40}$/i.test(commit)) fail("already_fixed 的 --commit 必须是合法 SHA");
+    if (!commitExists(project, commit)) fail(`commit 不存在：${commit}`);
+  }
   if (status === "fixed") {
     if (!/^[0-9a-f]{7,40}$/i.test(commit)) fail("fixed 必须提供合法 --commit");
     if (!commitExists(project, commit)) fail(`commit 不存在：${commit}`);
@@ -488,8 +675,13 @@ function commandRecordImplementation(flags) {
     if (sourceFiles.length === 0) fail("修复 commit 没有源代码改动");
   }
   finding.implementation_status = status;
-  finding.commit = status === "fixed" ? commit : "none";
+  finding.manual = manual;
   finding.test_files = tests.map((file) => String(file).replace(/\\/g, "/"));
+  finding.commit = status === "fixed" || (status === "already_fixed" && commit !== "none") ? commit : "none";
+  if (["blocked", "cannot_fix"].includes(status)) {
+    finding.unresolved = true;
+    finding.unresolved_reason = reason;
+  }
   finding.updated_at = now();
   persist(project, config, state, data);
   console.log(`recorded implementation for ${id}: ${status}`);
@@ -498,13 +690,15 @@ function commandRecordImplementation(flags) {
 function commandRecordVerification(flags) {
   const project = projectRoot(flags);
   const { config, state, data } = loadAll(project);
-  const status = stringFlag(flags, "status", { required: true });
+  const rawStatus = stringFlag(flags, "status", { required: true });
+  const status = rawStatus === "blocked" ? "inconclusive" : rawStatus;
   if (!VERIFICATIONS.includes(status) || status === "pending") fail(`verification status 非法：${status}`);
   const allowedPhase =
-    state.current_phase === "verification" ||
-    (state.current_phase === "repair" && status === "blocked_by_user_changes");
+    status === "blocked_by_user_changes"
+      ? state.current_phase === "repair"
+      : state.current_phase === "verification";
   if (!allowedPhase) {
-    fail("record-verification 只能在 verification 阶段使用；blocked_by_user_changes 可在 repair 阶段记录");
+    fail("record-verification 只能在 verification 阶段使用；blocked_by_user_changes 只能在 repair 阶段记录");
   }
   const id = String(stringFlag(flags, "id", { required: true })).toUpperCase();
   const finding = findingById(data, id);
@@ -521,18 +715,31 @@ function commandRecordVerification(flags) {
       ? [flags["adjacent-test"]]
       : [];
   const adjacentReason = stringFlag(flags, "adjacent-reason", { fallback: null });
+  const mergedTests = Array.isArray(flags["merged-test"])
+    ? flags["merged-test"]
+    : flags["merged-test"]
+      ? [flags["merged-test"]]
+      : [];
   const verifiedBy = stringFlag(flags, "verified-by", { fallback: "agent" });
   if (!["agent", "main-agent"].includes(verifiedBy)) {
     fail("verified-by 必须是 agent 或 main-agent");
   }
-  if (verifiedBy === "main-agent" && !hasAuthorization(state, "main-agent-verification")) {
-    fail("主代理验证前必须先用 reviewctl authorize 记录用户授权");
+  if (verifiedBy === "main-agent" && !hasAuthorization(state, "main-agent-verification", id)) {
+    fail("主代理验证前必须先用 reviewctl authorize 记录该 finding 的用户授权");
   }
   if (status === "pass") {
     if (!["fixed", "already_fixed"].includes(finding.implementation_status)) {
       fail(`${id}: pass 前必须有 implementation_status`);
     }
-    if (!finding.test_files || finding.test_files.length === 0) fail(`${id}: pass 前必须有测试文件`);
+    if (finding.manual !== true && (!finding.test_files || finding.test_files.length === 0)) {
+      fail(`${id}: pass 前必须有测试文件（manual finding 除外）`);
+    }
+    if (!verdictIsPass(readText(path.join(evidenceDir, "verification-result.md")))) {
+      fail(`${id}: verification-result.md 的 Final Verdict 必须是 pass`);
+    }
+    if (finding.manual === true && !/manual/i.test(readText(path.join(evidenceDir, "verification-result.md")))) {
+      fail(`${id}: manual finding 的 verification-result.md 必须记录人工复测`);
+    }
     if (adjacentTests.length < 2 && !adjacentReason) {
       fail(`${id}: pass 前必须有至少 2 个相邻测试，或用 --adjacent-reason 说明无法生成的理由`);
     }
@@ -541,19 +748,40 @@ function commandRecordVerification(flags) {
       if (!normalized.startsWith("tests/review/verifications/")) {
         fail(`相邻测试必须位于 tests/review/verifications/：${file}`);
       }
-      if (!/^r\d+_f\d{3}_[a-z0-9_]+_adjacent(?:_[a-z0-9_]+)?\.test\.[a-z0-9]+$/.test(path.basename(normalized))) {
-        fail(`相邻测试命名非法：${file}`);
+      if (!isAdjacentTestFile(path.basename(normalized)) || !testMatchesFinding(normalized, id)) {
+        fail(`相邻测试命名非法或不属于 ${id}：${file}`);
       }
       if (!fs.existsSync(path.resolve(project, file))) fail(`相邻测试不存在：${file}`);
+    }
+    if (adjacentTests.length > 0 && mergedTests.length === 0) {
+      fail(`${id}: 相邻测试必须合并到正式测试文件，并通过 --merged-test 记录`);
+    }
+    for (const file of mergedTests) {
+      const normalized = String(file).replace(/\\/g, "/");
+      if (!inside(project, path.resolve(project, file))) fail(`merged-test 必须在项目内：${file}`);
+      if (normalized.startsWith("tests/review/")) fail(`merged-test 不能位于 tests/review/：${file}`);
+      if (!isFormalTestFile(normalized)) fail(`merged-test 不是正式测试文件：${file}`);
+      const absolute = path.resolve(project, file);
+      if (!fs.existsSync(absolute)) fail(`merged-test 不存在：${file}`);
+      if (!gitTracks(project, normalized)) fail(`merged-test 必须已提交到 git：${file}`);
+      if (!readText(absolute).toUpperCase().includes(id)) {
+        fail(`merged-test 内容必须包含 finding ID ${id}：${file}`);
+      }
     }
     finding.verified_at = now();
     finding.unresolved = false;
     finding.unresolved_reason = null;
   } else if (status === "blocked_by_user_changes") {
+    if (!["fixed", "already_fixed", "prepared"].includes(finding.implementation_status)) {
+      fail(`${id}: blocked_by_user_changes 需要先记录 prepared/fixed/already_fixed 的修复`);
+    }
     finding.merge_conflict = true;
     const implementationPath = path.join(evidenceDir, "implementation-result.md");
     if (!fs.existsSync(implementationPath)) fail(`${id}: 缺少 implementation-result.md`);
     const implementation = readText(implementationPath);
+    if (!/RED/i.test(implementation)) {
+      fail(`${id}: blocked_by_user_changes 的 implementation-result.md 必须包含 RED 复现证据`);
+    }
     if (!/Manual Merge Guidance/i.test(implementation)) {
       fail(`${id}: blocked_by_user_changes 的 implementation-result.md 必须包含 Manual Merge Guidance`);
     }
@@ -569,6 +797,7 @@ function commandRecordVerification(flags) {
   finding.verified_by = verifiedBy;
   finding.adjacent_tests = adjacentTests.map((file) => String(file).replace(/\\/g, "/"));
   finding.adjacent_reason = adjacentReason;
+  finding.merged_tests = mergedTests.map((file) => String(file).replace(/\\/g, "/"));
   finding.updated_at = now();
   persist(project, config, state, data);
   console.log(`recorded verification for ${id}: ${status}`);
@@ -584,6 +813,7 @@ function commandNextFinding(flags) {
   const pending = pendingAccepted(data).filter((finding) => finding.id !== active.id);
   if (!pending.length) fail("没有其他待修复的 accepted finding；运行 advance --to round_decision");
   state.active_finding = pending[0].id;
+  state.repair_baseline_staged = stagedFiles(project);
   event(state, "repair", `修复 ${pending[0].id}`);
   persist(project, config, state, data);
   console.log(`next finding: ${pending[0].id}`);
@@ -592,15 +822,21 @@ function commandNextFinding(flags) {
 function commandMarkUnresolved(flags) {
   const project = projectRoot(flags);
   const { config, state, data } = loadAll(project);
-  if (!["verification", "round_decision"].includes(state.current_phase)) {
-    fail("mark-unresolved 只能在 verification 或 round_decision 阶段使用");
+  if (!["repair", "verification", "round_decision"].includes(state.current_phase)) {
+    fail("mark-unresolved 只能在 repair、verification 或 round_decision 阶段使用");
   }
   const id = String(stringFlag(flags, "id", { required: true })).toUpperCase();
   const finding = findingById(data, id);
   if (!finding) fail(`finding 不存在：${id}`);
   if (finding.decision !== "accepted") fail(`${id} 不是 accepted`);
-  if (!["fail", "inconclusive"].includes(finding.verification)) {
-    fail(`${id}: 只有 fail/inconclusive 可以标记未解决`);
+  const repairBlocked =
+    state.current_phase === "repair" &&
+    ["blocked", "cannot_fix"].includes(finding.implementation_status);
+  const verificationBlocked =
+    ["verification", "round_decision"].includes(state.current_phase) &&
+    ["fail", "inconclusive"].includes(finding.verification);
+  if (!repairBlocked && !verificationBlocked) {
+    fail(`${id}: repair 阶段只能标记 blocked/cannot_fix，验证阶段只能标记 fail/inconclusive`);
   }
   const reason = stringFlag(flags, "reason", { required: true });
   finding.unresolved = true;
@@ -619,20 +855,25 @@ function commandRecordAudit(flags) {
   const status = stringFlag(flags, "status", { required: true });
   if (!["complete", "failed"].includes(status)) fail("status 必须是 complete 或 failed");
   const newIssues = intFlag(flags["new-issues"], "new-issues");
+  const auditor = stringFlag(flags, "auditor", { required: true });
   const dir = path.join(project, EVIDENCE, `round-${state.current_round}`, "final-audit", `attempt-${attempt}`);
-  for (const required of ["blind-scan.md", "targeted-review.md"]) {
-    if (!fs.existsSync(path.join(dir, required))) fail(`attempt ${attempt}: 缺少 ${required}`);
+  const required = status === "complete" ? ["blind-scan.md", "targeted-review.md"] : [];
+  for (const name of required) {
+    if (!fs.existsSync(path.join(dir, name))) fail(`attempt ${attempt}: 缺少 ${name}`);
   }
   const entry = {
     attempt,
     round: state.current_round,
     status,
     new_issues: newIssues,
+    auditor,
     at: now(),
   };
   const existing = state.final_audit.attempts.findIndex((item) => item.attempt === attempt);
-  if (existing >= 0) state.final_audit.attempts[existing] = entry;
-  else state.final_audit.attempts.push(entry);
+  if (existing >= 0) {
+    fail(`attempt ${attempt} 已记录，不能覆盖；失败后请从 final_audit 进入 report 并标记 INCOMPLETE`);
+  }
+  state.final_audit.attempts.push(entry);
   persist(project, config, state, data);
   console.log(`recorded final audit attempt ${attempt}: ${status}, new_issues=${newIssues}`);
 }
@@ -672,6 +913,31 @@ function markRoundCompleted(state, round) {
   entry.completed_at = now();
   state.rounds_consumed = round;
   state.active_finding = null;
+  state.repair_baseline_staged = [];
+}
+
+function computedNewInScope(data, round) {
+  return data.findings.filter((finding) => {
+    const match = String(finding.id).match(FINDING_ID);
+    return (
+      match &&
+      finding.source !== "final-audit" &&
+      Number(match[1]) === round &&
+      ["P0", "P1", "P2"].includes(finding.severity) &&
+      finding.decision !== "rejected"
+    );
+  }).length;
+}
+
+function completeRound(state, data, round) {
+  const entry = roundEntry(state, round);
+  const computed = computedNewInScope(data, round);
+  if (entry && computed > Number(entry.new_in_scope_p0p1p2 || 0)) {
+    fail(
+      `第 ${round} 轮记录的新 P0/P1/P2 数量 (${entry.new_in_scope_p0p1p2 || 0}) 小于 findings.json 中的 ${computed}；先更正 record-round 计数`
+    );
+  }
+  markRoundCompleted(state, round);
 }
 
 function earlyConvergence(state) {
@@ -687,8 +953,8 @@ function commandAdvance(flags) {
   const { config, state, data } = loadAll(project);
   const target = stringFlag(flags, "to", { required: true });
   if (!PHASES.includes(target)) fail(`目标阶段非法：${target}`);
-  const stateErrors = [...validateConfig(config), ...validateState(state, config), ...validateFindings(data)];
-  if (stateErrors.length) fail(`状态校验失败：${stateErrors.join("; ")}`);
+  const projectResult = validateProject(project, config, state, data);
+  if (projectResult.errors.length) fail(`状态校验失败：${projectResult.errors.join("; ")}`);
   if (!TRANSITIONS[state.current_phase].includes(target)) {
     fail(`非法状态转移：${state.current_phase} -> ${target}`);
   }
@@ -713,6 +979,7 @@ function commandAdvance(flags) {
     if (inboxErrors.length) fail(`inbox 校验失败：${inboxErrors.join("; ")}`);
     const roles = countHandoffRoles(project, state.current_round);
     if (roles.length < 3) fail(`本轮只有 ${roles.length} 个角色提交 handoff.json，至少需要 3 个`);
+    if (roles.length > 6) fail(`本轮有 ${roles.length} 个角色，最多允许 6 个`);
     round.roles = roles;
     round.status = "in_progress";
     event(state, "adjudication", "筛查、去重并裁决候选 findings");
@@ -728,16 +995,23 @@ function commandAdvance(flags) {
     }
     if (!finding) fail("没有待修复的 accepted finding");
     const match = finding.id.match(FINDING_ID);
-    if (!match || !hasFormalReproduction(project, match[1], match[2])) {
-      fail(`${finding.id}: 先把复现测试移到 tests/review/reproductions/`);
+    const evidenceDir = path.resolve(project, finding.evidence_dir);
+    const manualAllowed = fs.existsSync(path.join(evidenceDir, "manual-steps.md"));
+    if (!match || (!hasFormalReproduction(project, match[1], match[2]) && !manualAllowed)) {
+      fail(`${finding.id}: 先把复现测试移到 tests/review/reproductions/，或提供 manual-steps.md`);
     }
     state.active_finding = finding.id;
+    state.repair_baseline_staged = stagedFiles(project);
     event(state, "repair", `修复 ${finding.id}`);
   } else if (from === "adjudication" && target === "round_decision") {
     if (pendingAccepted(data).length > 0) fail("仍有待修复的 accepted finding，不能进入 round_decision");
+    const audit = lastAudit(state);
+    if (state.final_audit.reentry_pending && audit && audit.status === "complete") {
+      assertAuditCount(data, audit, "终审 finding 尚未全部记录");
+    }
     const round = roundEntry(state, state.current_round);
     if (!round || round.raw_candidates === null) fail("先运行 record-round 记录本轮计数");
-    markRoundCompleted(state, state.current_round);
+    completeRound(state, data, state.current_round);
     event(state, "round_decision", "检查提前收敛/轮次上限");
   } else if (from === "repair" && target === "verification") {
     const finding = findingById(data, state.active_finding);
@@ -749,27 +1023,47 @@ function commandAdvance(flags) {
     if (!fs.existsSync(path.join(evidenceDir, "implementation-result.md"))) {
       fail(`${finding.id}: 缺少 implementation-result.md`);
     }
-    if (!finding.test_files || finding.test_files.length === 0) fail(`${finding.id}: 缺少测试文件`);
+    if (finding.manual !== true && (!finding.test_files || finding.test_files.length === 0)) {
+      fail(`${finding.id}: 缺少测试文件（manual finding 除外）`);
+    }
     event(state, "verification", `验证 ${finding.id}`);
+  } else if (from === "repair" && target === "adjudication") {
+    const active = findingById(data, state.active_finding);
+    if (!active) fail("active_finding 不存在");
+    state.active_finding = null;
+    state.repair_baseline_staged = [];
+    event(state, "adjudication", "重新裁决无法修复或需要调整范围的 finding");
+  } else if (from === "verification" && target === "adjudication") {
+    const active = findingById(data, state.active_finding);
+    if (!active) fail("active_finding 不存在");
+    state.active_finding = null;
+    state.repair_baseline_staged = [];
+    event(state, "adjudication", "裁决验证阶段发现的新问题或回归");
   } else if (from === "repair" && target === "round_decision") {
     const active = findingById(data, state.active_finding);
     if (!active) fail("active_finding 不存在");
     if (!isTerminal(active)) fail(`${active.id} 还未终结`);
     const pending = pendingAccepted(data).filter((finding) => finding.id !== active.id);
     if (pending.length) fail(`还有待修复 finding：${pending.map((finding) => finding.id).join(", ")}；先运行 next-finding`);
+    const audit = lastAudit(state);
+    if (state.final_audit.reentry_pending && audit && audit.status === "complete") {
+      assertAuditCount(data, audit, "终审 finding 尚未全部记录");
+    }
     const round = roundEntry(state, state.current_round);
     if (!round || round.raw_candidates === null) fail("先运行 record-round 记录本轮计数");
-    markRoundCompleted(state, state.current_round);
+    completeRound(state, data, state.current_round);
     event(state, "round_decision", "检查提前收敛/轮次上限");
   } else if (from === "verification" && target === "repair") {
     const finding = findingById(data, state.active_finding);
     if (!finding) fail("active_finding 不存在");
     if (finding.verification === "fail" && finding.verification_attempts < 2) {
+      state.repair_baseline_staged = stagedFiles(project);
       event(state, "repair", `重新修复 ${finding.id}`);
     } else {
       const pending = pendingAccepted(data).filter((item) => item.id !== finding.id);
       if (!pending.length) fail("没有待修复的 accepted finding；应进入 round_decision");
       state.active_finding = pending[0].id;
+      state.repair_baseline_staged = stagedFiles(project);
       event(state, "repair", `修复 ${pending[0].id}`);
     }
   } else if (from === "verification" && target === "round_decision") {
@@ -779,9 +1073,13 @@ function commandAdvance(flags) {
     if (unverified.length) {
       fail(`仍有未终结的 accepted finding：${unverified.map((item) => item.id).join(", ")}`);
     }
+    const audit = lastAudit(state);
+    if (state.final_audit.reentry_pending && audit && audit.status === "complete") {
+      assertAuditCount(data, audit, "终审 finding 尚未全部记录");
+    }
     const round = roundEntry(state, state.current_round);
     if (!round || round.raw_candidates === null) fail("先运行 record-round 记录本轮计数");
-    markRoundCompleted(state, state.current_round);
+    completeRound(state, data, state.current_round);
     event(state, "round_decision", "检查提前收敛/轮次上限");
   } else if (from === "round_decision" && target === "review") {
     if (!canTriggerNewRound(state, config)) fail("已达到 max_rounds，不能再开常规评审轮");
@@ -792,11 +1090,21 @@ function commandAdvance(flags) {
     const round = ensureRound(state, state.current_round);
     round.status = "in_progress";
     event(state, "review", `启动第 ${state.current_round} 轮评审角色`);
+  } else if (from === "round_decision" && target === "adjudication") {
+    if (!state.final_audit.reentry_pending) {
+      fail("只有终审新问题后的补记裁决才能从 round_decision 进入 adjudication");
+    }
+    const audit = lastAudit(state);
+    if (!audit || audit.status !== "complete") fail("最终审计未完成");
+    if (auditCountSatisfied(data, audit)) {
+      fail("终审 finding 已全部记录，不需要回到 adjudication");
+    }
+    event(state, "adjudication", "补记终审 finding 的裁决");
   } else if (from === "round_decision" && target === "final_audit") {
     if (state.rounds_consumed < 2) fail("至少完成 2 轮常规评审才能进入最终审计");
     if (state.final_audit.reentry_pending) {
-      if (state.rounds_consumed >= config.max_rounds) {
-        fail("已达到 max_rounds，终审新问题不能再开轮；应进入 report 并标记 INCOMPLETE");
+      if (state.final_audit_attempt >= 3) {
+        fail("最终审计已达 3 次，不能再次终审；应进入 report 并标记 INCOMPLETE");
       }
       if (state.current_round <= state.final_audit.reentry_after_round) {
         fail("终审发现新问题后必须先完成新的常规评审轮，再重新终审");
@@ -820,20 +1128,37 @@ function commandAdvance(flags) {
     event(state, "adjudication", "裁决终审发现的新问题");
   } else if (from === "final_audit" && target === "report") {
     const audit = lastAudit(state);
-    if (!audit || audit.status !== "complete") fail("最终审计未完成");
-    if (audit.new_issues > 0) {
-      fail("终审仍有新问题，必须先回到 adjudication 处理后再 report");
+    if (!audit) fail("最终审计未记录");
+    if (audit.status === "failed") {
+      state.final_audit.reentry_pending = false;
+      event(state, "report", "最终审计失败，运行 reviewctl finalize --status incomplete");
+    } else if (audit.status !== "complete") {
+      fail("最终审计未完成");
+    } else {
+      if (audit.new_issues > 0) {
+        fail("终审仍有新问题，必须先回到 adjudication 处理后再 report");
+      }
+      state.final_audit.reentry_pending = false;
+      event(state, "report", "运行 reviewctl finalize --status ...");
     }
-    state.final_audit.reentry_pending = false;
-    event(state, "report", "运行 reviewctl finalize --status ...");
   } else if (from === "round_decision" && target === "report") {
     if (!state.final_audit.reentry_pending) {
       fail("只有终审新问题后的收尾才能从 round_decision 进入 report");
     }
-    if (state.final_audit_attempt < 3 && state.rounds_consumed < config.max_rounds) {
-      fail("终审新问题修复后必须开新的常规评审轮，或达到审计尝试上限");
+    const audit = lastAudit(state);
+    if (!audit || audit.status !== "complete") fail("最终审计未完成");
+    assertAuditCount(data, audit, "终审 finding 尚未全部记录");
+    const auditFindings = auditFindingsFor(data, audit);
+    const acceptedAudit = auditFindings.filter((finding) => finding.decision === "accepted");
+    if (
+      acceptedAudit.length > 0 &&
+      state.final_audit_attempt < 3 &&
+      state.rounds_consumed < config.max_rounds
+    ) {
+      fail("终审新 accepted finding 修复后必须开新的常规评审轮并重新终审");
     }
-    event(state, "report", "运行 reviewctl finalize --status incomplete");
+    state.final_audit.reentry_pending = false;
+    event(state, "report", "运行 reviewctl finalize --status ...");
   } else {
     fail(`未实现的转移：${from} -> ${target}`);
   }
@@ -857,11 +1182,25 @@ function renderFinalReport(project, state, config, data, status, reasons) {
     `- Coverage exemptions: ${cov.exemptions}`,
     `- Coverage adjusted: ${cov.adjusted_percent === null ? "N/A" : `${cov.adjusted_percent}%`} (${cov.numerator}/${cov.adjusted_denominator})`,
     "",
+    "## Findings by Severity",
+    "",
+    "| Severity | Accepted | Deferred | Rejected | Needs evidence |",
+    "|----------|----------|----------|----------|----------------|",
+  ];
+  for (const severity of ["P0", "P1", "P2", "P3"]) {
+    const group = data.findings.filter((finding) => finding.severity === severity);
+    lines.push(
+      `| ${severity} | ${group.filter((finding) => finding.decision === "accepted").length} | ${group.filter((finding) => finding.decision === "deferred").length} | ${group.filter((finding) => finding.decision === "rejected").length} | ${group.filter((finding) => finding.decision === "needs-evidence").length} |`
+    );
+  }
+
+  lines.push(
+    "",
     "## Findings",
     "",
     "| Finding | Severity | Decision | Verification | Commit |",
-    "|---------|----------|----------|--------------|--------|",
-  ];
+    "|---------|----------|----------|--------------|--------|"
+  );
   for (const finding of data.findings) {
     lines.push(
       `| ${finding.id} | ${finding.severity} | ${finding.decision} | ${finding.verification} | ${finding.commit || "-"} |`
@@ -887,8 +1226,37 @@ function renderFinalReport(project, state, config, data, status, reasons) {
     lines.push("", "## Manual Merge Required", "");
     lines.push("**Do not deploy until manual merge is complete.**");
     for (const finding of blocked) {
-      lines.push(`- ${finding.id}: see ${finding.evidence_dir}/implementation-result.md`);
+      lines.push("", `### ${finding.id}`, "");
+      const implementationPath = path.resolve(project, finding.evidence_dir, "implementation-result.md");
+      const guidance = fs.existsSync(implementationPath)
+        ? extractSection(readText(implementationPath), "Manual Merge Guidance")
+        : "";
+      lines.push(guidance || `See ${finding.evidence_dir}/implementation-result.md`);
     }
+  }
+
+  const screeningPath = path.join(project, EVIDENCE, "screening-log.md");
+  if (fs.existsSync(screeningPath)) {
+    const preferences = readText(screeningPath)
+      .split(/\r?\n/)
+      .filter((line) => /screened_out_preference/i.test(line));
+    if (preferences.length) {
+      lines.push("", "## Screened Preferences", "");
+      lines.push(...preferences.map((line) => `- ${line.trim().replace(/^[-*]\s*/, "")}`));
+    }
+  }
+
+  const baselinePath = path.join(project, EVIDENCE, "baseline.md");
+  if (fs.existsSync(baselinePath)) {
+    const userChanges = readText(baselinePath)
+      .split(/\r?\n/)
+      .find((line) => /Existing user changes\s*:/i.test(line));
+    lines.push("", "## User Changes Not Included", "");
+    lines.push(
+      userChanges
+        ? `- ${userChanges.trim().replace(/^[-*]\s*/, "")}`
+        : "- See .review-evidence/baseline.md"
+    );
   }
 
   if (status === "incomplete" && reasons.length) {
@@ -896,8 +1264,18 @@ function renderFinalReport(project, state, config, data, status, reasons) {
     for (const reason of reasons) lines.push(`- ${reason}`);
   }
 
-  lines.push("");
-  writeTextAtomic(path.join(project, EVIDENCE, "final-report.md"), lines.join("\n"));
+  const marker = "<!-- END GENERATED -->";
+  lines.push("", marker);
+  const reportPath = path.join(project, EVIDENCE, "final-report.md");
+  if (fs.existsSync(reportPath)) {
+    const existing = readText(reportPath);
+    const markerIndex = existing.indexOf(marker);
+    if (markerIndex >= 0) {
+      const userTail = existing.slice(markerIndex + marker.length).trim();
+      if (userTail) lines.push("", userTail);
+    }
+  }
+  writeTextAtomic(reportPath, lines.join("\n"));
 }
 
 function commandFinalize(flags) {
@@ -909,9 +1287,17 @@ function commandFinalize(flags) {
     fail("status 必须是 converged、converged_with_manual_merge 或 incomplete");
   }
   const target = status === "converged_with_manual_merge" ? "converged_with_manual_merge" : "converged";
-  const reasons = convergenceReasons(state, config, data, target);
+  const validation = validateProject(project, config, state, data);
+  const ackEmptyCoverage = boolFlag(flags["ack-empty-coverage"], "ack-empty-coverage");
+  const reasons = convergenceReasons(state, config, data, target, { ackEmptyCoverage });
+  if (status !== "incomplete" && validation.errors.length) {
+    fail(`证据校验失败：\n- ${validation.errors.join("\n- ")}`);
+  }
   if (status !== "incomplete" && reasons.length) {
     fail(`不满足 ${status}：\n- ${reasons.join("\n- ")}`);
+  }
+  if (status === "incomplete") {
+    reasons.push(...validation.errors);
   }
   state.overall_status = status;
   state.last_completed_event = `finalized: ${status}`;
@@ -947,10 +1333,10 @@ function commandCoverage(flags) {
 
 function commandGuardCommit(flags) {
   const project = projectRoot(flags);
-  const { data } = loadAll(project);
+  const { state, data } = loadAll(project);
   const id = String(stringFlag(flags, "finding", { required: true })).toUpperCase();
   const tests = Array.isArray(flags.test) ? flags.test : flags.test ? [flags.test] : [];
-  const errors = guardCommit(project, id, tests, data);
+  const errors = guardCommit(project, id, tests, data, state);
   if (errors.length) {
     for (const error of errors) console.error(`ERROR: ${error}`);
     process.exitCode = 1;
@@ -982,6 +1368,25 @@ function commandRender(flags) {
   console.log("rendered run-state.md and findings-index.md");
 }
 
+function commandNormalize(flags) {
+  const project = projectRoot(flags);
+  const { config, state, data } = loadAll(project);
+  const completed = completedRounds(state);
+  const lastRound = completed.length ? completed[completed.length - 1].round : 0;
+  state.rounds_consumed = completed.length;
+  state.current_round = Math.min(Math.max(state.current_round, lastRound, 1), config.max_rounds);
+  state.can_trigger_new_round = state.rounds_consumed < config.max_rounds;
+  if (!Array.isArray(state.repair_baseline_staged)) state.repair_baseline_staged = [];
+  if (!state.final_audit || !Array.isArray(state.final_audit.attempts)) {
+    state.final_audit = { attempts: [], reentry_pending: false };
+  }
+  for (const round of state.rounds || []) {
+    if (!Array.isArray(round.roles)) round.roles = [];
+  }
+  persist(project, config, state, data);
+  console.log(`normalized state: rounds_consumed=${state.rounds_consumed}, current_round=${state.current_round}`);
+}
+
 function usage() {
   console.log(`reviewctl commands:
   init --max-rounds N --user-confirmed [--project DIR]
@@ -994,14 +1399,25 @@ function usage() {
   record-verification --id ID --status pass [--adjacent-test PATH ...] [--verified-by agent|main-agent]
   next-finding
   mark-unresolved --id ID --reason TEXT
-  record-audit --attempt N --status complete --new-issues N
+  record-audit --attempt N --status complete|failed --new-issues N --auditor NAME
   advance --to PHASE [--finding ID]
   validate
+  normalize
   coverage
-  finalize --status converged|converged_with_manual_merge|incomplete
+  finalize --status converged|converged_with_manual_merge|incomplete [--ack-empty-coverage]
   authorize --action NAME --decision authorized|declined [--scope TEXT]
-  guard-commit --finding ID --test PATH
-  render`);
+  guard-commit --finding ID [--test PATH ...]
+  render
+
+所有命令都支持 --project DIR。
+record-finding 必填：--reproduction-status reproduced|not-reproduced|blocked|not_run；
+  accepted/deferred/rejected 需要 --change-origin regression|pre-existing；
+  accepted/deferred/rejected 需要目录内有 replay-review.md；
+  P2/P3 needs-evidence 需要 --needs-evidence-clarity clear_claim_lacking_env|unclear_claim；
+  deferred 需要 --deferred-reason 和 --disposition-plan；
+  final-audit finding 需要 --source final-audit --audit-attempt K。
+record-implementation 额外支持 --status prepared|blocked|cannot_fix --reason TEXT，以及 --manual。
+record-verification 额外支持 --adjacent-reason TEXT、--merged-test PATH ...、--unresolved-reason TEXT。`);
 }
 
 async function main() {
@@ -1024,6 +1440,7 @@ async function main() {
     "record-audit": commandRecordAudit,
     advance: commandAdvance,
     validate: commandValidate,
+    normalize: commandNormalize,
     coverage: commandCoverage,
     finalize: commandFinalize,
     authorize: commandAuthorize,

@@ -11,12 +11,12 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 ## 0. 启动与恢复
 
-**首次加载**：先按 `references/phase-playbooks.md` §0 部署项目级恢复指南并建立 baseline，再开始评审。`<skill-dir>` 指本技能目录（通常为 `~/.claude/skills/mvp-adversarial-review-loop/`）。
+**首次加载**：先按 `references/phase-playbooks.md` §0 部署项目级恢复指南并建立 baseline，再开始评审。`<skill-dir>` 指本技能目录的实际安装路径（Claude Code 通常在 `~/.claude/skills/mvp-adversarial-review-loop/`，OpenCode 通常在 `~/.config/opencode/skills/mvp-adversarial-review-loop/`；以当前 harness 的 skill 位置为准）。本技能要求 Node.js（>= 18）和 Git；缺少任一依赖时不要启动循环，记录阻塞并报告。
 
 **压缩上下文后恢复**：
 
 1. 立即读取 `.review-evidence/run-state.md` 和 `.review-evidence/state.json`。
-2. 运行 `node <skill-dir>/scripts/reviewctl.js status` 和 `node <skill-dir>/scripts/reviewctl.js validate`；校验失败先修复状态，不要继续委派。
+2. 运行 `node <skill-dir>/scripts/reviewctl.js status` 和 `node <skill-dir>/scripts/reviewctl.js validate`；校验失败先运行 `reviewctl normalize` 重算派生字段（`rounds_consumed`、`current_round`、`can_trigger_new_round` 等），仍失败则按错误逐项修复，不要继续委派。
 3. 按 `current_phase` 和 `next_action` 继续；不要跳阶段，不要在第 1 轮后就结束。
 4. 若项目级指令文件既无标记 `mvp-adversarial-review-loop-recovery-guide` 也无标题 `Main Agent Recovery Guide - MVP Adversarial Review Loop`，先按 `references/phase-playbooks.md` §0 重新部署。
 
@@ -32,8 +32,9 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 6. **默认串行**：一次一个子代理；评审角色串行，复现/挑战/补强/验证/实现按批次串行。只有用户明确授权且有独立 worktree 隔离时才并行；未经授权不得并发评审或进行真实外部写入。
 7. **不覆盖用户改动**：修复提交只含当前 finding 的代码和正式测试；`.review-evidence/` 不进修复提交；禁止强制 checkout、reset、clean。
 8. **真实报告**：没有完成要求的验证时报告 INCOMPLETE；不把测试绿灯或“未发现问题”当成收敛证据。
-9. **授权留痕**：需要用户授权时使用 AskUserQuestion；决策用 `reviewctl authorize --action ... --decision authorized|declined` 写入状态和 `blockers`，最终报告披露。
+9. **授权留痕**：需要用户授权时使用当前 harness 的用户提问工具（Claude Code 的 AskUserQuestion、OpenCode 的 `question` 等；没有专用工具时直接在对话中提问并等待明确回答）；决策用 `reviewctl authorize --action ... --decision authorized|declined` 写入状态和 `blockers`，最终报告披露。
 10. **轮次有界**：最少 2 轮常规评审，最多 `max_rounds`（默认 5，最小 2）；最终审计不计入轮次，但终审触发的新常规轮计入。
+11. **手工与阻塞 finding**：确实无法自动化时用 `record-implementation --manual`，并在验证中提供独立人工复测；用户改动导致无法提交时用 `--status prepared --reason` 加 `record-verification --status blocked_by_user_changes`；`cannot_fix`/`blocked` 用 `--status cannot_fix|blocked --reason` 登记未解决，或进入 `adjudication` 重新裁决。本流程要求 Git（commit、worktree、guard-commit）；无 Git 时不得启动。
 
 ## 2. 阶段状态机
 
@@ -42,10 +43,10 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 | `baseline` | 确认范围/验收/max_rounds，初始化证据，隔离临时测试，部署恢复指南 | 无 | `review` |
 | `review` | 选角色、定范围、建 inbox | 至少 3 个独立评审代理，串行 | `adjudication` |
 | `adjudication` | 筛查、去重、分配标准 ID、检查证据、裁决 | 独立复现审查代理；必须范围内的挑战代理；必要时补强代理 | 有 accepted → `repair`；否则 → `round_decision` |
-| `repair` | 一次一个 finding，检查 RED 和提交 | 实现代理 | `verification`（或 cannot_fix 时重新裁决） |
-| `verification` | 检查证据、更新 finding 状态 | 验证代理（不能是实现者） | 下一个 finding；fail 回到 `repair`；全部终结后 `round_decision` |
+| `repair` | 一次一个 finding，检查 RED 和提交 | 实现代理 | `verification`；`cannot_fix`/`blocked` 时进入 `adjudication` 重新裁决，或登记未解决后 `round_decision` |
+| `verification` | 检查证据、更新 finding 状态 | 验证代理（不能是实现者） | 下一个 finding；fail 回到 `repair`；回归问题进入 `adjudication`；全部终结后 `round_decision` |
 | `round_decision` | 计数、判断提前收敛/轮次上限 | 无 | 下一轮 `review`、`final_audit`，或终审后的 `report` |
-| `final_audit` | 提供盲扫材料、保存两阶段结果 | 未参与过本流程的新审计代理 | `report` 或（有预算时）新常规轮 |
+| `final_audit` | 提供盲扫材料、保存两阶段结果 | 未参与过本流程的新审计代理 | `report`；审计失败时直接 `report` 并 INCOMPLETE；有预算时新常规轮 |
 | `report` | 收敛判定、报告、清理、还原指令文件 | 无 | 结束 |
 
 **阶段入口必读**：
@@ -71,10 +72,10 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 - **所有阶段**：状态只通过 `reviewctl` 修改；进入下一阶段前运行 `reviewctl validate`；修复提交前运行 `reviewctl guard-commit`。
 - **review**：每个角色一个独立、只读子代理；至少 3 个不同角色；用 `reviewctl new-inbox` 创建 inbox；临时测试只写 `tests/review/candidates/`；每个代理必须写 `handoff.json`。
-- **adjudication**：复现必须由未提出该候选的独立代理执行；提出者不能单独决定自己的 finding；P0/P1、权限/数据完整性/公开 API 或证据异常项，主代理必须亲自加验或再委派第二个独立审查。
-- **必须挑战**：拟 accepted 的 P0、涉及安全/权限/数据完整性/公开 API 的 P1、复现结果矛盾或不寻常的证据。无法挑战必须范围项时，必须获得用户明确授权并留痕。
+- **adjudication**：复现必须由未提出该候选的独立代理执行，并写入 `replay-review.md`；提出者不能单独决定自己的 finding；P0/P1、权限/数据完整性/公开 API 或证据异常项，主代理必须检查证据，必要时再委派第二个独立审查。
+- **必须挑战**：所有拟 accepted 的 P0/P1，以及复现结果矛盾或不寻常的证据。无法挑战必须范围项时，必须获得用户明确授权并留痕。
 - **repair**：一个实现代理只处理一个 finding；必须按 TDD 先 RED 后 GREEN；一个 finding 一个提交；blocked/unresolved 后用 `reviewctl next-finding` 切换。
-- **verification**：验证代理不能是实现者；必须在修复前 commit 重放原始反例（默认独立 worktree，兜底方案需主代理批准）；至少生成 2 个相邻测试（正常 + 边界）；同一 finding 最多 2 次修复-验证循环。
+- **verification**：验证代理不能是实现者；必须在修复前 commit 重放原始反例（默认独立 worktree，兜底方案需主代理批准）；至少生成 2 个相邻测试（正常 + 边界）并合并到正式测试文件，用 `--merged-test` 记录；无法生成时用 `--adjacent-reason` 说明；验证代理的 `blocked` 结论按 `inconclusive` 记录；同一 finding 最多 2 次修复-验证循环。
 - **final_audit**：审计代理不得参与过评审、复现、挑战、补强、实现或验证；第一阶段盲扫不得读取 `.review-evidence/` 历史内容；第一阶段保存后才发第二阶段材料；最多 3 次尝试。
 - **主代理兜底**：只有没有未参与该 finding 的独立代理可用（所有可用代理都提交过相关候选，或没有代理可用）且用户明确授权时，主代理才能亲自复现或验证；必须在 `adjudication.md` 标为高风险，并在最终报告单独披露。
 
@@ -115,13 +116,13 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 | 状态 | 条件（全部满足） |
 |------|------------------|
-| `CONVERGED` | 所有 accepted 且范围内 P0/P1 verified；所有 accepted verified；所有修复已进入 git 历史；无 `blocked_by_user_changes`；调整后覆盖率 ≥80%；最终审计两阶段完成且无新 accepted；无 `unclear_claim` 的 P2 needs-evidence |
-| `CONVERGED_WITH_MANUAL_MERGE` | 所有 accepted 且范围内 P0/P1 verified 或 `blocked_by_user_changes`（有手工合并建议）；所有 accepted verified 或 `blocked_by_user_changes`；至少一个 `blocked_by_user_changes`；调整后覆盖率 ≥80%；最终审计两阶段完成且无新 accepted；无 `unclear_claim` 的 P2 needs-evidence |
+| `CONVERGED` | 所有 accepted 且范围内 P0/P1 verified；所有 accepted verified；所有修复已进入 git 历史；相邻测试已合并到正式测试（`merged_tests`）；无 `blocked_by_user_changes`；调整后覆盖率 ≥80%；最终审计两阶段完成且该次审计没有新的 accepted（盲扫重复报告的 rejected 候选不算）；无 `unclear_claim` 的 P2 needs-evidence；P3 可作残余风险 |
+| `CONVERGED_WITH_MANUAL_MERGE` | 所有 accepted 且范围内 P0/P1 verified 或 `blocked_by_user_changes`（有手工合并建议）；所有 accepted verified 或 `blocked_by_user_changes`；至少一个 `blocked_by_user_changes`；调整后覆盖率 ≥80%；最终审计两阶段完成且该次审计没有新的 accepted；无 `unclear_claim` 的 P2 needs-evidence；P3 可作残余风险 |
 | `INCOMPLETE` | 有未解决范围内 P0/P1；有未解决 `inconclusive`；调整后覆盖率 <80%；达到 `max_rounds` 但最终审计未完成或仍有新 accepted |
 
 - 范围内 P0/P1 不得停留在 `needs-evidence`：必须升级 accepted 并验证，或有反证后 rejected。
-- 原始覆盖率 = 已复现 / 所有标准 ID；豁免项为 `clear_claim_lacking_env` 的 P2/P3 needs-evidence；调整后覆盖率 = 分子 / (分母 - 豁免项)。
-- 报告必须同时披露原始覆盖率、豁免项数量和调整后覆盖率；低于 80% 不得声称收敛。
+- 原始覆盖率 = 已裁决（复现为 accepted/deferred，或有 not-reproduced 反证为 rejected）/ 所有标准 ID；豁免项为所有 P3 needs-evidence 和 `clear_claim_lacking_env` 的 P2 needs-evidence；调整后覆盖率 = 分子 / (分母 - 豁免项)。
+- 报告必须同时披露原始覆盖率、豁免项数量和调整后覆盖率；低于 80% 不得声称收敛。分母为 0 时必须用 `finalize --ack-empty-coverage` 显式确认，不能静默视为通过。
 - 未解决的 `inconclusive` 不阻止最终审计执行，但结论只能为 INCOMPLETE。
 
 ## 6. 常见错误
@@ -133,7 +134,9 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 | 评审后跳过 adjudication | 先筛查、去重、独立复现、必要挑战 |
 | 修复后不验证 | 委派未参与实现的验证代理 |
 | 把 `blocked` 当 `rejected` | 保留 `needs-evidence` |
+| 手工 finding 被测试卡住 | 用 `record-implementation --manual`，验证时记录独立人工复测 |
 | 忘记更新状态 | 用 `reviewctl advance` / `record-*`，不要手改 JSON |
+| 校验失败就手改 JSON | 先运行 `reviewctl normalize`，仍失败再按错误修复 |
 | 手改 `run-state.md` / `findings-index.md` | 运行 `reviewctl render` 重新生成 |
 | 跳过 `reviewctl validate` | 每个阶段边界和提交前都运行 |
 | 到 `max_rounds` 仍启动新常规轮 | 报告 INCOMPLETE |

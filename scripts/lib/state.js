@@ -19,9 +19,9 @@ const TRANSITIONS = {
   baseline: ["review"],
   review: ["adjudication"],
   adjudication: ["repair", "round_decision"],
-  repair: ["verification", "round_decision"],
-  verification: ["repair", "round_decision"],
-  round_decision: ["review", "final_audit", "report"],
+  repair: ["verification", "round_decision", "adjudication"],
+  verification: ["repair", "round_decision", "adjudication"],
+  round_decision: ["review", "final_audit", "adjudication", "report"],
   final_audit: ["adjudication", "report"],
   report: [],
 };
@@ -45,6 +45,8 @@ const VERIFICATIONS = [
 const SEVERITIES = ["P0", "P1", "P2", "P3"];
 const CHANGE_ORIGINS = ["regression", "pre-existing", "undetermined"];
 const NEEDS_CLARITY = ["clear_claim_lacking_env", "unclear_claim"];
+const SOURCES = ["review", "final-audit"];
+const IMPLEMENTATION_STATUSES = ["none", "fixed", "already_fixed", "prepared", "blocked", "cannot_fix"];
 const ROLES = {
   SEC: "security",
   FUNC: "functionality",
@@ -57,6 +59,7 @@ const ROLES = {
 };
 const FINDING_ID = /^R(\d+)-F(\d{3})-(SEC|FUNC|REL|API|PERF|UX|OPS|PROD)$/;
 const TEMP_ID = /^(SEC|FUNC|REL|API|PERF|UX|OPS|PROD)-\d{3}$/;
+const AUDIT_TEMP_ID = /^FA-\d{3}$/;
 
 const EVIDENCE = ".review-evidence";
 
@@ -149,6 +152,7 @@ function defaultState(config) {
     active_finding: null,
     baseline_head: config.baseline_head,
     current_head: config.baseline_head,
+    repair_baseline_staged: [],
     last_completed_event: "initialized",
     next_action: "建立 baseline 并进入 review",
     blockers: [],
@@ -292,13 +296,45 @@ function validateState(state, config) {
   if (!Array.isArray(state.blockers)) errors.push("blockers 必须是数组");
   if (!Array.isArray(state.authorizations)) errors.push("authorizations 必须是数组");
   if (!Array.isArray(state.rounds)) errors.push("rounds 必须是数组");
+  if (state.repair_baseline_staged !== undefined && !Array.isArray(state.repair_baseline_staged)) {
+    errors.push("repair_baseline_staged 必须是数组");
+  }
   if (!state.final_audit || !Array.isArray(state.final_audit.attempts)) {
     errors.push("final_audit.attempts 必须是数组");
+  } else {
+    if (typeof state.final_audit.reentry_pending !== "boolean") {
+      errors.push("final_audit.reentry_pending 必须是布尔值");
+    }
+    if (
+      state.final_audit.reentry_after_round !== undefined &&
+      state.final_audit.reentry_after_round !== null &&
+      !Number.isInteger(state.final_audit.reentry_after_round)
+    ) {
+      errors.push("final_audit.reentry_after_round 必须是整数或 null");
+    }
+    const maxAttempt = state.final_audit.attempts.reduce(
+      (max, attempt) => Math.max(max, Number(attempt.attempt) || 0),
+      0
+    );
+    if (state.final_audit_attempt < maxAttempt) {
+      errors.push("final_audit_attempt 小于已记录的审计 attempt");
+    }
   }
   if (!state.last_transition || !PHASES.includes(state.last_transition.to)) {
     errors.push("last_transition 非法");
   }
   return errors;
+}
+
+function originalScope(original, finding) {
+  if (TEMP_ID.test(String(original))) {
+    const match = String(finding.id).match(FINDING_ID);
+    return `round-${match ? match[1] : "unknown"}`;
+  }
+  if (AUDIT_TEMP_ID.test(String(original))) {
+    return `attempt-${finding.audit_attempt || "unknown"}`;
+  }
+  return "unknown";
 }
 
 function validateFindings(data) {
@@ -309,6 +345,7 @@ function validateFindings(data) {
     return errors;
   }
   const ids = new Set();
+  const originalOwners = new Map();
   for (const finding of data.findings) {
     const label = finding.id || "(missing id)";
     if (!FINDING_ID.test(String(finding.id))) errors.push(`${label}: finding ID 非法`);
@@ -319,16 +356,58 @@ function validateFindings(data) {
     if (!DECISIONS.includes(finding.decision)) errors.push(`${label}: decision 非法`);
     if (!VERIFICATIONS.includes(finding.verification)) errors.push(`${label}: verification 非法`);
     if (!CHANGE_ORIGINS.includes(finding.change_origin)) errors.push(`${label}: change_origin 非法`);
+    if (finding.source !== undefined && !SOURCES.includes(finding.source)) {
+      errors.push(`${label}: source 必须是 review 或 final-audit`);
+    }
+    if (finding.audit_attempt !== undefined && finding.audit_attempt !== null) {
+      if (!Number.isInteger(finding.audit_attempt) || finding.audit_attempt < 1) {
+        errors.push(`${label}: audit_attempt 必须是正整数`);
+      }
+    }
+    if (finding.implementation_status !== undefined && !IMPLEMENTATION_STATUSES.includes(finding.implementation_status)) {
+      errors.push(`${label}: implementation_status 非法`);
+    }
+    if (finding.manual !== undefined && typeof finding.manual !== "boolean") {
+      errors.push(`${label}: manual 必须是布尔值`);
+    }
+    if (finding.merged_tests !== undefined && !Array.isArray(finding.merged_tests)) {
+      errors.push(`${label}: merged_tests 必须是数组`);
+    }
     for (const key of ["reproduced_by", "verified_by"]) {
       if (finding[key] !== undefined && !["agent", "main-agent"].includes(finding[key])) {
         errors.push(`${label}: ${key} 必须是 agent 或 main-agent`);
       }
     }
+    if (finding.decision !== "needs-evidence" && finding.change_origin === "undetermined") {
+      errors.push(`${label}: 非 needs-evidence 的 finding 不能使用 change_origin=undetermined`);
+    }
     if (!Array.isArray(finding.original_ids) || finding.original_ids.length === 0) {
       errors.push(`${label}: original_ids 不能为空`);
     }
     for (const original of finding.original_ids || []) {
-      if (!TEMP_ID.test(String(original))) errors.push(`${label}: original_id 非法：${original}`);
+      const normalized = String(original).toUpperCase();
+      if (!TEMP_ID.test(normalized) && !AUDIT_TEMP_ID.test(normalized)) {
+        errors.push(`${label}: original_id 非法：${original}`);
+        continue;
+      }
+      if (TEMP_ID.test(normalized) && normalized.split("-")[0] !== finding.role) {
+        errors.push(`${label}: original_id ${normalized} 的前缀必须与 role ${finding.role} 一致`);
+      }
+      if (AUDIT_TEMP_ID.test(normalized) && finding.source !== "final-audit") {
+        errors.push(`${label}: FA- 形式的 original_id 只能用于 final-audit finding`);
+      }
+      const ownerKey = `${originalScope(normalized, finding)}|${normalized}`;
+      if (originalOwners.has(ownerKey) && originalOwners.get(ownerKey) !== finding.id) {
+        errors.push(`${label}: original_id ${normalized} 已属于 ${originalOwners.get(ownerKey)}`);
+      }
+      originalOwners.set(ownerKey, finding.id);
+    }
+    if (finding.source === "final-audit") {
+      if (!Number.isInteger(finding.audit_attempt) || finding.audit_attempt < 1) {
+        errors.push(`${label}: final-audit finding 必须记录 audit_attempt`);
+      }
+    } else if (finding.source === "review" && finding.audit_attempt) {
+      errors.push(`${label}: review finding 不能记录 audit_attempt`);
     }
     if (finding.decision === "accepted") {
       if (finding.reproduced !== true) errors.push(`${label}: accepted 必须有 reproduced=true`);
@@ -340,6 +419,9 @@ function validateFindings(data) {
     }
     if (finding.decision === "deferred") {
       if (finding.reproduced !== true) errors.push(`${label}: deferred 必须有 reproduced=true`);
+      if (finding.reproduction_status !== "reproduced") {
+        errors.push(`${label}: deferred 的 reproduction_status 必须是 reproduced`);
+      }
       if (!finding.deferred_reason) errors.push(`${label}: deferred 必须记录 deferred_reason`);
       if (!finding.disposition_plan) errors.push(`${label}: deferred 必须记录 disposition_plan`);
     }
@@ -355,7 +437,7 @@ function validateFindings(data) {
         errors.push(`${label}: P0/P1 needs-evidence 不能是 unclear_claim`);
       }
     }
-    if (finding.challenge_required === true && !["supports", "disputes", "inconclusive"].includes(finding.challenge_result)) {
+    if (finding.challenge_required === true && !["supports", "disputes", "inconclusive", "skipped"].includes(finding.challenge_result)) {
       errors.push(`${label}: 必须挑战项缺少 challenge_result`);
     }
     if (finding.verification === "pass" && finding.decision !== "accepted") {
@@ -364,9 +446,23 @@ function validateFindings(data) {
     if (finding.verification === "pass" && !["fixed", "already_fixed"].includes(finding.implementation_status)) {
       errors.push(`${label}: verification=pass 前必须记录 implementation_status`);
     }
+    if (finding.verification === "pass") {
+      if (finding.manual !== true && (!Array.isArray(finding.test_files) || finding.test_files.length === 0)) {
+        errors.push(`${label}: verification=pass 前必须有正式测试文件（manual finding 除外）`);
+      }
+      if (finding.implementation_status === "fixed" && (!finding.commit || ["none", "unavailable"].includes(finding.commit))) {
+        errors.push(`${label}: fixed 且 verification=pass 必须有 commit`);
+      }
+      if ((finding.adjacent_tests || []).length > 0 && (finding.merged_tests || []).length === 0) {
+        errors.push(`${label}: 有相邻测试时必须记录已合并到正式测试的 merged_tests`);
+      }
+    }
     if (finding.verification === "blocked_by_user_changes") {
       if (finding.decision !== "accepted") errors.push(`${label}: blocked_by_user_changes 必须是 accepted`);
       if (finding.merge_conflict !== true) errors.push(`${label}: blocked_by_user_changes 必须 merge_conflict=true`);
+      if (!["fixed", "already_fixed", "prepared"].includes(finding.implementation_status)) {
+        errors.push(`${label}: blocked_by_user_changes 缺少 prepared/fixed/already_fixed 实现状态`);
+      }
     }
     if (finding.verification === "fail" && !Number.isInteger(finding.verification_attempts)) {
       errors.push(`${label}: verification_attempts 必须是整数`);
@@ -380,10 +476,7 @@ function validateFindings(data) {
 
 function isTerminal(finding) {
   if (finding.verification === "pass" || finding.verification === "blocked_by_user_changes") return true;
-  if (finding.unresolved === true) return true;
-  if (finding.verification === "inconclusive" && finding.verification_attempts >= 2) return true;
-  if (finding.verification === "fail" && finding.verification_attempts >= 2 && finding.unresolved === true) return true;
-  return false;
+  return finding.unresolved === true;
 }
 
 function coverage(data) {
@@ -392,8 +485,8 @@ function coverage(data) {
   const exemptions = findings.filter(
     (finding) =>
       finding.decision === "needs-evidence" &&
-      ["P2", "P3"].includes(finding.severity) &&
-      finding.needs_evidence_clarity === "clear_claim_lacking_env"
+      (finding.severity === "P3" ||
+        (finding.severity === "P2" && finding.needs_evidence_clarity === "clear_claim_lacking_env"))
   ).length;
   const numerator = findings.filter(
     (finding) =>
@@ -416,7 +509,7 @@ function coverage(data) {
   };
 }
 
-function convergenceReasons(state, config, data, target) {
+function convergenceReasons(state, config, data, target, options = {}) {
   const reasons = [];
   const findings = data.findings || [];
   const accepted = findings.filter((finding) => finding.decision === "accepted");
@@ -443,14 +536,33 @@ function convergenceReasons(state, config, data, target) {
     if (["P0", "P1"].includes(finding.severity) && finding.decision === "needs-evidence") {
       reasons.push(`${finding.id} 是范围内 ${finding.severity} needs-evidence`);
     }
-    if (finding.decision === "needs-evidence" && finding.needs_evidence_clarity === "unclear_claim") {
-      reasons.push(`${finding.id} 的 needs-evidence 仍为 unclear_claim`);
+    if (
+      finding.decision === "needs-evidence" &&
+      finding.severity === "P2" &&
+      finding.needs_evidence_clarity === "unclear_claim"
+    ) {
+      reasons.push(`${finding.id} 的 P2 needs-evidence 仍为 unclear_claim`);
+    }
+  }
+
+  for (const finding of accepted) {
+    if (finding.verification !== "pass") continue;
+    if (finding.manual !== true && (!Array.isArray(finding.test_files) || finding.test_files.length === 0)) {
+      reasons.push(`${finding.id} 已 verified 但没有正式测试文件`);
+    }
+    if (finding.implementation_status === "fixed" && (!finding.commit || ["none", "unavailable"].includes(finding.commit))) {
+      reasons.push(`${finding.id} 已 verified 但修复没有进入 git 历史`);
+    }
+    if ((finding.adjacent_tests || []).length > 0 && (finding.merged_tests || []).length === 0) {
+      reasons.push(`${finding.id} 的相邻测试尚未合并到正式测试文件`);
     }
   }
 
   const cov = coverage(data);
   if (cov.adjusted === null) {
-    reasons.push("调整后覆盖率不可计算（分母为 0）");
+    if (!options.ackEmptyCoverage) {
+      reasons.push("调整后覆盖率不可计算（分母为 0）；确认没有遗漏候选后用 --ack-empty-coverage");
+    }
   } else if (cov.adjusted < 0.8) {
     reasons.push(`调整后覆盖率 ${cov.adjusted_percent}% < 80%`);
   }
@@ -458,8 +570,23 @@ function convergenceReasons(state, config, data, target) {
   const audit = lastAudit(state);
   if (!audit || audit.status !== "complete") {
     reasons.push("最终审计未完成");
-  } else if (Number(audit.new_issues) > 0) {
-    reasons.push(`最终审计仍有 ${audit.new_issues} 个新问题`);
+  } else {
+    const auditFindings = findings.filter(
+      (finding) => finding.source === "final-audit" && finding.audit_attempt === audit.attempt
+    );
+    const auditAccepted = auditFindings.filter((finding) => finding.decision === "accepted");
+    if (audit.new_issues > auditFindings.length) {
+      reasons.push(
+        `最终审计报告了 ${audit.new_issues} 个新问题，但只记录了 ${auditFindings.length} 个 finding 的裁决`
+      );
+    }
+    if (auditAccepted.length > 0) {
+      if (state.final_audit_attempt >= 3 || state.rounds_consumed >= config.max_rounds) {
+        reasons.push("最终审计仍有 accepted finding，但没有可用的新常规轮/审计预算，不能声称收敛");
+      } else {
+        reasons.push("最终审计新 accepted finding 尚未经过新的常规评审轮和重新审计");
+      }
+    }
   }
 
   if (state.current_phase !== "report") reasons.push("当前不在 report 阶段");
@@ -478,9 +605,12 @@ module.exports = {
   SEVERITIES,
   CHANGE_ORIGINS,
   NEEDS_CLARITY,
+  SOURCES,
+  IMPLEMENTATION_STATUSES,
   ROLES,
   FINDING_ID,
   TEMP_ID,
+  AUDIT_TEMP_ID,
   EVIDENCE,
   now,
   ensureDir,

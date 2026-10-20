@@ -51,7 +51,7 @@ function renderRunState(state, config, data) {
 
   for (const round of state.rounds) {
     lines.push(
-      `| ${round.round} | ${round.status} | ${round.roles.length ? round.roles.join(", ") : "-"} | ${cell(round.raw_candidates)} | ${cell(round.duplicates)} | ${cell(round.screened_out)} | ${cell(round.replay_eligible)} | ${cell(round.new_in_scope_p0p1p2)} |`
+      `| ${round.round} | ${round.status} | ${Array.isArray(round.roles) && round.roles.length ? round.roles.join(", ") : "-"} | ${cell(round.raw_candidates)} | ${cell(round.duplicates)} | ${cell(round.screened_out)} | ${cell(round.replay_eligible)} | ${cell(round.new_in_scope_p0p1p2)} |`
     );
   }
   if (state.rounds.length === 0) {
@@ -78,7 +78,7 @@ function renderRunState(state, config, data) {
   } else {
     for (const attempt of state.final_audit.attempts) {
       lines.push(
-        `- attempt ${attempt.attempt}: status=${attempt.status}, new_issues=${attempt.new_issues}, at=${attempt.at}`
+        `- attempt ${attempt.attempt}: status=${attempt.status}, new_issues=${attempt.new_issues}, auditor=${attempt.auditor || "unspecified"}, at=${attempt.at}`
       );
     }
   }

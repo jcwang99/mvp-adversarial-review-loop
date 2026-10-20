@@ -5,6 +5,14 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
+const {
+  isCandidateTestFile,
+  isReproductionTestFile,
+  isAdjacentTestFile,
+  isFormalTestFile,
+  verdictIsPass,
+} = require("./lib/validate");
+const { convergenceReasons } = require("./lib/state");
 
 const CLI = path.join(__dirname, "reviewctl.js");
 let passed = 0;
@@ -111,6 +119,42 @@ function addRoundHandoffs(project, round) {
   writeHandoff(project, round, "REL", `REL-00${round}`);
 }
 
+function setupAcceptedFinding(project, { id, role, original, severity, slug }) {
+  run(project, ["advance", "--to", "review"]);
+  addRoundHandoffs(project, 1);
+  run(project, ["record-round", "--round", "1", "--raw", "1", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "1"]);
+  run(project, ["advance", "--to", "adjudication"]);
+  const evidence = `.review-evidence/round-1/${id}`;
+  write(project, `${evidence}/counterexample.md`, "# Counterexample\n");
+  write(project, `${evidence}/adjudication.md`, "# Adjudication\n\n## Decision\n**Status**: accepted\n");
+  write(project, `${evidence}/replay-review.md`, "# Replay Review\n\n**Status**: reproduced\n");
+  write(project, `${evidence}/reproduce.test.js`, "// repro\n");
+  write(project, `tests/review/reproductions/${slug}.test.js`, "// formal repro\n");
+  const args = [
+    "record-finding", "--id", id, "--role", role, "--original-id", original,
+    "--severity", severity, "--decision", "accepted", "--reproduced", "true",
+    "--reproduction-status", "reproduced", "--evidence-dir", evidence,
+    "--change-origin", "pre-existing",
+  ];
+  if (["P0", "P1"].includes(severity)) {
+    args.push("--challenge-required", "true", "--challenge-result", "supports");
+  }
+  run(project, args);
+  return evidence;
+}
+
+function setupTwoCleanRounds(project) {
+  init(project, 2);
+  for (const round of [1, 2]) {
+    run(project, ["advance", "--to", "review"]);
+    addRoundHandoffs(project, round);
+    run(project, ["record-round", "--round", String(round), "--raw", "0", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+    run(project, ["advance", "--to", "adjudication"]);
+    run(project, ["advance", "--to", "round_decision"]);
+  }
+  run(project, ["advance", "--to", "final_audit"]);
+}
+
 function test(name, fn) {
   try {
     fn();
@@ -140,12 +184,17 @@ test("init records max_rounds and generated views", () => {
   assert.ok(fs.existsSync(path.join(project, ".review-evidence/state.json")));
   assert.ok(fs.existsSync(path.join(project, ".review-evidence/findings.json")));
   assert.ok(fs.existsSync(path.join(project, ".review-evidence/run-state.md")));
+  fs.unlinkSync(path.join(project, ".review-evidence/review-config.json"));
+  run(project, ["init", "--max-rounds", "2", "--user-confirmed"], { expectFail: true });
 });
 
 test("init refuses missing user confirmation or invalid max_rounds", () => {
   const project = makeProject();
   run(project, ["init", "--max-rounds", "3"], { expectFail: true });
   run(project, ["init", "--max-rounds", "1", "--user-confirmed"], {
+    expectFail: true,
+  });
+  run(project, ["init", "--max-rounds", "3", "--user-confirmed", "false"], {
     expectFail: true,
   });
 });
@@ -258,6 +307,18 @@ test("accepted finding requires evidence before it is recorded", () => {
   write(project, ".review-evidence/round-1/R1-F001-SEC/adjudication.md", "# Adjudication\n\n## Scope & Contract Check\nok\n\n## Decision\n**Status**: accepted\n");
   write(project, ".review-evidence/round-1/R1-F001-SEC/reproduce.test.js", "// repro\n");
   write(project, "tests/review/reproductions/r1_f001_auth_bypass.test.js", "// formal repro\n");
+  run(project, findingArgs, { expectFail: true });
+
+  write(project, ".review-evidence/round-1/R1-F001-SEC/replay-review.md", "# Replay Review\n\n**Status**: reproduced\n");
+  const noOriginArgs = [];
+  for (let index = 0; index < findingArgs.length; index += 1) {
+    if (findingArgs[index] === "--change-origin") {
+      index += 1;
+      continue;
+    }
+    noOriginArgs.push(findingArgs[index]);
+  }
+  run(project, noOriginArgs, { expectFail: true });
   run(project, findingArgs);
   run(project, ["advance", "--to", "repair"]);
 });
@@ -285,6 +346,7 @@ test("full happy path reaches converged", () => {
   const evidence = ".review-evidence/round-1/R1-F001-SEC";
   write(project, `${evidence}/counterexample.md`, "# Counterexample\n");
   write(project, `${evidence}/adjudication.md`, "# Adjudication\n\n## Scope & Contract Check\nok\n\n## Decision\n**Status**: accepted\n");
+  write(project, `${evidence}/replay-review.md`, "# Replay Review\n\n**Status**: reproduced\n");
   write(project, `${evidence}/reproduce.test.js`, "// repro\n");
   write(project, "tests/review/reproductions/r1_f001_auth_bypass.test.js", "// formal repro\n");
   run(project, [
@@ -344,7 +406,7 @@ test("full happy path reaches converged", () => {
     "tests/app.test.js",
   ]);
   run(project, ["advance", "--to", "verification"]);
-  write(project, `${evidence}/verification-result.md`, "# Verification Result\n\n**Final Verdict**: pass\n");
+  write(project, `${evidence}/verification-result.md`, "# Verification Result\n\n**Final Verdict**: fail\n");
   write(project, "tests/review/verifications/r1_f001_auth_adjacent.test.js", "// adjacent\n");
   write(project, "tests/review/verifications/r1_f001_auth_adjacent_edge.test.js", "// adjacent edge\n");
   run(project, [
@@ -357,6 +419,32 @@ test("full happy path reaches converged", () => {
     "tests/review/verifications/r1_f001_auth_adjacent.test.js",
     "--adjacent-test",
     "tests/review/verifications/r1_f001_auth_adjacent_edge.test.js",
+  ], { expectFail: true });
+
+  write(project, `${evidence}/verification-result.md`, "# Verification Result\n\n**Final Verdict**: pass\n");
+  run(project, [
+    "record-verification",
+    "--id",
+    "R1-F001-SEC",
+    "--status",
+    "pass",
+    "--adjacent-test",
+    "tests/review/verifications/r1_f001_auth_adjacent.test.js",
+    "--adjacent-test",
+    "tests/review/verifications/r1_f001_auth_adjacent_edge.test.js",
+  ], { expectFail: true });
+  run(project, [
+    "record-verification",
+    "--id",
+    "R1-F001-SEC",
+    "--status",
+    "pass",
+    "--adjacent-test",
+    "tests/review/verifications/r1_f001_auth_adjacent.test.js",
+    "--adjacent-test",
+    "tests/review/verifications/r1_f001_auth_adjacent_edge.test.js",
+    "--merged-test",
+    "tests/app.test.js",
   ]);
   run(project, ["advance", "--to", "round_decision"]);
 
@@ -391,6 +479,8 @@ test("full happy path reaches converged", () => {
     "complete",
     "--new-issues",
     "0",
+    "--auditor",
+    "test-auditor",
   ]);
   run(project, ["advance", "--to", "report"]);
   run(project, ["finalize", "--status", "converged"]);
@@ -403,10 +493,14 @@ test("full happy path reaches converged", () => {
   assert.ok(
     fs.existsSync(path.join(project, ".review-evidence/final-report.md"))
   );
+  const reportPath = path.join(project, ".review-evidence/final-report.md");
+  fs.appendFileSync(reportPath, "\nUSER NARRATIVE\n");
+  run(project, ["finalize", "--status", "converged"]);
+  assert.match(fs.readFileSync(reportPath, "utf8"), /USER NARRATIVE/);
   run(project, ["validate"]);
 });
 
-test("final audit new issue at max_rounds reports incomplete", () => {
+test("final audit rejected issue at max_rounds can still converge", () => {
   const project = makeProject();
   init(project, 2);
   run(project, ["advance", "--to", "review"]);
@@ -432,13 +526,27 @@ test("final audit new issue at max_rounds reports incomplete", () => {
     "complete",
     "--new-issues",
     "1",
+    "--auditor",
+    "test-auditor",
   ]);
+  run(project, [
+    "record-audit",
+    "--attempt",
+    "1",
+    "--status",
+    "complete",
+    "--new-issues",
+    "1",
+    "--auditor",
+    "test-auditor",
+  ], { expectFail: true });
   run(project, ["advance", "--to", "report"], { expectFail: true });
   run(project, ["advance", "--to", "adjudication"]);
 
   const evidence = ".review-evidence/round-2/R2-F001-FUNC";
   write(project, `${evidence}/counterexample.md`, "# Counterexample\n");
   write(project, `${evidence}/adjudication.md`, "# Adjudication\n\n## Decision\n**Status**: rejected\n");
+  write(project, `${evidence}/replay-review.md`, "# Replay Review\n\n**Status**: not-reproduced\n");
   write(project, `${evidence}/reproduce.test.js`, "// repro\n");
   run(project, [
     "record-finding",
@@ -447,7 +555,7 @@ test("final audit new issue at max_rounds reports incomplete", () => {
     "--role",
     "FUNC",
     "--original-id",
-    "FUNC-002",
+    "FA-001",
     "--severity",
     "P2",
     "--decision",
@@ -460,14 +568,18 @@ test("final audit new issue at max_rounds reports incomplete", () => {
     evidence,
     "--change-origin",
     "pre-existing",
+    "--source",
+    "final-audit",
+    "--audit-attempt",
+    "1",
   ]);
   run(project, ["advance", "--to", "round_decision"]);
   run(project, ["advance", "--to", "report"]);
-  run(project, ["finalize", "--status", "incomplete"]);
+  run(project, ["finalize", "--status", "converged"]);
   const state = JSON.parse(
     fs.readFileSync(path.join(project, ".review-evidence/state.json"), "utf8")
   );
-  assert.equal(state.overall_status, "incomplete");
+  assert.equal(state.overall_status, "converged");
 });
 
 test("blocked finding can advance to the next finding", () => {
@@ -475,13 +587,14 @@ test("blocked finding can advance to the next finding", () => {
   init(project, 2);
   run(project, ["advance", "--to", "review"]);
   addRoundHandoffs(project, 1);
-  run(project, ["record-round", "--round", "1", "--raw", "2", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "1"]);
+  run(project, ["record-round", "--round", "1", "--raw", "2", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "2"]);
   run(project, ["advance", "--to", "adjudication"]);
 
   function addFinding({ id, role, original, severity, slug, challenge }) {
     const evidence = `.review-evidence/round-1/${id}`;
     write(project, `${evidence}/counterexample.md`, "# Counterexample\n");
     write(project, `${evidence}/adjudication.md`, "# Adjudication\n\n## Decision\n**Status**: accepted\n");
+    write(project, `${evidence}/replay-review.md`, "# Replay Review\n\n**Status**: reproduced\n");
     write(project, `${evidence}/reproduce.test.js`, "// repro\n");
     write(project, `tests/review/reproductions/${slug}.test.js`, "// formal repro\n");
     const args = [
@@ -499,6 +612,10 @@ test("blocked finding can advance to the next finding", () => {
   run(project, ["advance", "--to", "repair"]);
   write(project, ".review-evidence/round-1/R1-F001-SEC/implementation-result.md", "# Implementation Result\n\n## RED Phase\nconfirmed\n\n## GREEN Phase\npass\n\n## Manual Merge Guidance\nconflict\n");
   run(project, [
+    "record-implementation", "--id", "R1-F001-SEC", "--status", "prepared",
+    "--reason", "user changes conflict",
+  ]);
+  run(project, [
     "record-verification", "--id", "R1-F001-SEC", "--status", "blocked_by_user_changes",
   ]);
   run(project, ["next-finding"]);
@@ -506,6 +623,76 @@ test("blocked finding can advance to the next finding", () => {
     fs.readFileSync(path.join(project, ".review-evidence/state.json"), "utf8")
   );
   assert.equal(state.active_finding, "R1-F002-FUNC");
+  run(project, ["validate"]);
+
+  write(project, ".review-evidence/round-1/R1-F002-FUNC/implementation-result.md", "# Implementation Result\n\ncannot fix\n");
+  run(project, [
+    "record-implementation", "--id", "R1-F002-FUNC", "--status", "cannot_fix",
+    "--reason", "requires architecture change",
+  ]);
+  run(project, ["validate"]);
+  run(project, ["advance", "--to", "adjudication"]);
+  write(project, ".review-evidence/round-1/R1-F002-FUNC/adjudication.md", "# Adjudication\n\n## Decision\n**Status**: deferred\n");
+  run(project, [
+    "record-finding", "--id", "R1-F002-FUNC", "--role", "FUNC", "--original-id", "FUNC-001",
+    "--severity", "P2", "--decision", "deferred", "--reproduced", "true",
+    "--reproduction-status", "reproduced", "--evidence-dir", ".review-evidence/round-1/R1-F002-FUNC",
+    "--change-origin", "pre-existing", "--deferred-reason", "needs architecture",
+    "--disposition-plan", "next release",
+  ]);
+  run(project, ["validate"]);
+  run(project, ["advance", "--to", "round_decision"]);
+  const stateAfter = JSON.parse(
+    fs.readFileSync(path.join(project, ".review-evidence/state.json"), "utf8")
+  );
+  assert.equal(stateAfter.current_phase, "round_decision");
+  const findingAfter = JSON.parse(
+    fs.readFileSync(path.join(project, ".review-evidence/findings.json"), "utf8")
+  ).findings.find((finding) => finding.id === "R1-F002-FUNC");
+  assert.equal(findingAfter.implementation_status, "none");
+  assert.equal(findingAfter.verification, "pending");
+  assert.equal(findingAfter.unresolved, false);
+});
+
+test("manual finding can be repaired and verified without an automated test", () => {
+  const project = makeProject();
+  init(project, 2);
+  run(project, ["advance", "--to", "review"]);
+  addRoundHandoffs(project, 1);
+  run(project, ["record-round", "--round", "1", "--raw", "1", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "1"]);
+  run(project, ["advance", "--to", "adjudication"]);
+
+  const evidence = ".review-evidence/round-1/R1-F001-FUNC";
+  write(project, `${evidence}/counterexample.md`, "# Counterexample\n");
+  write(project, `${evidence}/adjudication.md`, "# Adjudication\n\n## Decision\n**Status**: accepted\n");
+  write(project, `${evidence}/replay-review.md`, "# Replay Review\n\n**Status**: reproduced\n");
+  write(project, `${evidence}/manual-steps.md`, "# Manual Steps\n\n1. click the button\n");
+  run(project, [
+    "record-finding", "--id", "R1-F001-FUNC", "--role", "FUNC", "--original-id", "FUNC-001",
+    "--severity", "P2", "--decision", "accepted", "--reproduced", "true",
+    "--reproduction-status", "reproduced", "--evidence-dir", evidence,
+    "--change-origin", "pre-existing",
+  ]);
+  run(project, ["advance", "--to", "repair"]);
+
+  write(project, `${evidence}/implementation-result.md`, "# Implementation Result\n\n## Manual\n\nfixed the flow\n");
+  write(project, "src/manual.js", "module.exports = 1;\n");
+  execFileSync("git", ["add", "src/manual.js"], { cwd: project });
+  execFileSync("git", ["commit", "-qm", "fix(review): R1-F001-FUNC manual"], { cwd: project });
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: project, encoding: "utf8" }).trim();
+  run(project, [
+    "record-implementation", "--id", "R1-F001-FUNC", "--status", "fixed",
+    "--commit", commit, "--manual",
+  ]);
+  run(project, ["advance", "--to", "verification"]);
+
+  write(project, `${evidence}/verification-result.md`, "# Verification Result\n\n## Manual\n\nindependently re-tested\n\n**Final Verdict**: pass\n");
+  run(project, [
+    "record-verification", "--id", "R1-F001-FUNC", "--status", "pass",
+    "--adjacent-reason", "manual UI flow has no stable automated adjacent path",
+  ]);
+  run(project, ["validate"]);
+  run(project, ["advance", "--to", "round_decision"]);
 });
 
 test("max_rounds cannot be changed after init", () => {
@@ -551,6 +738,264 @@ test("coverage reports adjusted counterexample coverage", () => {
   run(project, ["coverage"]);
   const output = run(project, ["coverage"]);
   assert.match(output, /coverage/i);
+});
+
+test("test file naming supports final audit and multiple languages", () => {
+  assert.ok(isCandidateTestFile("r1_sec_001.test.js"));
+  assert.ok(isCandidateTestFile("r1_finalaudit_fa-001.test.js"));
+  assert.ok(isCandidateTestFile("r1_perf_001_test.py"));
+  assert.ok(isCandidateTestFile("r1_sec_001_test.go"));
+  assert.ok(isCandidateTestFile("r1_sec_001_spec.rb"));
+  assert.ok(isCandidateTestFile("r1_sec_001Test.java"));
+  assert.ok(isCandidateTestFile("r1_sec_001Test.cs"));
+  assert.ok(isCandidateTestFile("r1_sec_001.rs"));
+  assert.ok(!isCandidateTestFile("r1_performance_001.test.js"));
+  assert.ok(isReproductionTestFile("r1_f001_auth_test.go"));
+  assert.ok(isReproductionTestFile("r1_f001_auth.test.js"));
+  assert.ok(isAdjacentTestFile("r1_f001_auth_adjacent_test.py"));
+  assert.ok(isAdjacentTestFile("r1_f001_auth_adjacent.test.js"));
+  assert.ok(isFormalTestFile("tests/app.test.js"));
+  assert.ok(!isFormalTestFile("../outside-merged.txt"));
+  assert.ok(!isFormalTestFile("tests/review/verifications/r1_f001_auth_adjacent.test.js"));
+  assert.ok(!isFormalTestFile(".review-evidence/merged.test.js"));
+  assert.ok(!isFormalTestFile("./.review-evidence/merged.test.js"));
+  assert.ok(!isFormalTestFile("./tests/review/verifications/r1_f001_auth_adjacent.test.js"));
+  assert.ok(!isFormalTestFile("src/app.js"));
+});
+
+test("advance rejects missing RED/GREEN evidence", () => {
+  const project = makeProject();
+  init(project, 2);
+  const evidence = setupAcceptedFinding(project, {
+    id: "R1-F001-SEC", role: "SEC", original: "SEC-001", severity: "P1",
+    slug: "r1_f001_auth",
+  });
+  run(project, ["advance", "--to", "repair"]);
+  write(project, `${evidence}/implementation-result.md`, "# Implementation Result\n\nno red or green here\n");
+  write(project, "src/fix.js", "module.exports = 1;\n");
+  write(project, "tests/fix.test.js", "// R1-F001-SEC\n");
+  execFileSync("git", ["add", "src/fix.js", "tests/fix.test.js"], { cwd: project });
+  execFileSync("git", ["commit", "-qm", "fix(review): R1-F001-SEC"], { cwd: project });
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: project, encoding: "utf8" }).trim();
+  run(project, [
+    "record-implementation", "--id", "R1-F001-SEC", "--status", "fixed",
+    "--commit", commit, "--test", "tests/fix.test.js",
+  ]);
+  run(project, ["advance", "--to", "verification"], { expectFail: true });
+});
+
+test("already_fixed requires a tracked test file", () => {
+  const project = makeProject();
+  init(project, 2);
+  const evidence = setupAcceptedFinding(project, {
+    id: "R1-F001-FUNC", role: "FUNC", original: "FUNC-001", severity: "P2",
+    slug: "r1_f001_func",
+  });
+  run(project, ["advance", "--to", "repair"]);
+  write(project, `${evidence}/implementation-result.md`, "# Implementation Result\n\n## RED Phase\nr\n\n## GREEN Phase\ng\n");
+  write(project, "tests/untracked.test.js", "// R1-F001-FUNC\n");
+  run(project, [
+    "record-implementation", "--id", "R1-F001-FUNC", "--status", "already_fixed",
+    "--test", "tests/untracked.test.js",
+  ], { expectFail: true });
+});
+
+test("verdict parsing requires an exact final pass", () => {
+  assert.equal(verdictIsPass("**Final Verdict**: pass\n"), true);
+  assert.equal(verdictIsPass("## Verdict\npass\n"), true);
+  assert.equal(verdictIsPass("**Final Verdict**: pass with caveats\n"), false);
+  assert.equal(verdictIsPass("**Final Verdict**: passable\n"), false);
+  assert.equal(verdictIsPass("**Final Verdict**: fail\n"), false);
+  assert.equal(
+    verdictIsPass("**Final Verdict**: pass\n\n**Final Verdict**: fail\n"),
+    false
+  );
+});
+
+test("normalize repairs derived state fields", () => {
+  const project = makeProject();
+  init(project, 2);
+  const statePath = path.join(project, ".review-evidence/state.json");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  state.can_trigger_new_round = false;
+  state.rounds_consumed = 99;
+  fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
+  run(project, ["normalize"]);
+  const repaired = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(repaired.rounds_consumed, 0);
+  assert.equal(repaired.can_trigger_new_round, true);
+  run(project, ["validate"]);
+});
+
+test("help lists the full advanced parameter set", () => {
+  const output = run(makeProject(), ["help"]);
+  assert.match(output, /--change-origin/);
+  assert.match(output, /--merged-test/);
+  assert.match(output, /normalize/);
+  assert.match(output, /--audit-attempt/);
+});
+
+test("guard-commit rejects user changes that were already staged", () => {
+  const project = makeProject();
+  init(project, 2);
+  const evidence = setupAcceptedFinding(project, {
+    id: "R1-F001-SEC", role: "SEC", original: "SEC-001", severity: "P1",
+    slug: "r1_f001_auth",
+  });
+  write(project, "user.txt", "user change\n");
+  execFileSync("git", ["add", "user.txt"], { cwd: project });
+  run(project, ["advance", "--to", "repair"]);
+  write(project, `${evidence}/implementation-result.md`, "# Implementation Result\n\n## RED Phase\nr\n\n## GREEN Phase\ng\n");
+  write(project, "src/fix.js", "module.exports = 1;\n");
+  write(project, "tests/fix.test.js", "// R1-F001-SEC\n");
+  execFileSync("git", ["add", "src/fix.js", "tests/fix.test.js"], { cwd: project });
+  run(project, ["guard-commit", "--finding", "R1-F001-SEC", "--test", "tests/fix.test.js"], { expectFail: true });
+  execFileSync("git", ["restore", "--staged", "user.txt"], { cwd: project });
+  run(project, ["guard-commit", "--finding", "R1-F001-SEC", "--test", "tests/fix.test.js"]);
+});
+
+test("P3 unclear_claim and rejected final-audit findings do not block convergence", () => {
+  const config = { max_rounds: 2 };
+  const state = {
+    current_phase: "report",
+    rounds_consumed: 2,
+    final_audit_attempt: 1,
+    final_audit: { attempts: [{ attempt: 1, status: "complete", new_issues: 1 }], reentry_pending: false },
+  };
+  const data = {
+    findings: [
+      {
+        id: "R1-F001-SEC", role: "SEC", severity: "P3", decision: "needs-evidence",
+        verification: "pending", reproduced: false, reproduction_status: "blocked",
+        needs_evidence_clarity: "unclear_claim", change_origin: "undetermined",
+        original_ids: ["SEC-001"], evidence_dir: ".review-evidence/round-1/R1-F001-SEC",
+        source: "review",
+      },
+      {
+        id: "R2-F001-FUNC", role: "FUNC", severity: "P2", decision: "rejected",
+        verification: "pending", reproduced: false, reproduction_status: "not-reproduced",
+        change_origin: "pre-existing", original_ids: ["FA-001"],
+        evidence_dir: ".review-evidence/round-2/R2-F001-FUNC",
+        source: "final-audit", audit_attempt: 1,
+      },
+    ],
+  };
+  const reasons = convergenceReasons(state, config, data, "converged", { ackEmptyCoverage: true });
+  assert.equal(reasons.length, 0);
+
+  const acceptedAuditData = {
+    findings: [
+      {
+        id: "R1-F001-SEC", role: "SEC", severity: "P1", decision: "accepted",
+        verification: "pass", implementation_status: "fixed", commit: "abcdef1",
+        test_files: ["tests/app.test.js"], adjacent_tests: [], merged_tests: [],
+        reproduced: true, reproduction_status: "reproduced", change_origin: "pre-existing",
+        original_ids: ["SEC-001"], evidence_dir: ".review-evidence/round-1/R1-F001-SEC",
+        source: "final-audit", audit_attempt: 1, manual: false,
+      },
+    ],
+  };
+  const acceptedReasons = convergenceReasons(state, config, acceptedAuditData, "converged");
+  assert.ok(acceptedReasons.some((reason) => /accepted finding/.test(reason)));
+  const mismatchState = {
+    ...state,
+    final_audit: { attempts: [{ attempt: 1, status: "complete", new_issues: 2 }], reentry_pending: false },
+  };
+  const mismatchReasons = convergenceReasons(mismatchState, config, acceptedAuditData, "converged");
+  assert.ok(mismatchReasons.some((reason) => /报告了 2 个新问题/.test(reason)));
+
+  const emptyState = {
+    current_phase: "report",
+    rounds_consumed: 2,
+    final_audit_attempt: 1,
+    final_audit: { attempts: [{ attempt: 1, status: "complete", new_issues: 0 }], reentry_pending: false },
+  };
+  const emptyReasons = convergenceReasons(emptyState, config, { findings: [] }, "converged", {
+    ackEmptyCoverage: true,
+  });
+  assert.equal(emptyReasons.length, 0);
+});
+
+test("a failed final audit can report INCOMPLETE", () => {
+  const project = makeProject();
+  setupTwoCleanRounds(project);
+  run(project, [
+    "record-audit", "--attempt", "1", "--status", "failed", "--new-issues", "0",
+    "--auditor", "test-auditor",
+  ]);
+  run(project, ["advance", "--to", "report"]);
+  run(project, ["finalize", "--status", "incomplete"]);
+  const state = JSON.parse(
+    fs.readFileSync(path.join(project, ".review-evidence/state.json"), "utf8")
+  );
+  assert.equal(state.overall_status, "incomplete");
+});
+
+test("accepted final-audit finding can trigger a new round and re-audit", () => {
+  const project = makeProject();
+  init(project, 3);
+  for (const round of [1, 2]) {
+    run(project, ["advance", "--to", "review"]);
+    addRoundHandoffs(project, round);
+    run(project, ["record-round", "--round", String(round), "--raw", "0", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+    run(project, ["advance", "--to", "adjudication"]);
+    run(project, ["advance", "--to", "round_decision"]);
+  }
+  run(project, ["advance", "--to", "final_audit"]);
+  const audit1 = ".review-evidence/round-2/final-audit/attempt-1";
+  write(project, `${audit1}/blind-scan.md`, "# Blind Scan\n");
+  write(project, `${audit1}/targeted-review.md`, "# Targeted Review\n");
+  run(project, ["record-audit", "--attempt", "1", "--status", "complete", "--new-issues", "1", "--auditor", "test-auditor"]);
+  run(project, ["advance", "--to", "adjudication"]);
+
+  const evidence = ".review-evidence/round-2/R2-F001-FUNC";
+  write(project, `${evidence}/counterexample.md`, "# Counterexample\n");
+  write(project, `${evidence}/adjudication.md`, "# Adjudication\n\n## Decision\n**Status**: accepted\n");
+  write(project, `${evidence}/replay-review.md`, "# Replay Review\n\n**Status**: reproduced\n");
+  write(project, `${evidence}/reproduce.test.js`, "// repro\n");
+  write(project, "tests/review/reproductions/r2_f001_audit.test.js", "// formal repro\n");
+  run(project, [
+    "record-finding", "--id", "R2-F001-FUNC", "--role", "FUNC", "--original-id", "FA-001",
+    "--severity", "P2", "--decision", "accepted", "--reproduced", "true",
+    "--reproduction-status", "reproduced", "--evidence-dir", evidence,
+    "--change-origin", "pre-existing", "--source", "final-audit", "--audit-attempt", "1",
+  ]);
+  run(project, ["advance", "--to", "repair"]);
+  write(project, `${evidence}/implementation-result.md`, "# Implementation Result\n\n## RED Phase\nr\n\n## GREEN Phase\ng\n");
+  write(project, "src/audit-fix.js", "module.exports = 1;\n");
+  write(project, "tests/audit-fix.test.js", "// R2-F001-FUNC\n");
+  execFileSync("git", ["add", "src/audit-fix.js", "tests/audit-fix.test.js"], { cwd: project });
+  execFileSync("git", ["commit", "-qm", "fix(review): R2-F001-FUNC"], { cwd: project });
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: project, encoding: "utf8" }).trim();
+  run(project, [
+    "record-implementation", "--id", "R2-F001-FUNC", "--status", "fixed",
+    "--commit", commit, "--test", "tests/audit-fix.test.js",
+  ]);
+  run(project, ["advance", "--to", "verification"]);
+  write(project, `${evidence}/verification-result.md`, "# Verification Result\n\n**Final Verdict**: pass\n");
+  write(project, "tests/review/verifications/r2_f001_audit_adjacent.test.js", "// adjacent\n");
+  write(project, "tests/review/verifications/r2_f001_audit_adjacent_edge.test.js", "// adjacent edge\n");
+  run(project, [
+    "record-verification", "--id", "R2-F001-FUNC", "--status", "pass",
+    "--adjacent-test", "tests/review/verifications/r2_f001_audit_adjacent.test.js",
+    "--adjacent-test", "tests/review/verifications/r2_f001_audit_adjacent_edge.test.js",
+    "--merged-test", "tests/audit-fix.test.js",
+  ]);
+  run(project, ["advance", "--to", "round_decision"]);
+  run(project, ["advance", "--to", "review"]);
+
+  addRoundHandoffs(project, 3);
+  run(project, ["record-round", "--round", "3", "--raw", "0", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+  run(project, ["advance", "--to", "adjudication"]);
+  run(project, ["advance", "--to", "round_decision"]);
+  run(project, ["advance", "--to", "final_audit"]);
+
+  const audit2 = ".review-evidence/round-3/final-audit/attempt-2";
+  write(project, `${audit2}/blind-scan.md`, "# Blind Scan\n");
+  write(project, `${audit2}/targeted-review.md`, "# Targeted Review\n");
+  run(project, ["record-audit", "--attempt", "2", "--status", "complete", "--new-issues", "0", "--auditor", "test-auditor"]);
+  run(project, ["advance", "--to", "report"]);
+  run(project, ["finalize", "--status", "converged"]);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

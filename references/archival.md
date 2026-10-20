@@ -27,6 +27,7 @@
 ├── run-state.md                   # 生成的状态视图
 ├── findings-index.md              # 生成的 findings 索引
 ├── screening-log.md               # 筛查日志
+├── final-report.md                # 最终报告
 └── ARCHIVE-README.md              # 归档说明（归档时生成）
 ```
 
@@ -52,9 +53,8 @@
 ├── screening-log.md
 ├── ARCHIVE-README.md
 ├── archives/
-│   ├── round-1.tar.gz            # 第 1 轮完整证据
-│   ├── round-2.tar.gz
-│   └── final-audit.tar.gz        # 最终审计证据
+│   ├── round-1.tar.gz            # 第 1 轮完整证据（含该轮的 final-audit/）
+│   └── round-2.tar.gz
 └── round-1/                       # 保留目录结构（空）
     └── .archived                  # 标记文件，指向压缩包
 ```
@@ -121,7 +121,7 @@ ls tests/review/                           # 应该报错：目录不存在
 - `findings.json` / `findings-index.md`: findings 生命周期和生成的索引
 - `screening-log.md`: 筛查和去重日志
 - `final-report.md`: 最终报告
-- `archives/`: 压缩的轮次证据（如果启用压缩）
+- `archives/`: 压缩的轮次证据（如果启用压缩；每轮包含该轮的 `final-audit/`）
 - `round-[N]/`: 轮次证据目录（如果未压缩）
 
 ## Accessing Compressed Evidence
@@ -170,10 +170,7 @@ for round in $(ls -d round-* 2>/dev/null); do
   fi
 done
 
-# 压缩最终审计证据（如果存在）
-if ls -d round-*/final-audit >/dev/null 2>&1; then
-  tar -czf archives/final-audit.tar.gz round-*/final-audit/
-fi
+# final-audit/ 已包含在各轮的 round-*.tar.gz 中，不再单独压缩。
 ```
 
 ### 5. 提交归档状态
@@ -187,9 +184,7 @@ git commit -m "chore(review): archive evidence after [CONVERGED|CONVERGED_WITH_M
 - Total rounds: [N]
 - Findings: [accepted/needs-evidence/rejected/deferred]
 - Compression: [enabled/disabled]
-- Temporary files cleaned up
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+- Temporary files cleaned up"
 ```
 
 ## 归档验证清单
@@ -254,15 +249,15 @@ done
 
 ### 未收敛的评审（INCOMPLETE）
 
-- 保留所有证据，不删除任何内容
+- 保留所有评审证据；仍按 §2 删除 `tests/review/` 临时测试
 - 在 ARCHIVE-README.md 中明确标注未收敛原因
 - 可选择性压缩已完成的轮次，但保留未完成的轮次原样
 
 ### 手工合并的 findings（blocked_by_user_changes）
 
 - 在 ARCHIVE-README.md 的 Notes 中列出所有 blocked_by_user_changes 的 findings
-- 保留这些 findings 的完整证据（不压缩），以便将来手工合并
-- 提供明确的手工合并建议和代码路径
+- 在 ARCHIVE-README.md 中保留完整手工合并建议和代码路径；详细证据即使进入轮次压缩包，也可按需解压
+- 不建议删除这些 findings 的证据
 
 ### 残余风险（needs-evidence with clear_claim_lacking_env）
 

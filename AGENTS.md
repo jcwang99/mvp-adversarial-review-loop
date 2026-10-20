@@ -1,6 +1,6 @@
 # Main Agent Recovery Guide - MVP Adversarial Review Loop
 
-**本文件是压缩上下文恢复指南。控制面见 `<skill-dir>/SKILL.md`，阶段操作见 `<skill-dir>/references/phase-playbooks.md`。`<skill-dir>` 指本技能目录（通常为 `~/.claude/skills/mvp-adversarial-review-loop/`）。**
+**本文件是压缩上下文恢复指南。控制面见 `<skill-dir>/SKILL.md`，阶段操作见 `<skill-dir>/references/phase-playbooks.md`。`<skill-dir>` 指本技能目录的实际安装路径（Claude Code 通常在 `~/.claude/skills/...`，OpenCode 通常在 `~/.config/opencode/skills/...`）。本技能要求 Node.js（>= 18）和 Git；缺少任一依赖时停止并报告阻塞。**
 
 **这是多轮循环：最少 2 轮常规评审，最多 max_rounds 轮（默认 5，与用户在 baseline 确认并记入 state.json），然后进行最终审计。**
 
@@ -26,7 +26,7 @@ node <skill-dir>/scripts/reviewctl.js status
 node <skill-dir>/scripts/reviewctl.js validate
 ```
 
-校验失败先修复状态，不要继续委派。无 Node 时人工对照 `<skill-dir>/references/evidence-structure.md`。
+校验失败先运行 `node <skill-dir>/scripts/reviewctl.js normalize` 重算派生字段，仍失败再按错误逐项修复，不要继续委派。没有 Node.js 时无法推进状态机；停止并报告阻塞，不要手改 `state.json`。
 
 ### 2. 确认你在循环中的位置
 
@@ -42,7 +42,7 @@ node <skill-dir>/scripts/reviewctl.js validate
 | 阶段 | 必须委派 | 先读 |
 |------|----------|------|
 | review | 至少 3 个独立评审代理；用 `reviewctl new-inbox` 建路径 | `phase-playbooks.md` §1 |
-| adjudication | 独立复现审查代理；必须范围内的挑战代理；必要时补强代理 | `phase-playbooks.md` §2 |
+| adjudication | 独立复现审查代理（写 `replay-review.md`）；所有 accepted P0/P1 的挑战代理；必要时补强代理 | `phase-playbooks.md` §2 |
 | repair | 实现代理（一个 finding 一个代理） | `phase-playbooks.md` §3 + `tdd-and-commit.md` |
 | verification | 验证代理（不能是实现者） | `phase-playbooks.md` §4 |
 | final_audit | 未参与本流程任何阶段的新审计代理 | `phase-playbooks.md` §6 |
@@ -59,7 +59,9 @@ node <skill-dir>/scripts/reviewctl.js validate
 | 跳过 adjudication | 评审完成后直接进入 repair 或 round_decision | 先筛查、去重、独立复现、必要挑战 |
 | 忘记更新状态 | 完成阶段后没有更新状态 | 用 `reviewctl advance` / `record-*` |
 | 手改生成文件 | 直接编辑 run-state.md 或 findings-index.md | 运行 `reviewctl render` |
+| 校验失败就手改 JSON | 直接编辑 `state.json` | 先运行 `reviewctl normalize`，仍失败再按错误修复 |
 | `blocked` 当 `rejected` | 复现环境不可用却直接拒绝 | 保留 `needs-evidence` |
+| 手工 finding 被测试卡住 | `record-implementation` 报缺少 `--test` | 用 `--manual` 并记录独立人工复测 |
 | 到 max_rounds 仍开新轮 | 终审发现新问题后启动第 max_rounds+1 轮 | 报告 INCOMPLETE |
 
 ## 阶段流转简图
@@ -68,6 +70,7 @@ node <skill-dir>/scripts/reviewctl.js validate
 baseline → review (委派) → adjudication (复现审查+裁决)
   ↓
   ├─ 有 accepted → repair (委派) → verification (委派) → round_decision
+  │                └─ cannot_fix/blocked → 登记未解决，或 adjudication 重新裁决
   └─ 无 accepted → round_decision
   ↓
 round_decision (检查提前收敛/轮次上限)
@@ -87,9 +90,10 @@ final_audit
 - **进入条件、轮次上限与扫描范围**：见 `<skill-dir>/SKILL.md` 的“轮次策略”。
 - **收敛条件**：见 `<skill-dir>/SKILL.md` 的“收敛判定”。
 - **关键检查点**：
-  - `rounds_consumed = current_round`，`can_trigger_new_round = (rounds_consumed < max_rounds)`。
+  - `round_decision` 阶段应有 `rounds_consumed = current_round`；在 review/adjudication/repair/verification 中通常是 `rounds_consumed = current_round - 1`，不要把后者当成状态损坏。
+  - `can_trigger_new_round = (rounds_consumed < max_rounds)`。
   - 提前收敛要求最近连续两轮都没有新找到的范围内 P0/P1/P2。
-  - 达到 max_rounds 后终审发现新问题：不再开常规轮，报告 INCOMPLETE。
+  - 达到 max_rounds 后终审发现新的 accepted：不再开常规轮，报告 INCOMPLETE；仅被 rejected 的盲扫重复项不阻止收敛。
 
 ## 详细文档
 

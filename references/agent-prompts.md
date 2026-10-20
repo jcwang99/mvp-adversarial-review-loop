@@ -28,8 +28,9 @@
 ## 文件组织与运行约定
 
 **临时测试文件**（写入项目测试目录，供后续阶段复用）：
-- 存放位置：`tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext}`
-  - 示例：`tests/review/candidates/r1_sec_001.test.js`
+- 存放位置：`tests/review/candidates/`
+- 命名：`r{round}_{role-token}_{seq}{suffix}`；`role-token` 是 `sec/func/rel/api/perf/ux/ops/prod`，后缀按语言选择：`.test.js` / `.spec.ts`、`_test.py`、`_test.go`、`_spec.rb`、`Test.java`、`Test.cs`、`.rs`
+  - 示例：`tests/review/candidates/r1_sec_001.test.js`、`r1_perf_002_test.py`
   - 使用项目测试格式，可以复用项目的测试环境、fixtures、辅助函数
 - **测试框架忽略此目录**：主代理已在 baseline 阶段确保项目测试配置忽略 `tests/review/`（或使用 ADVERSARIAL_REVIEW 开关）；若运行中发现临时测试会被日常测试收集，停止并报告阻塞，不要自行修改项目配置
 - 完整命令输出保存在：`.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/output.log`
@@ -80,7 +81,7 @@ findings:
     confidence: "high | medium | low"
     evidence_dir: ".review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/"
     counterexample_file: ".review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/counterexample.md"
-    reproduction_file: "tests/review/candidates/r{round}_{role}_{temp_id}.test.{ext} | manual-steps.md | none"
+    reproduction_file: "tests/review/candidates/r{round}_{role-token}_{seq}{suffix} | manual-steps.md | none"
     reproduction_command: "<command | manual | not_run>"
     reproduction_exit_status: "<exit code | manual | not_run>"
     reproduction_status: "observed | not_observed | blocked | not_run"
@@ -88,7 +89,7 @@ blockers: []
 uncovered_paths: []
 ~~~
 
-`reproduction_status` 只描述该候选的复现结果：`observed` 表示观察到 claim；`not_observed` 表示复现完整运行但未观察到 claim；`blocked` 表示无法判断；`not_run` 表示未尝试。`reproduction_exit_status` 只记录进程退出码；是否观察到 claim 以 `reproduction_status` 和证据为准。没有运行通用检查命令时，`commands` 写 `[]`。
+`reproduction_status` 只描述该候选的复现结果：`observed` 表示观察到 claim；`not_observed` 表示复现完整运行但未观察到 claim；`blocked` 表示无法判断；`not_run` 表示未尝试。`reproduction_exit_status` 只记录进程退出码；是否观察到 claim 以 `reproduction_status` 和证据为准。没有运行通用检查命令时，`commands` 写 `[]`。主代理记录 finding 时映射为：`observed → reproduced`，`not_observed → not-reproduced`，`blocked/not_run` 不变。
 
 示例（假设项目有项目详情 API；仅示范交接格式，实际路径、命令和结果必须来自当前项目）：
 
@@ -192,6 +193,8 @@ notes: "<简短说明，例如与原始证据的一致性>"
 - **Claim**: [claim 原文]
 - **Reproduction Path**: [文件路径]
 - **Review Date**: [ISO 8601]
+- **Executor**: [子代理名称/ID]
+- **Independence**: 未参与该候选的提出
 
 ## Reproduction Attempt
 ### Commands Run
@@ -420,7 +423,7 @@ blockers: []
 ### 关键要求
 
 1. **RED 阶段**：
-   - 读取 `tests/review/reproductions/r{round}_f{num}_{slug}.test.{ext}`（主代理已移动到此）
+   - 读取 `tests/review/reproductions/r{round}_f{num}_{slug}{suffix}`（主代理已移动到此）
    - 将其测试用例复制到项目正式测试文件（如 `tests/auth.test.js`）
    - 运行正式测试文件中新合并的测试，确认失败（RED）
    - 如果测试通过，说明 finding 已被其他修复解决，报告 already_fixed
@@ -444,7 +447,7 @@ blockers: []
 
 ~~~yaml
 finding_id: "<标准 ID>"
-implementation_status: "fixed | already_fixed | blocked | cannot_fix"
+implementation_status: "fixed | already_fixed | prepared | blocked | cannot_fix"
 test_status:
   red: "confirmed | not_confirmed"
   green: "pass | fail"
@@ -551,7 +554,7 @@ blockers: []
 ]
 
 ## Manual Merge Guidance (required if blocked_by_user_changes)
-**仅在 implementation_status 为 blocked 且 blockers 包含 user_changes_conflict 时填写此节，否则省略**
+**仅在 implementation_status 为 prepared 且 blockers 包含 user_changes_conflict 时填写此节，否则省略**
 
 ### Conflict Files
 - [文件路径 1]
@@ -591,12 +594,12 @@ blockers: []
 当发现修复目标文件含有用户未提交的改动时：
 
 1. 检查是否可以安全分块（见 `tdd-and-commit.md` 的"工作区冲突处理"章节）
-2. 如果不能安全分块，将 finding 标记为 `blocked_by_user_changes`
+2. 如果不能安全分块，先让主代理用 `record-implementation --status prepared --reason "user changes conflict"` 记录已准备好的修复，再用 `record-verification --status blocked_by_user_changes` 标记手工合并；**不要**用 `record-implementation --status blocked` 代替（后者表示环境/依赖阻塞）
 3. **必须在 implementation-result.md 的 "Manual Merge Guidance" 章节提供详细的手工合并建议**（见上方模板）
 4. 输出格式中增加字段：
 
 ~~~yaml
-implementation_status: "blocked"
+implementation_status: "prepared"
 blockers:
   - type: "user_changes_conflict"
     affected_files: []
@@ -625,7 +628,7 @@ blockers:
 2. **验证修复**（在修复后的 commit / HEAD）：确认 finding 已解决
 3. **生成相邻测试**（Adjacent Tests）：为相邻功能、边界情况、异常路径生成至少 2 个新测试用例
 4. **验证相邻测试**：对生成的新测试用例进行验证
-5. **合并测试**：若新测试用例通过，将新测试用例与原先的测试用例合并
+5. **合并测试**：若新测试用例通过，将新测试用例合并到项目正式测试文件，并记录正式测试路径（`merged_tests`）
 6. **运行完整测试套件**：确认无回归
 7. **检查修复完整性**：是否遗漏相关场景
 8. **提交合并改动**：提交格式：`add(adjacent): [ID] concise new test cases' description`
@@ -636,7 +639,7 @@ blockers:
 2. **重新运行测试**：在当前 HEAD 确认测试通过，验证测试确实有效
 3. **生成相邻测试**：与正常流程相同，生成至少 2 个相邻测试用例
 4. **验证相邻测试**：对生成的新测试用例进行验证
-5. **合并测试**：若新测试用例通过，将新测试用例与原先的测试用例合并
+5. **合并测试**：若新测试用例通过，将新测试用例合并到项目正式测试文件，并记录正式测试路径（`merged_tests`）
 6. **运行完整测试套件**：确认无回归
 7. **提交合并改动**：提交格式：`add(adjacent): [ID] concise new test cases' description`
 
@@ -667,7 +670,7 @@ blockers:
 ## 运行约定
 - 从项目根目录运行，使用项目自身的测试框架和依赖
 - 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/verify-[finding-id]/
-- 相邻测试写入：tests/review/verifications/r{round}_f{num}_{slug}_adjacent.test.{ext}
+- 相邻测试写入：tests/review/verifications/r{round}_f{num}_{slug}_adjacent{suffix}
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
 
@@ -718,9 +721,10 @@ blockers:
   6. **错误恢复**：
      - 若 `git stash pop` 产生冲突：
        ```bash
-       git stash drop  # 放弃 stash（工作区改动已在 original-status.txt 中记录）
+       git stash show -p <stash-ref> > /tmp/verify-[finding-id]-stash.patch
+       git stash list
        ```
-       报告 blocked，附原始状态文件路径和冲突详情，不要强制合并
+       **不要 `git stash drop`**。`original-status.txt` 只记录文件名/状态，不记录改动内容；stash 可能是用户改动唯一完整副本。保留 stash 和 patch，报告 blocked，附原始状态文件路径和冲突详情，不要强制合并。
      - 若验证代理在步骤 3-4 之间崩溃：主代理检测到 detached HEAD，执行：
        ```bash
        git checkout <baseline_head 或 original_branch>
@@ -750,7 +754,7 @@ blockers:
 
 ~~~yaml
 finding_id: "<标准 ID>"
-verification_status: "complete | blocked"
+verification_status: "complete | blocked"  # blocked 由主代理记录为 inconclusive
 reproduction_before_fix:
   commit: "<修复前的 commit SHA>"
   status: "observed | not_observed | blocked"
@@ -762,13 +766,14 @@ reproduction_after_fix:
 adjacent_tests:
   generated: true | false
   count: <数量>
-  file_path: "tests/review/verifications/r{round}_f{num}_{slug}_adjacent.test.{ext} | none"
+  file_path: "tests/review/verifications/r{round}_f{num}_{slug}_adjacent{suffix} | none"
+  merged_tests: []
   status: "pass | fail | not_run"
   notes: "<如果未生成或失败，说明理由>"
 full_test_suite:
   status: "pass | fail | not_run"
   exit_status: "<退出码>"
-verdict: "pass | fail | inconclusive | blocked"
+verdict: "pass | fail | inconclusive"  # verification_status=blocked 时映射为 inconclusive
 verification_evidence_path: ".review-evidence/round-[N]/[标准 ID]/verification-result.md"
 blockers: []
 ~~~
@@ -850,6 +855,8 @@ git worktree remove <临时目录>/verify-[finding-id]
 ### Generated Tests
 **File Path**: [测试文件路径 | none]
 
+**Merged Tests**: [已合并到的正式测试文件路径 | none]
+
 **Test Cases**:
 1. [测试用例 1 描述]
 2. [测试用例 2 描述]
@@ -883,7 +890,7 @@ git worktree remove <临时目录>/verify-[finding-id]
 ]
 
 ## Verdict
-**Final Verdict**: pass | fail | inconclusive | blocked
+**Final Verdict**: pass | fail | inconclusive（环境阻塞使用 inconclusive，不用 blocked）
 
 **Reasoning**: [综合判断依据]
 
@@ -893,10 +900,10 @@ git worktree remove <临时目录>/verify-[finding-id]
 
 ### Verdict 判断规则
 
-- **pass**: reproduction_before_fix = observed，reproduction_after_fix = not_observed，full_test_suite = pass，adjacent_tests = pass 或有合理理由未生成
-- **fail**: reproduction_after_fix = still_observed，或 full_test_suite = fail，或 adjacent_tests = fail
-- **inconclusive**: reproduction_before_fix = not_observed（原始 finding 无法复现），需要重新评估
-- **blocked**: 任一步骤 = blocked
+- **pass（fixed）**: reproduction_before_fix = observed，reproduction_after_fix = not_observed，full_test_suite = pass，adjacent_tests = pass 或有合理理由未生成；生成相邻测试时 `merged_tests` 必须非空。
+- **pass（already_fixed）**: 测试覆盖评估为 covers_claim，重跑测试通过，full_test_suite = pass，adjacent_tests = pass 或有合理理由未生成；生成相邻测试时 `merged_tests` 必须非空。
+- **fail**: reproduction_after_fix = still_observed，或 full_test_suite = fail，或 adjacent_tests = fail。
+- **inconclusive**: reproduction_before_fix = not_observed（原始 finding 无法复现），或任一步骤环境/依赖阻塞（代理可把 `verification_status: blocked` 写成 `inconclusive`），需要重新评估或登记阻塞。
 
 ---
 
@@ -928,7 +935,7 @@ git worktree remove <临时目录>/verify-[finding-id]
 4. 不要重复提交已在 .review-evidence/ 中存在的 finding（你不知道它们）
 
 ## 文件组织
-- 临时测试文件：tests/review/candidates/r{round}_finalaudit_{temp_id}.test.{ext}
+- 临时测试文件：tests/review/candidates/r{round}_finalaudit_fa{n}{suffix}（如 r1_finalaudit_fa001.test.js 或 r1_finalaudit_fa-001.test.js）
 - 证据文档：.review-evidence/round-[N]/final-audit/attempt-[K]/inbox/[临时_id]/counterexample.md
 - 完整命令输出：.review-evidence/round-[N]/final-audit/attempt-[K]/inbox/[临时_id]/output.log
 - 盲扫摘要：.review-evidence/round-[N]/final-audit/attempt-[K]/blind-scan.md
@@ -955,7 +962,7 @@ findings:
     confidence: "high | medium | low"
     evidence_dir: ".review-evidence/round-[N]/final-audit/attempt-[K]/inbox/FA-001/"
     counterexample_file: ".review-evidence/round-[N]/final-audit/attempt-[K]/inbox/FA-001/counterexample.md"
-    reproduction_file: "tests/review/candidates/r{round}_finalaudit_fa001.test.{ext} | manual-steps.md | none"
+    reproduction_file: "tests/review/candidates/r{round}_finalaudit_fa001{suffix} | manual-steps.md | none"
     reproduction_command: "<command | manual | not_run>"
     reproduction_exit_status: "<exit code | manual | not_run>"
     reproduction_status: "observed | not_observed | blocked | not_run"
@@ -964,6 +971,7 @@ uncovered_paths: []
 ~~~
 
 若没有发现新问题，返回 `review_status: complete`、`findings: []`。
+主代理记录终审 finding 时使用 `record-finding --source final-audit --audit-attempt K --original-id FA-XXX`；记录审计结果时使用 `record-audit --auditor NAME`。
 ~~~
 
 ### 第二阶段提示模板（定向复核）
@@ -1116,10 +1124,11 @@ blockers: []
 
 - `[MVP 范围]`: 从 baseline.md 中提取
 - `[验收标准/契约]`: 从 baseline.md 中提取
-- `[role-slug]`: security、functionality、reliability、api、performance、ux、ops、product
+- `[role-slug]`（inbox 目录）: security、functionality、reliability、api、performance、accessibility、operations、product；`final-audit` 是保留的审计专用值，不是普通 review 角色目录
+- `[role-token]`（测试文件名）: sec、func、rel、api、perf、ux、ops、prod（终审用 finalaudit）
 - `[round number]`: 当前轮次（1 至 max_rounds，默认 1-5）
 - `[标准 finding ID]`: R1-F001-SEC 格式
-- `[临时_id]`: SEC-001 格式（role-local）
+- `[临时_id]`: SEC-001 格式（role-local）；终审用 FA-001
 
 ### 2. 委派时机
 

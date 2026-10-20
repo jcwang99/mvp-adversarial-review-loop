@@ -104,14 +104,14 @@ tests/                                      # 项目测试目录
 **tests/review/ 临时测试目录**（评审流程专用，结束后删除）：
 - **candidates/**：评审代理写入，测试框架配置中忽略此目录，不会在日常测试中运行
 - **reproductions/**：adjudication accepted 后从 candidates/ 移动到这里
-  - 命名规则：`r{round}_f{num}_{slug}.test.{ext}`（如 `r1_f001_auth_bypass.test.js`）
+  - 命名规则：`r{round}_f{num}_{slug}{suffix}`（如 `r1_f001_auth_bypass.test.js`）
   - **在 TDD 阶段**：实现代理读取此文件，复制测试用例到项目正式测试文件（如 `tests/auth.test.js`）
   - **保留不删除**：供 verification 阶段使用（验证代理基于此生成相邻测试）
   - 测试框架配置中忽略此目录（或仅在 `ADVERSARIAL_REVIEW=true` 时运行）
 - **verifications/**：verification 阶段，验证代理写入相邻测试
-  - 命名规则：`r{round}_f{num}_{slug}_adjacent.test.{ext}`（如 `r1_f001_auth_bypass_adjacent.test.js`）
-  - 相邻测试通过后，验证代理复制到项目正式测试文件
-  - **保留不删除**：供最终报告统计
+  - 命名规则：`r{round}_f{num}_{slug}_adjacent{suffix}`（如 `r1_f001_auth_bypass_adjacent.test.js`）
+  - 相邻测试通过后，验证代理合并到项目正式测试文件并提交；主代理用 `record-verification --merged-test` 记录正式路径
+  - **保留不删除**：供最终报告统计和审计
   - 测试框架配置中忽略此目录（或仅在 `ADVERSARIAL_REVIEW=true` 时运行）
 - **整个 tests/review/ 目录在评审流程结束后删除**
 
@@ -121,12 +121,10 @@ JavaScript (jest.config.js):
 ```javascript
 const isReviewMode = process.env.ADVERSARIAL_REVIEW === 'true';
 module.exports = {
-  testMatch: isReviewMode 
-    ? ['**/tests/**/*.test.js']
-    : [
-        '**/tests/**/*.test.js',
-        '!**/tests/review/**'  // 日常测试跳过 review/
-      ],
+  testMatch: ['**/tests/**/*.test.js'],
+  testPathIgnorePatterns: isReviewMode
+    ? ['/node_modules/']
+    : ['/node_modules/', '/tests/review/'],
 };
 ```
 
@@ -135,21 +133,28 @@ Python (pytest.ini):
 [pytest]
 testpaths = tests
 addopts = --ignore=tests/review  # 默认跳过 review/
-# 评审模式: ADVERSARIAL_REVIEW=true pytest tests/
+# 评审模式需要覆盖 addopts：
+# pytest -o addopts= tests/review/reproductions/r1_f001_auth_test.py
 ```
 
 Go (使用 build tags):
 ```go
+//go:build adversarial_review
 // +build adversarial_review
-// 在 tests/review/ 下的文件添加此 tag
-// 日常测试不会运行，评审时用 go test -tags adversarial_review
+
+// 在 tests/review/ 下的每个测试文件顶部添加 build tag（注意空行）。
+// 日常测试不会运行，评审时用 go test -tags adversarial_review ./...
 ```
 
-Rust (Cargo.toml):
+Rust (Cargo.toml + 测试文件):
 ```toml
 [features]
 adversarial-review = []
 # 评审模式: cargo test --features adversarial-review
+```
+```rust
+#![cfg(feature = "adversarial-review")]
+// 放在 tests/review/ 下每个测试文件的顶部。
 ```
 
 **运行约定**：
@@ -177,23 +182,29 @@ adversarial-review = []
     npm test tests/review/candidates/r1_sec_001.test.js
   ```
 
-**Reproduction 文件命名**：
-- **评审阶段（candidates/）**：`r{round}_{role}_{temp_id}.test.{ext}`（如 `r1_sec_001.test.js`）
-- **adjudication accepted（reproductions/）**：`r{round}_f{num}_{slug}.test.{ext}`（如 `r1_f001_auth_bypass.test.js`）
+**测试文件命名**：
+- **角色 token**（用于文件名）与 **role-slug**（用于目录）是两个不同概念：
+  - 角色 code：`SEC / FUNC / REL / API / PERF / UX / OPS / PROD`
+  - 文件名 token：`sec / func / rel / api / perf / ux / ops / prod`（终审额外使用 `finalaudit`）
+  - 目录 slug：`security / functionality / reliability / api / performance / accessibility / operations / product`
+- **评审阶段（candidates/）**：`r{round}_{role-token}_{seq}{suffix}`（如 `r1_sec_001.test.js`、`r1_perf_001_test.py`）
+- **adjudication accepted（reproductions/）**：`r{round}_f{num}_{slug}{suffix}`（如 `r1_f001_auth_bypass.test.js`）
   - **slug 生成规则**：从 finding 的 claim 中提取 2-4 个关键词（小写、下划线分隔、最多 20 字符）：
     - claim: "已登录用户可读取其无权访问的项目详情" → slug: `auth_bypass` 或 `unauth_access`
     - claim: "删除操作无确认提示" → slug: `delete_no_confirm`
-    - 或使用类别代码：`r1_f001_sec.test.js`（使用 SEC 类别）
   - 主代理在分配标准 ID 时同时生成 slug，记录在 finding 的 adjudication.md 中
-- **verification 阶段（verifications/）**：`r{round}_f{num}_{slug}_adjacent.test.{ext}`（如 `r1_f001_auth_bypass_adjacent.test.js`）
-- 按项目语言和测试约定选择扩展名：
-  - JavaScript/TypeScript: `.test.js`, `.spec.ts`
-  - Python: `_test.py`, `test_.py`
-  - Go: `_test.go`
-  - Java: `Test.java`（类名需匹配文件名）
-  - Rust: `.rs`（放在 `tests/` 下）
-  - Ruby: `_spec.rb`
-  - C#: `Test.cs`
+- **verification 阶段（verifications/）**：`r{round}_f{num}_{slug}_adjacent{suffix}`（如 `r1_f001_auth_bypass_adjacent.test.js`）
+- 按项目语言选择 **测试后缀**（前缀不变）：
+  | 语言 | 后缀 | 示例 |
+  |------|------|------|
+  | JavaScript/TypeScript | `.test.js` / `.spec.ts` | `r1_sec_001.test.js` |
+  | Python | `_test.py` | `r1_sec_001_test.py` |
+  | Go | `_test.go` | `r1_sec_001_test.go` |
+  | Java | `Test.java` | `r1_sec_001Test.java` |
+  | C# | `Test.cs` | `r1_sec_001Test.cs` |
+  | Ruby | `_spec.rb` | `r1_sec_001_spec.rb` |
+  | Rust | `.rs` | `r1_sec_001.rs` |
+- 终审候选测试：`r{round}_finalaudit_fa{n}{suffix}`（如 `r1_finalaudit_fa001.test.js` 或 `r1_finalaudit_fa-001.test.js`）。
 
 每个评审角色使用唯一的 role-slug 目录，例如 security、functionality、api。临时 ID 只需在该角色目录内唯一。不同角色即使都使用 SEC-001，也不会写入同一路径。
 
@@ -227,22 +238,24 @@ adversarial-review = []
 | `can_trigger_new_round` | 由脚本重算，等于 `rounds_consumed < max_rounds` |
 | `final_audit_attempt` | 0..3 |
 | `active_finding` | 当前修复/验证的 finding ID 或 null |
+| `repair_baseline_staged` | 进入 repair 时已暂存的文件，用于 guard-commit 识别用户改动 |
 | `next_action` | 下一步动作 |
 | `blockers` / `authorizations` | 阻塞和用户授权记录 |
 | `rounds` | 每轮计数和角色 |
 | `final_audit` | 审计尝试和重入状态 |
 
-`findings.json` 每个 finding 至少包含：`id`、`original_ids`、`role`、`severity`、`decision`、`verification`、`evidence_dir`、`reproduced`、`reproduced_by`、`reproduction_status`、`challenge_required`、`challenge_result`、`change_origin`、`implementation_status`、`commit`、`test_files`、`verification_attempts`、`verified_by`、`adjacent_tests`、`adjacent_reason`、`unresolved`。
+`findings.json` 每个 finding 至少包含：`id`、`original_ids`、`source`（`review` / `final-audit`）、`audit_attempt`、`role`、`severity`、`decision`、`verification`、`evidence_dir`、`reproduced`、`reproduced_by`、`reproduction_status`、`challenge_required`、`challenge_result`、`change_origin`、`implementation_status`、`manual`、`commit`、`test_files`、`verification_attempts`、`verified_by`、`adjacent_tests`、`adjacent_reason`、`merged_tests`、`unresolved`。
 
 **操作**：
 
 ```bash
 node <skill-dir>/scripts/reviewctl.js status
 node <skill-dir>/scripts/reviewctl.js validate
+node <skill-dir>/scripts/reviewctl.js normalize
 node <skill-dir>/scripts/reviewctl.js render
 ```
 
-状态变更只能通过 `reviewctl advance` / `record-*`。校验失败先修复状态，不要继续委派。没有 Node 时人工对照 JSON 字段和 `reviewctl help`。
+状态变更只能通过 `reviewctl advance` / `record-*` / `normalize`。校验失败先运行 `normalize` 重算派生字段，仍失败再逐项修复，不要继续委派。没有 Node.js 时无法推进状态机，停止并报告阻塞。
 
 ## baseline.md
 
@@ -333,6 +346,10 @@ screening-log.md 按轮次记录全部原始评审报告及其去重/筛查结�
   **Status**: accepted | deferred | rejected | needs-evidence
   
   **Severity**: [P0/P1/P2/P3]（如果修订）
+
+  **Change Origin**: regression | pre-existing | undetermined（undetermined 只能配 needs-evidence）
+
+  **Merge Conflict**: [true/false；blocked_by_user_changes 时填写冲突文件和分块尝试结果]
   
   **Rationale**: [裁决理由]
   
@@ -352,7 +369,7 @@ screening-log.md 按轮次记录全部原始评审报告及其去重/筛查结�
 
 ## Final audit records
 
-每次最终审计记录放在 `round-[N]/final-audit/attempt-[K]/`，候选材料放在 `round-[N]/final-audit/attempt-[K]/inbox/`（临时 ID 使用 FA- 前缀，如 FA-001）。重跑时递增 attempt，保留旧目录，不覆盖历史扫描或复核结果。
+每次最终审计记录放在 `round-[N]/final-audit/attempt-[K]/`，候选材料放在 `round-[N]/final-audit/attempt-[K]/inbox/`（临时 ID 使用 FA- 前缀，如 FA-001）。重跑时递增 attempt，保留旧目录，不覆盖历史扫描或复核结果。`state.json` 的每次尝试记录 `auditor`（审计代理身份）和 `new_issues`；已记录的 attempt 不允许覆盖，失败时从 `final_audit` 进入 `report` 并报告 INCOMPLETE。`new_issues=N` 必须在 adjudication 中对应 N 个 `source=final-audit`、`audit_attempt=K` 的 finding 记录；否则不能离开 adjudication 或 finalize converged。
 
 日志不得包含未脱敏的凭据、个人数据或秘密。若实际运行输出含敏感信息，先清理再保存；记录关键片段和退出状态，避免把整份日志贴入代理回复。
 
