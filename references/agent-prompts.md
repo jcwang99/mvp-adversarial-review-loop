@@ -1123,7 +1123,7 @@ blockers: []
 
 - **评审代理**: review phase 开始时，委派至少 3 个角色
 - **复现审查代理**: adjudication phase，主代理筛查并分配标准 ID 后
-- **挑战代理**: adjudication phase，必须挑战范围内的项必须委派（见 SKILL.md 2.4），其余按资源选择
+- **挑战代理**: adjudication phase，必须挑战范围内的项必须委派（见 SKILL.md “委派硬门禁”和 `phase-playbooks.md` §2.5），其余按资源选择
 - **补强代理**: adjudication phase，仅当反例思路合理但有执行瑕疵时
 - **实现代理**: repair phase，逐个修复 accepted findings
 - **验证代理**: verification phase，每个修复完成后

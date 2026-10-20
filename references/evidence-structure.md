@@ -1,6 +1,6 @@
 # 证据目录与状态记录
 
-本文件只定义审计材料的存放方式和可恢复状态。角色、裁决、反例门槛与轮次判断以 SKILL.md 为准；修复和提交以 tdd-and-commit.md 为准。
+本文件只定义审计材料的存放方式和可恢复状态。角色、裁决、反例门槛与轮次判断以 SKILL.md 和 phase-playbooks.md 为准；修复和提交以 tdd-and-commit.md 为准。
 
 ## 目录布局
 
@@ -198,13 +198,13 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 
 **这是一个多轮循环流程：最少 2 轮常规评审，最多 max_rounds 轮（默认 5，用户在 baseline 指定），然后进行最终审计。**
 
-- overall_status: in_progress | waiting_on_evidence | incomplete | converged
+- overall_status: in_progress | waiting_on_evidence | incomplete | converged | converged_with_manual_merge
 - current_phase: baseline | review | adjudication | repair | verification | round_decision | final_audit | report
-- current_round: 1 (常规评审轮次，1 至 max_rounds)
+- current_round: 1 (常规评审轮次，整数 1 至 max_rounds)
 - max_rounds: 5 (常规评审轮上限；默认 5，用户在 baseline 指定，最小值 2)
-- rounds_consumed: 0/max_rounds (已完成的常规评审轮次 / 上限；baseline 初始化为 0，每轮进入 round_decision 时更新为 current_round)
-- can_trigger_new_round: true (是否还能触发新的常规评审轮；每轮完成时重算 = rounds_consumed < max_rounds)
-- final_audit_attempt: 0/3 (已完成的最终审计尝试 / 上限)
+- rounds_consumed: 0 (整数 0 至 max_rounds；baseline 初始化为 0，每轮进入 round_decision 时更新为 current_round)
+- can_trigger_new_round: true (布尔值；每轮完成时重算 = rounds_consumed < max_rounds)
+- final_audit_attempt: 0 (整数 0 至 3，已完成的最终审计尝试)
 - baseline_head: [初始 HEAD 或 unavailable]
 - current_head: [当前 HEAD 或 unavailable]
 - last_completed_event: [短摘要，包括完成的阶段和轮次]
@@ -251,6 +251,14 @@ run-state.md 是当前执行位置的短检查点，不是完整历史日志。�
 ~~~
 
 不要把 reproduction 源码或完整命令输出复制进 run-state.md。摘要必须足以判断当前阶段、待办和阻塞，但具体依据留在 finding 记录中。
+
+**校验**：恢复或阶段切换后运行：
+
+```bash
+node <skill-dir>/scripts/validate-run-state.js .review-evidence/run-state.md
+```
+
+脚本检查必填字段、枚举值、轮次范围和 `rounds_consumed` / `can_trigger_new_round` 的一致性。没有 Node 时人工对照上方模板。校验失败先修正状态，不要继续委派。
 
 ## baseline.md
 

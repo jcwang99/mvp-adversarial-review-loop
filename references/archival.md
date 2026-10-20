@@ -5,7 +5,7 @@
 ## 归档时机
 
 **仅在以下情况才执行归档**：
-- 评审循环已达到 CONVERGED 或 INCOMPLETE 状态
+- 评审循环已达到 CONVERGED、CONVERGED_WITH_MANUAL_MERGE 或 INCOMPLETE 状态
 - 最终报告已生成
 - 用户明确请求归档（可选）
 
@@ -77,7 +77,7 @@ tests/review/                      # 整个临时测试目录
 ```bash
 # 检查评审状态
 grep "overall_status:" .review-evidence/run-state.md
-# 必须是 converged 或 incomplete
+# 必须是 converged、converged_with_manual_merge 或 incomplete
 
 # 检查最终报告是否存在
 ls .review-evidence/final-report.md
@@ -106,7 +106,7 @@ ls tests/review/                           # 应该报错：目录不存在
 
 ## Archive Info
 - Archive date: [ISO 8601]
-- Review status: [CONVERGED | INCOMPLETE]
+- Review status: [CONVERGED | CONVERGED_WITH_MANUAL_MERGE | INCOMPLETE]
 - Total rounds: [N]
 - Total findings: [accepted / needs-evidence / rejected / deferred]
 - Compression: [none | partial | full]
@@ -177,7 +177,7 @@ fi
 ```bash
 # 提交归档变更
 git add .review-evidence/
-git commit -m "chore(review): archive evidence after [CONVERGED|INCOMPLETE] review
+git commit -m "chore(review): archive evidence after [CONVERGED|CONVERGED_WITH_MANUAL_MERGE|INCOMPLETE] review
 
 - Archive date: [date]
 - Total rounds: [N]
@@ -277,9 +277,9 @@ done
 set -e
 
 REVIEW_DIR=".review-evidence"
-STATUS=$(grep "overall_status:" "$REVIEW_DIR/run-state.md" | awk '{print $2}')
+STATUS=$(sed -n 's/.*overall_status:[[:space:]]*\([a-z_]*\).*/\1/p' "$REVIEW_DIR/run-state.md" | head -1)
 
-if [[ "$STATUS" != "converged" && "$STATUS" != "incomplete" ]]; then
+if [[ "$STATUS" != "converged" && "$STATUS" != "converged_with_manual_merge" && "$STATUS" != "incomplete" ]]; then
   echo "Error: Review not finished (status: $STATUS)"
   exit 1
 fi
