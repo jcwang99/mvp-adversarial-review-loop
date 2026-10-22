@@ -1006,6 +1006,53 @@ test("record-verification requires the merged finding test to exist in HEAD", ()
   run(project, ["validate"]);
 });
 
+test("record-verification rejects a symlink-mode merged formal test", () => {
+  const project = makeProject();
+  init(project, 2);
+  const evidence = setupAcceptedFinding(project, {
+    id: "R1-F001-SEC", role: "SEC", original: "SEC-001", severity: "P1",
+    slug: "r1_f001_auth",
+  });
+  run(project, ["advance", "--to", "repair"]);
+  write(project, `${evidence}/implementation-result.md`, "# Implementation Result\n\n## RED Phase\nreproduced\n\n## GREEN Phase\nfixed\n");
+  write(project, "src/app.js", "module.exports = 1;\n");
+  write(project, "tests/app.test.js", "// R1-F001-SEC repair assertion\n");
+  execFileSync("git", ["add", "src/app.js", "tests/app.test.js"], { cwd: project });
+  execFileSync("git", ["commit", "-qm", "fix(review): R1-F001-SEC"], { cwd: project });
+  const repairCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: project, encoding: "utf8" }).trim();
+  run(project, [
+    "record-implementation", "--id", "R1-F001-SEC", "--status", "fixed",
+    "--commit", repairCommit, "--test", "tests/app.test.js",
+  ]);
+  run(project, ["advance", "--to", "verification"]);
+  write(project, `${evidence}/verification-result.md`, "# Verification Result\n\n**Final Verdict**: pass\n");
+  const adjacentTests = [
+    "tests/review/verifications/r1_f001_auth_adjacent.test.js",
+    "tests/review/verifications/r1_f001_auth_adjacent_edge.test.js",
+  ];
+  write(project, adjacentTests[0], "// adjacent regression\n");
+  write(project, adjacentTests[1], "// adjacent edge regression\n");
+  write(project, "tests/app.test.js", "// R1-F001-SEC repair assertion\n// R1-F001-SEC merged assertion\n");
+  execFileSync("git", ["add", "tests/app.test.js"], { cwd: project });
+  execFileSync("git", ["commit", "-qm", "test(review): merge R1-F001-SEC adjacent tests"], { cwd: project });
+
+  const blob = execFileSync("git", ["hash-object", "tests/app.test.js"], {
+    cwd: project,
+    encoding: "utf8",
+  }).trim();
+  execFileSync("git", [
+    "update-index", "--add", "--cacheinfo", `120000,${blob},tests/app.test.js`,
+  ], { cwd: project });
+  execFileSync("git", ["commit", "-qm", "test(review): represent merged test as symlink"], { cwd: project });
+
+  const verification = run(project, [
+    "record-verification", "--id", "R1-F001-SEC", "--status", "pass",
+    "--adjacent-test", adjacentTests[0], "--adjacent-test", adjacentTests[1],
+    "--merged-test", "tests/app.test.js",
+  ], { expectFail: true });
+  assert.match(String(verification.stderr), /HEAD|普通文件/i);
+});
+
 test("normalize repairs derived state fields", () => {
   const project = makeProject();
   init(project, 2);

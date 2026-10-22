@@ -80,6 +80,29 @@ function readHeadFile(project, file) {
 function gitFileMatchesHead(project, file) {
   const normalized = String(file).replace(/\\/g, "/");
   try {
+    const headEntry = execFileSync("git", ["ls-tree", "-z", "HEAD", "--", normalized], {
+      cwd: project,
+      encoding: "buffer",
+    })
+      .toString("utf8")
+      .split("\0")
+      .filter(Boolean);
+    const indexEntry = execFileSync("git", ["ls-files", "--stage", "-z", "--", normalized], {
+      cwd: project,
+      encoding: "buffer",
+    })
+      .toString("utf8")
+      .split("\0")
+      .filter(Boolean);
+    const headMode = headEntry.length === 1 ? headEntry[0].split(/\s+/, 1)[0] : "";
+    const indexMode = indexEntry.length === 1 ? indexEntry[0].split(/\s+/, 1)[0] : "";
+    if (
+      !["100644", "100755"].includes(headMode) ||
+      !["100644", "100755"].includes(indexMode) ||
+      headMode !== indexMode
+    ) {
+      return false;
+    }
     const headBlob = execFileSync("git", ["rev-parse", `HEAD:${normalized}`], {
       cwd: project,
       encoding: "utf8",
