@@ -230,7 +230,7 @@ function completedRounds(state) {
 
 function lastAudit(state) {
   const attempts = state.final_audit && state.final_audit.attempts;
-  return attempts && attempts.length ? attempts[attempts.length - 1] : null;
+  return attempts && attempts.find((attempt) => attempt.attempt === state.final_audit_attempt) || null;
 }
 
 function validateConfig(config) {

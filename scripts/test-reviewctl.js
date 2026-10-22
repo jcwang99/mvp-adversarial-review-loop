@@ -1049,7 +1049,12 @@ test("re-entered final audit requires its own recorded result", () => {
   assertCommandFails(project, ["advance", "--to", "adjudication"]);
   assertCommandFails(project, ["advance", "--to", "report"]);
   assert.equal(state().current_phase, "final_audit");
+  const unrecordedAttempt2 = state();
+  unrecordedAttempt2.current_phase = "report";
+  writeJson(project, ".review-evidence/state.json", unrecordedAttempt2);
   assertCommandFails(project, ["finalize", "--status", "converged"]);
+  unrecordedAttempt2.current_phase = "final_audit";
+  writeJson(project, ".review-evidence/state.json", unrecordedAttempt2);
 
   const audit2 = ".review-evidence/round-3/final-audit/attempt-2";
   write(project, `${audit2}/blind-scan.md`, "# Blind Scan\n");
