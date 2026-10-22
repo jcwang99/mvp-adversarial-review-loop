@@ -69,6 +69,35 @@ function gitTracks(project, file) {
   }
 }
 
+function readHeadFile(project, file) {
+  const normalized = String(file).replace(/\\/g, "/");
+  return execFileSync("git", ["show", `HEAD:${normalized}`], {
+    cwd: project,
+    encoding: "utf8",
+  });
+}
+
+function gitFileMatchesHead(project, file) {
+  const normalized = String(file).replace(/\\/g, "/");
+  try {
+    const headBlob = execFileSync("git", ["rev-parse", `HEAD:${normalized}`], {
+      cwd: project,
+      encoding: "utf8",
+    }).trim();
+    const indexBlob = execFileSync("git", ["rev-parse", `:${normalized}`], {
+      cwd: project,
+      encoding: "utf8",
+    }).trim();
+    const worktreeBlob = execFileSync("git", ["hash-object", `--path=${normalized}`, normalized], {
+      cwd: project,
+      encoding: "utf8",
+    }).trim();
+    return headBlob === indexBlob && headBlob === worktreeBlob;
+  } catch {
+    return false;
+  }
+}
+
 function verdictIsPass(markdown) {
   const lines = String(markdown).replace(/\r/g, "").split("\n");
   let value = "";
@@ -438,7 +467,9 @@ function validateFindingFiles(project, finding, errors) {
         errors.push(`${label}: merged_tests 不存在：${mergedTest}`);
       } else if (!gitTracks(project, normalized)) {
         errors.push(`${label}: merged_tests 未提交到 git：${mergedTest}`);
-      } else if (!fs.readFileSync(absolute, "utf8").toUpperCase().includes(finding.id)) {
+      } else if (!gitFileMatchesHead(project, normalized)) {
+        errors.push(`${label}: merged_tests 内容尚未进入 HEAD：${mergedTest}`);
+      } else if (!readHeadFile(project, normalized).toUpperCase().includes(finding.id)) {
         errors.push(`${label}: merged_tests 内容缺少 finding ID：${mergedTest}`);
       }
     }
@@ -715,6 +746,8 @@ module.exports = {
   isAdjacentTestFile,
   isFormalTestFile,
   gitTracks,
+  gitFileMatchesHead,
+  readHeadFile,
   verdictIsPass,
   extractSection,
   stagedFiles,

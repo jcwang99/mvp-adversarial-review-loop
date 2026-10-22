@@ -56,6 +56,8 @@ const {
   isAdjacentTestFile,
   isFormalTestFile,
   gitTracks,
+  gitFileMatchesHead,
+  readHeadFile,
   inside,
   stagedFiles,
   verdictIsPass,
@@ -773,7 +775,8 @@ function commandRecordVerification(flags) {
       const absolute = path.resolve(project, file);
       if (!fs.existsSync(absolute)) fail(`merged-test 不存在：${file}`);
       if (!gitTracks(project, normalized)) fail(`merged-test 必须已提交到 git：${file}`);
-      if (!readText(absolute).toUpperCase().includes(id)) {
+      if (!gitFileMatchesHead(project, normalized)) fail(`merged-test 内容必须已进入 HEAD：${file}`);
+      if (!readHeadFile(project, normalized).toUpperCase().includes(id)) {
         fail(`merged-test 内容必须包含 finding ID ${id}：${file}`);
       }
     }
