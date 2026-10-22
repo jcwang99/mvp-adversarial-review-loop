@@ -58,6 +58,7 @@ const {
   gitTracks,
   gitCommitIsAncestor,
   gitFileMatchesHead,
+  gitNameOnlyPaths,
   readHeadFile,
   inside,
   stagedFiles,
@@ -664,14 +665,9 @@ function commandRecordImplementation(flags) {
     if (!/^[0-9a-f]{7,40}$/i.test(commit)) fail("fixed 必须提供合法 --commit");
     if (!commitExists(project, commit)) fail(`commit 不存在：${commit}`);
     if (!gitCommitIsAncestor(project, commit)) fail(`fixed 的 commit 不在当前 HEAD 历史中：${commit}`);
-    const changed = execFileSync(
-      "git",
-      ["show", "--name-only", "--pretty=format:", commit],
-      { cwd: project, encoding: "utf8" }
-    )
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
+    const changed = gitNameOnlyPaths(project, [
+      "show", "--name-only", "--pretty=format:", "-z", commit,
+    ]);
     for (const file of changed) {
       if (file.startsWith(`${EVIDENCE}/`) || file.startsWith("tests/review/")) {
         fail(`修复 commit 不能包含 ${file}`);

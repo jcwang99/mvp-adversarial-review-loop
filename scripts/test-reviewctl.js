@@ -1048,6 +1048,35 @@ test("guard-commit rejects user changes that were already staged", () => {
   run(project, ["guard-commit", "--finding", "R1-F001-SEC", "--test", "tests/fix.test.js"]);
 });
 
+test("quoted non-ASCII evidence paths cannot bypass repair commit guards", () => {
+  const project = makeProject();
+  execFileSync("git", ["config", "core.quotePath", "true"], { cwd: project });
+  init(project, 2);
+  const evidence = setupAcceptedFinding(project, {
+    id: "R1-F001-SEC", role: "SEC", original: "SEC-001", severity: "P1",
+    slug: "r1_f001_auth",
+  });
+  run(project, ["advance", "--to", "repair"]);
+  write(project, `${evidence}/implementation-result.md`, "# Implementation Result\n\n## RED Phase\nreproduced\n\n## GREEN Phase\nfixed\n");
+  write(project, `${evidence}/截图.txt`, "evidence\n");
+  write(project, "src/fix.js", "module.exports = 1;\n");
+  write(project, "tests/fix.test.js", "// R1-F001-SEC\n");
+  execFileSync("git", ["add", "src/fix.js", "tests/fix.test.js", `${evidence}/截图.txt`], { cwd: project });
+
+  const guarded = run(project, [
+    "guard-commit", "--finding", "R1-F001-SEC", "--test", "tests/fix.test.js",
+  ], { expectFail: true });
+  assert.match(String(guarded.stderr), /不能包含.*\.review-evidence/i);
+
+  execFileSync("git", ["commit", "-qm", "fix(review): quoted evidence path"], { cwd: project });
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: project, encoding: "utf8" }).trim();
+  const implementation = run(project, [
+    "record-implementation", "--id", "R1-F001-SEC", "--status", "fixed",
+    "--commit", commit, "--test", "tests/fix.test.js",
+  ], { expectFail: true });
+  assert.match(String(implementation.stderr), /不能包含.*\.review-evidence/i);
+});
+
 test("P3 unclear_claim and rejected final-audit findings do not block convergence", () => {
   const config = { max_rounds: 2 };
   const state = {

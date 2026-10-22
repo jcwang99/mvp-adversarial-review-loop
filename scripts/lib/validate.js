@@ -141,16 +141,21 @@ function extractSection(markdown, heading) {
 
 function stagedFiles(project) {
   try {
-    return execFileSync("git", ["diff", "--cached", "--name-only"], {
-      cwd: project,
-      encoding: "utf8",
-    })
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
+    return gitNameOnlyPaths(project, ["diff", "--cached", "--name-only", "-z"]);
   } catch {
     return [];
   }
+}
+
+function gitNameOnlyPaths(project, args) {
+  const output = execFileSync("git", args, {
+    cwd: project,
+    encoding: "buffer",
+  });
+  return output
+    .toString("utf8")
+    .split("\0")
+    .filter((file) => file.length > 0);
 }
 
 function rel(project, target) {
@@ -702,13 +707,7 @@ function guardCommit(project, findingId, testPaths, data, state) {
   const errors = [];
   let staged = [];
   try {
-    staged = execFileSync("git", ["diff", "--cached", "--name-only"], {
-      cwd: project,
-      encoding: "utf8",
-    })
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
+    staged = gitNameOnlyPaths(project, ["diff", "--cached", "--name-only", "-z"]);
   } catch (error) {
     return [`无法读取 git 暂存区：${error.message}`];
   }
@@ -768,6 +767,7 @@ module.exports = {
   readHeadFile,
   verdictIsPass,
   extractSection,
+  gitNameOnlyPaths,
   stagedFiles,
   testMatchesFinding,
   inside,
