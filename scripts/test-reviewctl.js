@@ -30,22 +30,22 @@ function makeProject() {
 }
 
 function run(project, args, { expectFail = false } = {}) {
+  let output;
   try {
-    const output = execFileSync(
+    output = execFileSync(
       process.execPath,
       [CLI, ...args, "--project", project],
       { cwd: project, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
     );
-    if (expectFail) throw new Error(`expected failure: ${args.join(" ")}`);
-    return output;
   } catch (error) {
     if (expectFail) return error;
     const stderr = error.stderr ? String(error.stderr) : "";
     const stdout = error.stdout ? String(error.stdout) : "";
-    throw new Error(
-      `command failed: reviewctl ${args.join(" ")}\n${stdout}${stderr}`
-    );
+    error.message = `command failed: reviewctl ${args.join(" ")}\n${stdout}${stderr}`;
+    throw error;
   }
+  if (expectFail) throw new Error(`expected failure: ${args.join(" ")}`);
+  return output;
 }
 
 function assertCommandFails(project, args) {
@@ -200,6 +200,20 @@ test("init records max_rounds and generated views", () => {
   assert.ok(fs.existsSync(path.join(project, ".review-evidence/run-state.md")));
   fs.unlinkSync(path.join(project, ".review-evidence/review-config.json"));
   run(project, ["init", "--max-rounds", "2", "--user-confirmed"], { expectFail: true });
+});
+
+test("expectFail distinguishes successful commands and preserves failure diagnostics", () => {
+  const project = makeProject();
+  const failure = run(project, ["init", "--max-rounds", "2"], { expectFail: true });
+  assert.notEqual(failure.status, 0);
+  assert.ok("stdout" in failure);
+  assert.ok("stderr" in failure);
+  assert.notEqual(String(failure.stderr), "");
+
+  assert.throws(
+    () => run(project, ["init", "--max-rounds", "2", "--user-confirmed"], { expectFail: true }),
+    /expected failure: init/
+  );
 });
 
 test("init refuses missing user confirmation or invalid max_rounds", () => {
@@ -809,7 +823,7 @@ test("test file naming supports final audit and multiple languages", () => {
   assert.ok(!isFormalTestFile("src/app.js"));
 });
 
-test("advance rejects missing RED/GREEN evidence", () => {
+test("validate rejects missing RED/GREEN evidence", () => {
   const project = makeProject();
   init(project, 2);
   const evidence = setupAcceptedFinding(project, {
@@ -817,7 +831,7 @@ test("advance rejects missing RED/GREEN evidence", () => {
     slug: "r1_f001_auth",
   });
   run(project, ["advance", "--to", "repair"]);
-  write(project, `${evidence}/implementation-result.md`, "# Implementation Result\n\nno red or green here\n");
+  write(project, `${evidence}/implementation-result.md`, "# Implementation Result\n\nDetails omitted.\n");
   write(project, "src/fix.js", "module.exports = 1;\n");
   write(project, "tests/fix.test.js", "// R1-F001-SEC\n");
   execFileSync("git", ["add", "src/fix.js", "tests/fix.test.js"], { cwd: project });
@@ -827,7 +841,8 @@ test("advance rejects missing RED/GREEN evidence", () => {
     "record-implementation", "--id", "R1-F001-SEC", "--status", "fixed",
     "--commit", commit, "--test", "tests/fix.test.js",
   ]);
-  run(project, ["advance", "--to", "verification"], { expectFail: true });
+  const validation = run(project, ["validate"], { expectFail: true });
+  assert.match(String(validation.stderr), /RED\/GREEN/);
 });
 
 test("already_fixed requires a tracked test file", () => {
