@@ -120,6 +120,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 | `CONVERGED_WITH_MANUAL_MERGE` | 所有 accepted 且范围内 P0/P1 verified 或 `blocked_by_user_changes`（有手工合并建议）；所有 accepted verified 或 `blocked_by_user_changes`；至少一个 `blocked_by_user_changes`；调整后覆盖率 ≥80%；最终审计两阶段完成且该次审计没有新的 accepted；无 `unclear_claim` 的 P2 needs-evidence；P3 可作残余风险 |
 | `INCOMPLETE` | 有未解决范围内 P0/P1；有未解决 `inconclusive`；调整后覆盖率 <80%；达到 `max_rounds` 但最终审计未完成或仍有新 accepted |
 
+- 已复现的范围内 P0/P1 `deferred` finding 视为未解决，阻止 `CONVERGED` 和 `CONVERGED_WITH_MANUAL_MERGE`；P2/P3 `deferred` 可作为残余风险，但必须在最终报告披露。
 - 范围内 P0/P1 不得停留在 `needs-evidence`：必须升级 accepted 并验证，或有反证后 rejected。
 - 原始覆盖率 = 已裁决（复现为 accepted/deferred，或有 not-reproduced 反证为 rejected）/ 所有标准 ID；豁免项为所有 P3 needs-evidence 和 `clear_claim_lacking_env` 的 P2 needs-evidence；调整后覆盖率 = 分子 / (分母 - 豁免项)。
 - 报告必须同时披露原始覆盖率、豁免项数量和调整后覆盖率；低于 80% 不得声称收敛。分母为 0 时必须用 `finalize --ack-empty-coverage` 显式确认，不能静默视为通过。

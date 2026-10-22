@@ -916,6 +916,35 @@ test("P3 unclear_claim and rejected final-audit findings do not block convergenc
   assert.equal(emptyReasons.length, 0);
 });
 
+test("deferred P0/P1 findings block both converged statuses", () => {
+  const config = { max_rounds: 2 };
+  const state = {
+    current_phase: "report",
+    rounds_consumed: 2,
+    final_audit_attempt: 1,
+    final_audit: { attempts: [{ attempt: 1, status: "complete", new_issues: 0 }], reentry_pending: false },
+  };
+  const data = {
+    findings: [
+      {
+        id: "R1-F001-SEC", role: "SEC", severity: "P1", decision: "deferred",
+        verification: "pending", reproduced: true, reproduction_status: "reproduced",
+        deferred_reason: "needs architecture", disposition_plan: "next release",
+        change_origin: "pre-existing", original_ids: ["SEC-001"],
+        evidence_dir: ".review-evidence/round-1/R1-F001-SEC", source: "review",
+      },
+    ],
+  };
+
+  for (const target of ["converged", "converged_with_manual_merge"]) {
+    const reasons = convergenceReasons(state, config, data, target, { ackEmptyCoverage: true });
+    assert.ok(
+      reasons.some((reason) => /deferred.*P1|P1.*deferred/.test(reason)),
+      `${target} must be blocked by deferred P1`
+    );
+  }
+});
+
 test("a failed final audit can report INCOMPLETE", () => {
   const project = makeProject();
   setupTwoCleanRounds(project);

@@ -533,6 +533,9 @@ function convergenceReasons(state, config, data, target, options = {}) {
   }
 
   for (const finding of findings) {
+    if (["P0", "P1"].includes(finding.severity) && finding.decision === "deferred") {
+      reasons.push(`${finding.id} 是范围内 ${finding.severity} deferred，仍未解决`);
+    }
     if (["P0", "P1"].includes(finding.severity) && finding.decision === "needs-evidence") {
       reasons.push(`${finding.id} 是范围内 ${finding.severity} needs-evidence`);
     }
