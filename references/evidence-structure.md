@@ -150,16 +150,24 @@ Rust (Cargo.toml + 测试文件):
 ```toml
 [features]
 adversarial-review = []
-# 评审模式: cargo test --features adversarial-review
+
+# tests/review/ 是嵌套目录，Cargo 不会自动发现；需显式注册测试目标或使用统一 harness。
+# 示例：每个候选文件一个目标（或用一个 harness 引入 candidates/ 下的模块）
+[[test]]
+name = "r1_sec_001"
+path = "tests/review/candidates/r1_sec_001.rs"
+required-features = ["adversarial-review"]
 ```
 ```rust
 #![cfg(feature = "adversarial-review")]
 // 放在 tests/review/ 下每个测试文件的顶部。
 ```
+评审模式运行单个目标：`cargo test --features adversarial-review --test r1_sec_001`。
 
 **运行约定**：
 - 所有命令从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
 - **测试输出先落盘**：运行测试/构建/检查命令前，把完整输出重定向到对应的 `output.log` 并记录退出码；输出被截断时读取日志（`tail`/`grep`），不要重复运行同一命令
+- **编译缓存复用（按磁盘预算）**：长编译语言在 baseline 预热并共享缓存（如 Rust `CARGO_TARGET_DIR`），预算写入 `baseline.md`；不要为每个 finding 新建 target/依赖目录。超预算或磁盘紧张时在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
 - **评审代理的 reproduction**：直接写入 `tests/review/candidates/` 目录，使用项目测试格式
 - **实现代理的测试合并**：从 `tests/review/reproductions/` 读取，复制测试用例到项目正式测试文件
 - 项目运行环境（如 Rust `target/`、Node `node_modules/`、Python `venv/`）由项目自身管理，不在 .review-evidence/ 中重复创建
@@ -289,6 +297,15 @@ node <skill-dir>/scripts/reviewctl.js render
 - Build/type-check/lint/security commands:
 - Baseline results: [summary and paths to full logs]
 - Known environment limits:
+
+## Build Cache / Compile Prewarm
+- Slow-compile stack: [Rust / C++ / large TypeScript / none]
+- Shared cache or target directory:
+- Environment variables:
+- Disk budget / available space:
+- Prewarm commands and results:
+- Reuse rules for subagents:
+- Cleanup timing: [round boundary / final report / when budget exceeded]
 
 ## Review
 - Started at:

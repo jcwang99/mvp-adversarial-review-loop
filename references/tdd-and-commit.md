@@ -23,6 +23,8 @@
 - 项目测试套件使用项目本身的测试配置和数据机制
 - 若需要验证修复前后状态对比的临时数据，可放在：.review-evidence/round-[N]/_testdata/impl-[finding-id]/
 - **测试输出先落盘**：运行 RED/GREEN/完整回归命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；RED、GREEN、full-suite 可分别写入 `output-red.log`、`output-green.log`、`output-full-suite.log`
+- **技能脚本（如需）**：`node "[skill-dir]/scripts/reviewctl.js"`；`[skill-dir]` 由主代理替换为当前 harness 的实际绝对路径；用于 `guard-commit` 或状态查看，不要修改状态或推进阶段
+- **编译缓存复用（按磁盘预算）**：在 baseline 记录的磁盘预算内复用缓存（Rust 如 `CARGO_TARGET_DIR`）；优先 `cargo test --test <target> <filter>` 或 `cargo nextest run <filter>`，不要为每个 finding 新建 target 目录。缓存超预算时按主代理指示在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
 
 ## 输出约定
 - 完整实现报告写入：.review-evidence/round-[N]/[标准 ID]/implementation-result.md

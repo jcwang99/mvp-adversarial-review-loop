@@ -49,6 +49,11 @@ node <skill-dir>/scripts/reviewctl.js validate
 
 **唯一例外**：没有未参与该 finding 的独立代理可用（所有可用代理都提交过相关候选，或没有代理可用）时，主代理经用户明确授权后才能亲自复现或验证；必须在 `adjudication.md` 标为高风险，并在最终报告单独披露。
 
+**委派时还要传两样东西**：
+
+- 当前技能目录的绝对路径：把模板中的 `[skill-dir]` 替换为当前 harness 的实际安装路径（各 harness 不同，动态解析），并给出 `node "[skill-dir]/scripts/reviewctl.js"` 的可执行形式；子代理只读使用，不得修改状态或推进阶段。
+- 编译缓存信息：长编译项目（Rust、C++、大型 TypeScript 等）已在 baseline 完成编译预热，委派时附上共享缓存路径/环境变量和磁盘预算，要求子代理在预算内复用；不要每个 finding 重建依赖或创建独立 target。超预算时在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理。
+
 ## 常见压缩后错误
 
 | 错误 | 症状 | 正确做法 |
@@ -63,6 +68,8 @@ node <skill-dir>/scripts/reviewctl.js validate
 | `blocked` 当 `rejected` | 复现环境不可用却直接拒绝 | 保留 `needs-evidence` |
 | 手工 finding 被测试卡住 | `record-implementation` 报缺少 `--test` | 用 `--manual` 并记录独立人工复测 |
 | 到 max_rounds 仍开新轮 | 终审发现新问题后启动第 max_rounds+1 轮 | 报告 INCOMPLETE |
+| 每个 finding 全量编译 | Rust 等长编译项目反复重建 | baseline 预热共享缓存，子代理复用；超预算时按轮次集中清理 |
+| 委派提示缺少脚本路径 | 子代理找不到 `reviewctl` | 把 `[skill-dir]` 替换为动态解析的绝对路径 |
 
 ## 阶段流转简图
 

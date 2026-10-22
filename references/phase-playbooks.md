@@ -25,23 +25,37 @@
 
 `reviewctl help` 输出完整参数。不要手改 `state.json`、`findings.json`、`run-state.md` 或 `findings-index.md`。
 
+## 委派通用要求
+
+- 委派任何子代理时，把提示模板中的 `[skill-dir]` 替换为当前 harness 的技能安装目录绝对路径（各 harness 不同，动态解析；路径含空格时给命令加引号），并提供 `node [skill-dir]/scripts/reviewctl.js` 的可执行形式。子代理只读使用脚本，不得修改状态或推进阶段。
+- 长编译项目（Rust、C++、大型 TypeScript 等）在 baseline 完成编译预热，并把共享缓存路径、环境变量和磁盘预算写入 `baseline.md`；委派时要求子代理在预算内复用同一缓存，不要每个 finding 重建依赖或创建独立 target。超预算时在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理。
+
 ## 0. baseline
 
 **主代理执行**，不委派评审。
 
 1. 确认 MVP 范围、明确排除项、验收标准及来源、技术栈、入口和关键数据流、外部服务与认证边界、部署方式。
 2. 记录仓库路径、分支、`baseline_head`、初始 `git status`、已有用户改动。
-3. 确认测试/构建/类型检查/lint/安全扫描命令，并运行基线；完整日志路径写入 `baseline.md`。
-4. 与用户确认 `max_rounds`：默认 5，用户可指定，最小 2；小于 2 时 `reviewctl init` 会拒绝。然后运行 `reviewctl init --max-rounds N --user-confirmed`（终端场景可用 `--interactive`），由脚本创建 `review-config.json`、`state.json`、`findings.json` 和生成视图。`init` 拒绝覆盖任何已有状态文件；需要重跑时先归档或手动清理 `.review-evidence/`。
-5. 填写 `init` 创建的 `baseline.md` 和 `screening-log.md` 模板。
-6. 确保项目测试配置忽略 `tests/review/`（或使用 `ADVERSARIAL_REVIEW` 等开关），把方式和结束时如何还原写入 `baseline.md`；无法确保时记录阻塞。
-7. 部署恢复指南（幂等，可重复运行）：
+3. 确认测试/构建/类型检查/lint/安全扫描命令。
+4. **按实测决定是否编译预热**：只有全量测试/构建耗时明显（例如单次超过 2-3 分钟）或会生成大量临时测试的项目才做；短编译项目沿用现有命令，不要额外引入缓存层。
+   - 先确定磁盘预算：记录可用空间和缓存上限，云端环境尤其要留足余量；缓存目录放在仓库外，不要放进 `.review-evidence/`，也不要提交。
+   - Rust：可设置共享的 `CARGO_TARGET_DIR`，先运行 `cargo test --tests --no-run`（或 `cargo nextest run --no-run`）预编译测试目标；类型检查用 `cargo check --tests`，聚焦测试用 `cargo test --test <target> <filter>` 或 `cargo nextest run <filter>`；保持 `CARGO_INCREMENTAL=1`。
+   - 缓存策略：同一轮内复用缓存，不要为每个 finding 新建 target；当缓存超过预算或磁盘紧张时，在轮次边界集中清理（删除共享 target 或 `cargo clean`），下一轮再预热。不要每个 finding 都清理重建，也不要无上限保留。
+   - Rust 的 `tests/review/` 是嵌套目录，Cargo 不会自动发现；baseline 要确认测试如何被注册（显式 `[[test]]` 目标或统一 harness），并记录结束时如何还原，否则候选测试不会被编译或运行。
+   - 可选：项目已有 `sccache`/构建缓存配置时沿用，不要覆盖；没有且实测收益明显时再考虑安装。
+   - 其他长编译栈：仅在实测确实拖慢流程时启用依赖预编译/缓存，并设置同样的磁盘预算和轮次边界清理策略；短编译栈不要过度优化。
+   - 把预热命令、缓存路径、环境变量、磁盘预算、清理时机和单次测试耗时写入 `baseline.md` 的 "Build Cache / Compile Prewarm"；无法安全预热时记录耗时和阻塞，不要跳过。
+5. 运行基线（使用预热后的缓存）；完整日志路径、耗时和已知环境限制写入 `baseline.md`。
+6. 与用户确认 `max_rounds`：默认 5，用户可指定，最小 2；小于 2 时 `reviewctl init` 会拒绝。然后运行 `reviewctl init --max-rounds N --user-confirmed`（终端场景可用 `--interactive`），由脚本创建 `review-config.json`、`state.json`、`findings.json` 和生成视图。`init` 拒绝覆盖任何已有状态文件；需要重跑时先归档或手动清理 `.review-evidence/`。
+7. 填写 `init` 创建的 `baseline.md` 和 `screening-log.md` 模板。
+8. 确保项目测试配置忽略 `tests/review/`（或使用 `ADVERSARIAL_REVIEW` 等开关），把方式和结束时如何还原写入 `baseline.md`；无法确保时记录阻塞。
+9. 部署恢复指南（幂等，可重复运行）：
    - 目标是项目根目录的 `AGENTS.md`；若项目以 `CLAUDE.md` 为项目级指令文件（存在 `CLAUDE.md` 且无 `AGENTS.md`），以 `CLAUDE.md` 为目标。
    - 目标文件已含标记 `mvp-adversarial-review-loop-recovery-guide` 或标题 `Main Agent Recovery Guide - MVP Adversarial Review Loop` 时跳过。
    - 目标文件不存在：复制技能目录的 `AGENTS.md`，并在前后加 `<!-- BEGIN mvp-adversarial-review-loop-recovery-guide -->` / `<!-- END mvp-adversarial-review-loop-recovery-guide -->`。
    - 目标文件已存在：先把原内容备份到 `.review-evidence/baseline-project-instructions.bak`，再把带标记的恢复指南追加到末尾。
    - 把目标文件、模式（created / appended / skipped）、标记和备份路径写入 `baseline.md` 的 "Recovery Guide Deployment"。
-8. 运行 `reviewctl validate`；失败时先运行 `reviewctl normalize`，仍失败则按错误逐项修复，直到 `validate` 通过；通过后才运行 `reviewctl advance --to review`。脚本会设置 `current_round: 1`、`rounds_consumed: 0`、`can_trigger_new_round: true` 和 `next_action`。
+10. 运行 `reviewctl validate`；失败时先运行 `reviewctl normalize`，仍失败则按错误逐项修复，直到 `validate` 通过；通过后才运行 `reviewctl advance --to review`。脚本会设置 `current_round: 1`、`rounds_consumed: 0`、`can_trigger_new_round: true` 和 `next_action`。
 
 启动部署对项目级指令文件的改动属于本流程引入的临时改动，不提交，结束时还原。本流程要求 Node.js（>= 18）和 Git；缺少任一依赖时不要初始化，记录阻塞。
 
@@ -55,7 +69,7 @@
 - 临时测试写入 `tests/review/candidates/`，文件名使用角色 code 和语言对应的测试后缀：JS/TS `r{round}_{role-token}_{seq}.test.js|.spec.ts`，Python/Go/Ruby `..._test.py|_test.go|_spec.rb`，Java/C# `...Test.java|Test.cs`，Rust `....rs`；完整规则见 `evidence-structure.md`。若发现临时测试会被日常测试收集，停止并报告阻塞，不要自行修改项目配置。
 - 从项目根目录运行，使用项目自身的测试框架和依赖；需要隔离数据时放在 `.review-evidence/round-[N]/_testdata/[role-slug]/`。
 - 证据写入脚本创建的 inbox；运行测试前先把完整输出重定向到 `output.log` 并记录退出码，输出被截断时读日志而不是重跑，不要粘贴到回复。
-- 使用 `agent-prompts.md` 的"评审代理"模板；代理必须把同一结构写入 inbox 的 `handoff.json`，聊天里的 YAML 摘要只作交接提示。
+- 使用 `agent-prompts.md` 的"评审代理"模板；委派时把 `[skill-dir]` 替换为当前技能目录绝对路径，并要求复用 baseline 的编译缓存。代理必须把同一结构写入 inbox 的 `handoff.json`，聊天里的 YAML 摘要只作交接提示。
 - 轮次策略、最后两轮回归检查和角色选择见 `SKILL.md` 的轮次策略表。
 - 被判定为回归检查的轮次只提供待检查的修复提交/变更路径，不提供历史 finding、裁决或预期结论。
 - 要求代理记录 `uncovered_paths` 和 `blockers`；没有发现时返回 `findings: []`，不要用偏好凑数。
@@ -66,7 +80,7 @@
 
 ## 2. adjudication
 
-**主代理执行筛查和裁决，但复现、挑战、补强必须委派。**
+**主代理执行筛查和裁决，但复现、挑战、补强必须委派。** 委派时替换提示模板中的 `[skill-dir]`，并要求复用 baseline 的编译缓存。
 
 ### 2.1 筛查与去重
 
@@ -194,7 +208,7 @@
 
 ## 3. repair
 
-**必须委派实现代理**，一次一个 accepted finding，按 `tdd-and-commit.md` 执行 RED-GREEN-REFACTOR 并提交。
+**必须委派实现代理**，一次一个 accepted finding，按 `tdd-and-commit.md` 执行 RED-GREEN-REFACTOR 并提交。委派时替换提示模板中的 `[skill-dir]`，并要求复用 baseline 的编译缓存。
 
 - 实现代理只处理当前 finding；RED 必须先确认，测试必须合并到项目正式测试文件。确实无法自动化时使用 `--manual`，并在 `implementation-result.md` / `verification-result.md` 记录人工复测。
 - 进入 repair 时脚本会记录 `repair_baseline_staged`；提交只包含当前 finding 的源代码、正式测试和必要配置；不包含 `.review-evidence/` 或 `tests/review/` 临时文件。
@@ -208,7 +222,7 @@
 
 ## 4. verification
 
-**必须委派验证代理**，且不能是实现该 finding 的代理。
+**必须委派验证代理**，且不能是实现该 finding 的代理。委派时替换提示模板中的 `[skill-dir]`，并要求复用 baseline 的编译缓存。
 
 - 状态机一次只有一个 `active_finding`，因此一个验证代理一次验证一个 finding；不同 finding 的验证串行进行。
 - 使用 `agent-prompts.md` 的验证代理模板，并按其 YAML 结构回收摘要；提供原始 counterexample、reproduction、修复 commit、当前 HEAD、正式测试路径和运行入口。
@@ -282,7 +296,7 @@
 
 ## 6. final_audit
 
-**必须使用未参与本流程任何阶段的新代理**，并记录其身份。同一代理分两阶段；第一阶段结果保存后，主代理才发送第二阶段材料。每次审计使用新目录 `.review-evidence/round-[N]/final-audit/attempt-[K]/`，不得覆盖旧结果。
+**必须使用未参与本流程任何阶段的新代理**，并记录其身份。同一代理分两阶段；第一阶段结果保存后，主代理才发送第二阶段材料。委派时替换提示模板中的 `[skill-dir]`，并要求复用 baseline 的编译缓存。每次审计使用新目录 `.review-evidence/round-[N]/final-audit/attempt-[K]/`，不得覆盖旧结果。
 
 ### 6.1 第一阶段：盲扫
 

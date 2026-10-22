@@ -1,6 +1,6 @@
 # 子代理提示模板与输出格式
 
-本文件是所有子代理提示模板和输出格式的唯一来源。委派子代理时，从此文件获取完整的提示模板。
+本文件是所有子代理提示模板和输出格式的唯一来源。委派子代理时，从此文件获取完整的提示模板。所有模板中的 `[skill-dir]` 必须在委派时替换为当前 harness 的实际技能目录绝对路径，并提供 `node "[skill-dir]/scripts/reviewctl.js"` 的可执行形式；子代理只读使用脚本，不得修改状态或推进阶段。
 
 ## 目录
 
@@ -41,6 +41,7 @@
 - output.log：完整命令输出，不要粘贴到回复或 counterexample.md 中
 - handoff.json：把下方 YAML 的等价 JSON 写入同一 inbox；这是 `reviewctl validate` 读取的结构化交接
 - 主代理会用 `reviewctl new-inbox` 预先创建目录；不要自行创建其他路径
+- **技能脚本（如需）**：`node "[skill-dir]/scripts/reviewctl.js"`；`[skill-dir]` 由主代理替换为当前 harness 的实际绝对路径，只读使用，不要修改状态或推进阶段
 
 **运行 reproduction**：
 - 从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
@@ -53,7 +54,7 @@
   # 或使用项目的测试命令
   pnpm vitest run tests/review/candidates/r1_sec_001.test.js
   ```
-- 不要为每个 finding 创建独立的依赖/编译环境
+- 不要为每个 finding 创建独立的依赖/编译环境；在 baseline 记录的磁盘预算内复用预热缓存（Rust 如 `CARGO_TARGET_DIR`），不要为每个 finding 新建 target 目录。缓存超预算时按主代理指示在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
 
 **隔离数据文件**（仅在需要避免冲突时）：
 - 测试数据库、fixture、临时输出可放在：`.review-evidence/round-[N]/_testdata/[role-slug]/`
@@ -157,6 +158,8 @@ kind: defect
 - 若需要隔离测试数据库/fixture，放在：.review-evidence/round-[N]/_testdata/replay-[finding-id]/
 - 通过环境变量传递数据路径，或使用项目测试框架的临时数据机制
 - **测试输出先落盘**：运行复现命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；多个命令可用 `output-<step>.log`
+- **技能脚本（如需）**：`node "[skill-dir]/scripts/reviewctl.js"`；`[skill-dir]` 由主代理替换为当前 harness 的实际绝对路径，只读使用，不要修改状态或推进阶段
+- **编译缓存复用（按磁盘预算）**：在 baseline 记录的磁盘预算内复用预热缓存（Rust 如 `CARGO_TARGET_DIR`）；不要为每个 finding 新建 target/依赖目录。缓存超预算时按主代理指示在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
 ## 输出约定
@@ -244,6 +247,8 @@ notes: "<简短说明，例如与原始证据的一致性>"
 - 从项目根目录运行，使用项目自身的测试框架和依赖
 - 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/challenge-[finding-id]/
 - **测试输出先落盘**：运行测试/重放命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；多个命令可用 `output-<step>.log`
+- **技能脚本（如需）**：`node "[skill-dir]/scripts/reviewctl.js"`；`[skill-dir]` 由主代理替换为当前 harness 的实际绝对路径，只读使用，不要修改状态或推进阶段
+- **编译缓存复用（按磁盘预算）**：在 baseline 记录的磁盘预算内复用预热缓存（Rust 如 `CARGO_TARGET_DIR`）；不要为每个 finding 新建 target/依赖目录。缓存超预算时按主代理指示在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
 ## 输出约定
@@ -338,6 +343,8 @@ blockers: []
 - 从项目根目录运行，使用项目自身的测试框架和依赖
 - 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/reinforce-[finding-id]/
 - **测试输出先落盘**：运行测试/重放命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；多个命令可用 `output-<step>.log`
+- **技能脚本（如需）**：`node "[skill-dir]/scripts/reviewctl.js"`；`[skill-dir]` 由主代理替换为当前 harness 的实际绝对路径，只读使用，不要修改状态或推进阶段
+- **编译缓存复用（按磁盘预算）**：在 baseline 记录的磁盘预算内复用预热缓存（Rust 如 `CARGO_TARGET_DIR`）；不要为每个 finding 新建 target/依赖目录。缓存超预算时按主代理指示在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
 ## 输出约定
@@ -676,6 +683,8 @@ blockers:
 - 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/verify-[finding-id]/
 - 相邻测试写入：tests/review/verifications/r{round}_f{num}_{slug}_adjacent{suffix}
 - **测试输出先落盘**：运行测试/回归命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；多个命令可用 `output-<step>.log`
+- **技能脚本（如需）**：`node "[skill-dir]/scripts/reviewctl.js"`；`[skill-dir]` 由主代理替换为当前 harness 的实际绝对路径，只读使用，不要修改状态或推进阶段
+- **编译缓存复用（按磁盘预算）**：在 baseline 记录的磁盘预算内复用预热缓存（Rust 如 `CARGO_TARGET_DIR`）；不要为每个 finding 新建 target/依赖目录。缓存超预算时按主代理指示在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
 
@@ -895,7 +904,7 @@ git worktree remove <临时目录>/verify-[finding-id]
 ]
 
 ## Verdict
-**Final Verdict**: pass | fail | inconclusive（环境阻塞使用 inconclusive，不用 blocked）
+**Final Verdict**: [只填写一个值：pass、fail 或 inconclusive]
 
 **Reasoning**: [综合判断依据]
 
@@ -905,6 +914,7 @@ git worktree remove <临时目录>/verify-[finding-id]
 
 ### Verdict 判断规则
 
+- **Final Verdict 行只写单个字面值**：脚本去掉 Markdown 标记和句末句号后，只把大小写不敏感等于 `pass` 的值判为通过。不要写 `pass（fixed）`、`pass with caveats` 或保留模板中的多个选项；原因写在 `Reasoning`。环境阻塞写 `inconclusive`，不要写 `blocked`。
 - **pass（fixed）**: reproduction_before_fix = observed，reproduction_after_fix = not_observed，full_test_suite = pass，adjacent_tests = pass 或有合理理由未生成；生成相邻测试时 `merged_tests` 必须非空。
 - **pass（already_fixed）**: 测试覆盖评估为 covers_claim，重跑测试通过，full_test_suite = pass，adjacent_tests = pass 或有合理理由未生成；生成相邻测试时 `merged_tests` 必须非空。
 - **fail**: reproduction_after_fix = still_observed，或 full_test_suite = fail，或 adjacent_tests = fail。
@@ -949,6 +959,8 @@ git worktree remove <临时目录>/verify-[finding-id]
 - 从项目根目录运行，使用项目自身的测试框架和依赖
 - 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/final-audit/attempt-[K]/
 - **测试输出先落盘**：运行测试/构建命令前，把完整输出重定向到 .review-evidence/round-[N]/final-audit/attempt-[K]/inbox/[临时_id]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；多个命令可用 `output-<step>.log`
+- **技能脚本（如需）**：`node "[skill-dir]/scripts/reviewctl.js"`；`[skill-dir]` 由主代理替换为当前 harness 的实际绝对路径，只读使用，不要修改状态或推进阶段
+- **编译缓存复用（按磁盘预算）**：在 baseline 记录的磁盘预算内复用预热缓存（Rust 如 `CARGO_TARGET_DIR`）；不要为每个 finding 新建 target/依赖目录。缓存超预算时按主代理指示在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
 ## 输出约定
@@ -1002,6 +1014,8 @@ uncovered_paths: []
 - 从项目根目录运行，使用项目自身的测试框架和依赖
 - 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/final-audit/attempt-[K]/
 - **测试输出先落盘**：运行测试/构建/静态检查命令前，把完整输出重定向到 .review-evidence/round-[N]/final-audit/attempt-[K]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；多个命令可用 `output-<step>.log`
+- **技能脚本（如需）**：`node "[skill-dir]/scripts/reviewctl.js"`；`[skill-dir]` 由主代理替换为当前 harness 的实际绝对路径，只读使用，不要修改状态或推进阶段
+- **编译缓存复用（按磁盘预算）**：在 baseline 记录的磁盘预算内复用预热缓存（Rust 如 `CARGO_TARGET_DIR`）；不要为每个 finding 新建 target/依赖目录。缓存超预算时按主代理指示在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
 ## 输出约定
@@ -1136,6 +1150,9 @@ blockers: []
 - `[round number]`: 当前轮次（1 至 max_rounds，默认 1-5）
 - `[标准 finding ID]`: R1-F001-SEC 格式
 - `[临时_id]`: SEC-001 格式（role-local）；终审用 FA-001
+- `[skill-dir]`: 当前技能安装目录的绝对路径（按当前 harness 动态解析，不能写死；路径含空格时给命令加引号）。委派时同时提供 `node "[skill-dir]/scripts/reviewctl.js"` 的可执行形式；子代理只读使用，不得修改状态或推进阶段
+
+`[skill-dir]` 必须每次委派时动态解析：使用当前 harness 加载本技能时返回的目录（或 `scripts/reviewctl.js` 的实际所在目录）；无法确定时先询问用户，不要猜测路径。不要把本文件示例中的路径或主代理本机路径写进模板。
 
 ### 2. 委派时机
 

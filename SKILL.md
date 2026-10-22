@@ -13,6 +13,8 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 **首次加载**：先按 `references/phase-playbooks.md` §0 部署项目级恢复指南并建立 baseline，再开始评审。`<skill-dir>` 指本技能目录的实际安装路径（Claude Code 通常在 `~/.claude/skills/mvp-adversarial-review-loop/`，OpenCode 通常在 `~/.config/opencode/skills/mvp-adversarial-review-loop/`；以当前 harness 的 skill 位置为准）。本技能要求 Node.js（>= 18）和 Git；缺少任一依赖时不要启动循环，记录阻塞并报告。
 
+**启动前编译预热**：只有实测全量测试/构建明显偏慢的项目（如 Rust、C++、大型 TypeScript）才在 baseline 运行前做编译加速，并把缓存路径、环境变量和磁盘预算写入 `baseline.md`；后续子代理在预算内复用缓存，超预算时在轮次边界集中清理。短编译项目沿用现有命令，不要额外引入缓存层。具体做法见 `references/phase-playbooks.md` §0。
+
 **压缩上下文后恢复**：
 
 1. 立即读取 `.review-evidence/run-state.md` 和 `.review-evidence/state.json`。
@@ -35,6 +37,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 9. **授权留痕**：需要用户授权时使用当前 harness 的用户提问工具（Claude Code 的 AskUserQuestion、OpenCode 的 `question` 等；没有专用工具时直接在对话中提问并等待明确回答）；决策用 `reviewctl authorize --action ... --decision authorized|declined` 写入状态和 `blockers`，最终报告披露。
 10. **轮次有界**：最少 2 轮常规评审，最多 `max_rounds`（默认 5，最小 2）；最终审计不计入轮次，但终审触发的新常规轮计入。
 11. **手工与阻塞 finding**：确实无法自动化时用 `reviewctl record-implementation --id ID --status fixed --manual`，并在验证中提供独立人工复测；用户改动导致无法提交时运行 `reviewctl record-implementation --id ID --status prepared --reason "user changes conflict"`，再运行 `record-verification --status blocked_by_user_changes`；无法修复时运行 `reviewctl record-implementation --id ID --status cannot_fix --reason "REASON"`，环境或依赖阻塞时运行 `reviewctl record-implementation --id ID --status blocked --reason "REASON"`，然后登记未解决或进入 `adjudication` 重新裁决。本流程要求 Git（commit、worktree、guard-commit）；无 Git 时不得启动。
+12. **编译缓存与磁盘预算**：长编译项目应在 baseline 预热，并在 `baseline.md` 记录的磁盘预算内复用共享缓存；不要为每个 finding 重建依赖或创建独立 target。缓存超过预算或磁盘紧张时，在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建。短编译项目不强制引入缓存层。
 
 ## 2. 阶段状态机
 
@@ -71,6 +74,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 ## 3. 委派硬门禁
 
 - **所有阶段**：状态只通过 `reviewctl` 修改；进入下一阶段前运行 `reviewctl validate`；修复提交前运行 `reviewctl guard-commit`。
+- **提示词路径**：委派任何子代理时，把模板中的 `[skill-dir]` 替换为当前 harness 的技能安装目录绝对路径（动态确定，不要写死），并在提示中提供 `node [skill-dir]/scripts/reviewctl.js` 的用法；子代理只读使用脚本，不得修改状态或推进阶段。
 - **review**：每个角色一个独立、只读子代理；至少 3 个不同角色；用 `reviewctl new-inbox` 创建 inbox；临时测试只写 `tests/review/candidates/`；每个代理必须写 `handoff.json`。
 - **adjudication**：复现必须由未提出该候选的独立代理执行，并写入 `replay-review.md`；提出者不能单独决定自己的 finding；P0/P1、权限/数据完整性/公开 API 或证据异常项，主代理必须检查证据，必要时再委派第二个独立审查。
 - **必须挑战**：所有拟 accepted 的 P0/P1，以及复现结果矛盾或不寻常的证据。无法挑战必须范围项时，必须获得用户明确授权并留痕。
