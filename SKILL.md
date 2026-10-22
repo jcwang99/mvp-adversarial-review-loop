@@ -34,7 +34,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 8. **真实报告**：没有完成要求的验证时报告 INCOMPLETE；不把测试绿灯或“未发现问题”当成收敛证据。
 9. **授权留痕**：需要用户授权时使用当前 harness 的用户提问工具（Claude Code 的 AskUserQuestion、OpenCode 的 `question` 等；没有专用工具时直接在对话中提问并等待明确回答）；决策用 `reviewctl authorize --action ... --decision authorized|declined` 写入状态和 `blockers`，最终报告披露。
 10. **轮次有界**：最少 2 轮常规评审，最多 `max_rounds`（默认 5，最小 2）；最终审计不计入轮次，但终审触发的新常规轮计入。
-11. **手工与阻塞 finding**：确实无法自动化时用 `record-implementation --manual`，并在验证中提供独立人工复测；用户改动导致无法提交时用 `--status prepared --reason` 加 `record-verification --status blocked_by_user_changes`；`cannot_fix`/`blocked` 用 `--status cannot_fix|blocked --reason` 登记未解决，或进入 `adjudication` 重新裁决。本流程要求 Git（commit、worktree、guard-commit）；无 Git 时不得启动。
+11. **手工与阻塞 finding**：确实无法自动化时用 `reviewctl record-implementation --id ID --status fixed --manual`，并在验证中提供独立人工复测；用户改动导致无法提交时运行 `reviewctl record-implementation --id ID --status prepared --reason "user changes conflict"`，再运行 `record-verification --status blocked_by_user_changes`；无法修复时运行 `reviewctl record-implementation --id ID --status cannot_fix --reason "REASON"`，环境或依赖阻塞时运行 `reviewctl record-implementation --id ID --status blocked --reason "REASON"`，然后登记未解决或进入 `adjudication` 重新裁决。本流程要求 Git（commit、worktree、guard-commit）；无 Git 时不得启动。
 
 ## 2. 阶段状态机
 
@@ -135,7 +135,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 | 评审后跳过 adjudication | 先筛查、去重、独立复现、必要挑战 |
 | 修复后不验证 | 委派未参与实现的验证代理 |
 | 把 `blocked` 当 `rejected` | 保留 `needs-evidence` |
-| 手工 finding 被测试卡住 | 用 `record-implementation --manual`，验证时记录独立人工复测 |
+| 手工 finding 被测试卡住 | 用 `reviewctl record-implementation --id ID --status fixed --manual`，验证时记录独立人工复测 |
 | 忘记更新状态 | 用 `reviewctl advance` / `record-*`，不要手改 JSON |
 | 校验失败就手改 JSON | 先运行 `reviewctl normalize`，仍失败再按错误修复 |
 | 手改 `run-state.md` / `findings-index.md` | 运行 `reviewctl render` 重新生成 |

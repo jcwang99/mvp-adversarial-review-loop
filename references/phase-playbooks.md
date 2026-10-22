@@ -13,7 +13,7 @@
 | 创建评审 inbox | `reviewctl new-inbox --round N --role SEC --temp-id SEC-001` |
 | 记录/修订轮次计数 | `reviewctl record-round --round N --raw N --duplicates N --screened N --new-p0p1p2 N`（review 或 adjudication 中仅限当前未完成轮次）|
 | 记录 finding | `reviewctl record-finding --id ... --decision ... [--source final-audit --audit-attempt K]` |
-| 记录实现/验证 | `reviewctl record-implementation ... [--manual] [--status prepared|blocked|cannot_fix --reason ...]`、`reviewctl record-verification ... [--merged-test PATH ...]` |
+| 记录实现/验证 | `reviewctl record-implementation --id ID --status fixed --commit SHA --test PATH`、`reviewctl record-implementation --id ID --status already_fixed --commit SHA --test PATH`、`reviewctl record-implementation --id ID --status prepared --reason "REASON"`、`reviewctl record-implementation --id ID --status blocked --reason "REASON"`、`reviewctl record-implementation --id ID --status cannot_fix --reason "REASON"`（手工 finding 加 `--manual`）；`reviewctl record-verification ... [--merged-test PATH ...]` |
 | 下一个 finding | `reviewctl next-finding` |
 | 标记未解决 | `reviewctl mark-unresolved --id ID --reason TEXT`（repair 阶段用于 blocked/cannot_fix） |
 | 记录终审 | `reviewctl record-audit --attempt N --status complete|failed --new-issues N --auditor NAME` |
@@ -199,10 +199,10 @@
 - 实现代理只处理当前 finding；RED 必须先确认，测试必须合并到项目正式测试文件。确实无法自动化时使用 `--manual`，并在 `implementation-result.md` / `verification-result.md` 记录人工复测。
 - 进入 repair 时脚本会记录 `repair_baseline_staged`；提交只包含当前 finding 的源代码、正式测试和必要配置；不包含 `.review-evidence/` 或 `tests/review/` 临时文件。
 - 提交前运行 `reviewctl guard-commit --finding [ID] --test [PATH]`；脚本会拒绝证据目录、临时测试目录，以及在进入 repair 前就已暂存的用户改动。
-- 提交后运行 `reviewctl record-implementation --id [ID] --status fixed|already_fixed --commit [SHA] --test [PATH]`；手工 finding 加 `--manual`；用户改动导致无法提交时用 `--status prepared --reason TEXT`。
+- 提交后运行 `reviewctl record-implementation --id ID --status fixed --commit SHA --test PATH` 或 `reviewctl record-implementation --id ID --status already_fixed --commit SHA --test PATH`；手工 finding 加 `--manual`；用户改动导致无法提交时运行 `reviewctl record-implementation --id ID --status prepared --reason "user changes conflict"`。
 - `already_fixed`：确认现有提交覆盖后进入验证；测试文件必须存在于当前 HEAD（`git cat-file -e HEAD:<path>`）；仅在历史 commit 或其他分支中存在不算；能定位历史修复 commit 时用 `--commit SHA` 记录。
-- `cannot_fix` / `blocked`：运行 `record-implementation --status cannot_fix|blocked --reason TEXT` 登记未解决；随后可 `next-finding` 或 `advance --to round_decision`。需要调整范围/降级时运行 `advance --to adjudication` 重新裁决。
-- `blocked_by_user_changes`：按 `tdd-and-commit.md` 处理，先用 `record-implementation --status prepared --reason "user changes conflict"` 记录准备好的修复并提供手工合并建议；再用 `record-verification --status blocked_by_user_changes` 记录；有下一个 finding 时运行 `next-finding`，否则 `advance --to round_decision`。可能导致 `CONVERGED_WITH_MANUAL_MERGE`。
+- `cannot_fix` / `blocked`：无法修复时运行 `reviewctl record-implementation --id ID --status cannot_fix --reason "REASON"`；环境或依赖阻塞时运行 `reviewctl record-implementation --id ID --status blocked --reason "REASON"`，登记未解决；随后可 `next-finding` 或 `advance --to round_decision`。需要调整范围/降级时运行 `advance --to adjudication` 重新裁决。
+- `blocked_by_user_changes`：按 `tdd-and-commit.md` 处理，先用 `reviewctl record-implementation --id ID --status prepared --reason "user changes conflict"` 记录准备好的修复并提供手工合并建议；再用 `record-verification --status blocked_by_user_changes` 记录；有下一个 finding 时运行 `next-finding`，否则 `advance --to round_decision`。可能导致 `CONVERGED_WITH_MANUAL_MERGE`。
 
 **完成后**：`reviewctl advance --to verification`。
 
