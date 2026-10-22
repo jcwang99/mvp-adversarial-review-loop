@@ -159,6 +159,7 @@ adversarial-review = []
 
 **运行约定**：
 - 所有命令从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
+- **测试输出先落盘**：运行测试/构建/检查命令前，把完整输出重定向到对应的 `output.log` 并记录退出码；输出被截断时读取日志（`tail`/`grep`），不要重复运行同一命令
 - **评审代理的 reproduction**：直接写入 `tests/review/candidates/` 目录，使用项目测试格式
 - **实现代理的测试合并**：从 `tests/review/reproductions/` 读取，复制测试用例到项目正式测试文件
 - 项目运行环境（如 Rust `target/`、Node `node_modules/`、Python `venv/`）由项目自身管理，不在 .review-evidence/ 中重复创建

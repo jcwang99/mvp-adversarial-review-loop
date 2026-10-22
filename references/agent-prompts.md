@@ -34,6 +34,7 @@
   - 使用项目测试格式，可以复用项目的测试环境、fixtures、辅助函数
 - **测试框架忽略此目录**：主代理已在 baseline 阶段确保项目测试配置忽略 `tests/review/`（或使用 ADVERSARIAL_REVIEW 开关）；若运行中发现临时测试会被日常测试收集，停止并报告阻塞，不要自行修改项目配置
 - 完整命令输出保存在：`.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/output.log`
+- **测试输出必须先落盘**：运行测试/复现命令前，先把完整输出重定向到该 finding 的 `output.log` 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。需要查看时用 `tail`/`grep` 或 PowerShell `Get-Content -Tail`/`Select-String` 读日志；对话通常只保留最后几行，输出被截断时**不要重复运行命令**。多个命令可按步骤写成 `output-<step>.log`
 
 **证据文档**（仍在 .review-evidence/ 中）：
 - counterexample.md：`.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/counterexample.md`
@@ -155,6 +156,7 @@ kind: defect
 - 从项目根目录运行，使用项目自身的测试框架和依赖
 - 若需要隔离测试数据库/fixture，放在：.review-evidence/round-[N]/_testdata/replay-[finding-id]/
 - 通过环境变量传递数据路径，或使用项目测试框架的临时数据机制
+- **测试输出先落盘**：运行复现命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；多个命令可用 `output-<step>.log`
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
 ## 输出约定
@@ -241,6 +243,7 @@ notes: "<简短说明，例如与原始证据的一致性>"
 ## 运行约定
 - 从项目根目录运行，使用项目自身的测试框架和依赖
 - 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/challenge-[finding-id]/
+- **测试输出先落盘**：运行测试/重放命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；多个命令可用 `output-<step>.log`
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
 ## 输出约定
@@ -334,6 +337,7 @@ blockers: []
 ## 运行约定
 - 从项目根目录运行，使用项目自身的测试框架和依赖
 - 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/reinforce-[finding-id]/
+- **测试输出先落盘**：运行测试/重放命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；多个命令可用 `output-<step>.log`
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
 ## 输出约定
@@ -671,6 +675,7 @@ blockers:
 - 从项目根目录运行，使用项目自身的测试框架和依赖
 - 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/verify-[finding-id]/
 - 相邻测试写入：tests/review/verifications/r{round}_f{num}_{slug}_adjacent{suffix}
+- **测试输出先落盘**：运行测试/回归命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；多个命令可用 `output-<step>.log`
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
 
@@ -943,6 +948,7 @@ git worktree remove <临时目录>/verify-[finding-id]
 ## 运行约定
 - 从项目根目录运行，使用项目自身的测试框架和依赖
 - 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/final-audit/attempt-[K]/
+- **测试输出先落盘**：运行测试/构建命令前，把完整输出重定向到 .review-evidence/round-[N]/final-audit/attempt-[K]/inbox/[临时_id]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；多个命令可用 `output-<step>.log`
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
 ## 输出约定
@@ -995,6 +1001,7 @@ uncovered_paths: []
 ## 运行约定
 - 从项目根目录运行，使用项目自身的测试框架和依赖
 - 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/final-audit/attempt-[K]/
+- **测试输出先落盘**：运行测试/构建/静态检查命令前，把完整输出重定向到 .review-evidence/round-[N]/final-audit/attempt-[K]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；多个命令可用 `output-<step>.log`
 - 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
 
 ## 输出约定
@@ -1159,11 +1166,31 @@ blockers: []
 
 ### 5. 命令输出管理
 
-所有完整命令输出都必须保存到 `output.log`，而不是粘贴到回复或其他 Markdown 文件中。这样可以：
+所有完整命令输出都必须保存到 `output.log`，而不是粘贴到回复或其他 Markdown 文件中。**运行测试、构建、类型检查或 lint 时，必须先重定向到日志文件再查看；不要直接运行命令后只依赖对话里保留的最后几行**——输出通常会被截断，看不到失败详情会导致重复运行，浪费时间。
+
+推荐写法（POSIX shell）：
+
+```bash
+{ npm test -- <test-path>; echo "EXIT_CODE=$?"; } > .review-evidence/round-1/R1-F001-SEC/output.log 2>&1
+tail -n 80 .review-evidence/round-1/R1-F001-SEC/output.log
+grep -nE "FAIL|Error|expected|received" .review-evidence/round-1/R1-F001-SEC/output.log
+```
+
+Windows PowerShell：
+
+```powershell
+npm test -- <test-path> *> .review-evidence\round-1\R1-F001-SEC\output.log
+Add-Content .review-evidence\round-1\R1-F001-SEC\output.log "EXIT_CODE=$LASTEXITCODE"
+Get-Content .review-evidence\round-1\R1-F001-SEC\output.log -Tail 80
+Select-String -Path .review-evidence\round-1\R1-F001-SEC\output.log -Pattern "FAIL|Error|expected|received"
+```
+
+需要同时观察实时输出时用 `2>&1 | tee <log>`；bash 下需保留测试退出码时加 `set -o pipefail` 或读取 `${PIPESTATUS[0]}`。同一命令不要因为输出被截断而重复运行。多个命令写入同一 `output.log` 时用分隔行标记命令、时间和退出码，或按步骤写成 `output-<step>.log`。这样可以：
 
 - 减少对话上下文占用
 - 保持证据文件的可读性
 - 允许独立查看和分析命令输出
+- 避免输出截断导致的重复测试
 
 ### 6. 阻塞处理
 

@@ -54,7 +54,7 @@
 - 评审代理不得修改源代码、测试、配置，不得安装依赖或提交；不得查看其他角色的 findings，也不要把个人偏好当缺陷。
 - 临时测试写入 `tests/review/candidates/`，文件名使用角色 code 和语言对应的测试后缀：JS/TS `r{round}_{role-token}_{seq}.test.js|.spec.ts`，Python/Go/Ruby `..._test.py|_test.go|_spec.rb`，Java/C# `...Test.java|Test.cs`，Rust `....rs`；完整规则见 `evidence-structure.md`。若发现临时测试会被日常测试收集，停止并报告阻塞，不要自行修改项目配置。
 - 从项目根目录运行，使用项目自身的测试框架和依赖；需要隔离数据时放在 `.review-evidence/round-[N]/_testdata/[role-slug]/`。
-- 证据写入脚本创建的 inbox，完整命令输出写 `output.log`，不要粘贴到回复。
+- 证据写入脚本创建的 inbox；运行测试前先把完整输出重定向到 `output.log` 并记录退出码，输出被截断时读日志而不是重跑，不要粘贴到回复。
 - 使用 `agent-prompts.md` 的"评审代理"模板；代理必须把同一结构写入 inbox 的 `handoff.json`，聊天里的 YAML 摘要只作交接提示。
 - 轮次策略、最后两轮回归检查和角色选择见 `SKILL.md` 的轮次策略表。
 - 被判定为回归检查的轮次只提供待检查的修复提交/变更路径，不提供历史 finding、裁决或预期结论。

@@ -22,6 +22,7 @@
 - 从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
 - 项目测试套件使用项目本身的测试配置和数据机制
 - 若需要验证修复前后状态对比的临时数据，可放在：.review-evidence/round-[N]/_testdata/impl-[finding-id]/
+- **测试输出先落盘**：运行 RED/GREEN/完整回归命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；RED、GREEN、full-suite 可分别写入 `output-red.log`、`output-green.log`、`output-full-suite.log`
 
 ## 输出约定
 - 完整实现报告写入：.review-evidence/round-[N]/[标准 ID]/implementation-result.md
