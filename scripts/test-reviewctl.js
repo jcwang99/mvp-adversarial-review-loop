@@ -48,6 +48,20 @@ function run(project, args, { expectFail = false } = {}) {
   }
 }
 
+function assertCommandFails(project, args) {
+  let didFail = false;
+  try {
+    execFileSync(process.execPath, [CLI, ...args, "--project", project], {
+      cwd: project,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    didFail = true;
+  }
+  assert.equal(didFail, true, `expected command to fail: reviewctl ${args.join(" ")}`);
+}
+
 function write(project, relative, content) {
   const absolute = path.join(project, relative);
   fs.mkdirSync(path.dirname(absolute), { recursive: true });
@@ -990,6 +1004,66 @@ test("a failed final audit can report INCOMPLETE", () => {
     fs.readFileSync(path.join(project, ".review-evidence/state.json"), "utf8")
   );
   assert.equal(state.overall_status, "incomplete");
+});
+
+test("re-entered final audit requires its own recorded result", () => {
+  const project = makeProject();
+  init(project, 3);
+  for (const round of [1, 2]) {
+    run(project, ["advance", "--to", "review"]);
+    addRoundHandoffs(project, round);
+    run(project, ["record-round", "--round", String(round), "--raw", "0", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+    run(project, ["advance", "--to", "adjudication"]);
+    run(project, ["advance", "--to", "round_decision"]);
+  }
+  run(project, ["advance", "--to", "final_audit"]);
+  const audit1 = ".review-evidence/round-2/final-audit/attempt-1";
+  write(project, `${audit1}/blind-scan.md`, "# Blind Scan\n");
+  write(project, `${audit1}/targeted-review.md`, "# Targeted Review\n");
+  run(project, ["record-audit", "--attempt", "1", "--status", "complete", "--new-issues", "1", "--auditor", "test-auditor"]);
+  run(project, ["advance", "--to", "adjudication"]);
+
+  const evidence = ".review-evidence/round-2/R2-F001-FUNC";
+  write(project, `${evidence}/counterexample.md`, "# Counterexample\n");
+  write(project, `${evidence}/adjudication.md`, "# Adjudication\n\n## Decision\n**Status**: rejected\n");
+  write(project, `${evidence}/replay-review.md`, "# Replay Review\n\n**Status**: not-reproduced\n");
+  write(project, `${evidence}/reproduce.test.js`, "// repro\n");
+  run(project, [
+    "record-finding", "--id", "R2-F001-FUNC", "--role", "FUNC", "--original-id", "FA-001",
+    "--severity", "P2", "--decision", "rejected", "--reproduced", "false",
+    "--reproduction-status", "not-reproduced", "--evidence-dir", evidence,
+    "--change-origin", "pre-existing", "--source", "final-audit", "--audit-attempt", "1",
+  ]);
+  run(project, ["advance", "--to", "round_decision"]);
+  run(project, ["advance", "--to", "review"]);
+  addRoundHandoffs(project, 3);
+  run(project, ["record-round", "--round", "3", "--raw", "0", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+  run(project, ["advance", "--to", "adjudication"]);
+  run(project, ["advance", "--to", "round_decision"]);
+  run(project, ["advance", "--to", "final_audit"]);
+
+  const statePath = path.join(project, ".review-evidence/state.json");
+  const state = () => JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(state().final_audit_attempt, 2);
+  assert.equal(state().final_audit.reentry_pending, true);
+  assertCommandFails(project, ["advance", "--to", "adjudication"]);
+  assertCommandFails(project, ["advance", "--to", "report"]);
+  assert.equal(state().current_phase, "final_audit");
+  assertCommandFails(project, ["finalize", "--status", "converged"]);
+
+  const audit2 = ".review-evidence/round-3/final-audit/attempt-2";
+  write(project, `${audit2}/blind-scan.md`, "# Blind Scan\n");
+  write(project, `${audit2}/targeted-review.md`, "# Targeted Review\n");
+  run(project, ["record-audit", "--attempt", "2", "--status", "complete", "--new-issues", "0", "--auditor", "test-auditor"]);
+  run(project, ["advance", "--to", "report"]);
+  run(project, ["finalize", "--status", "converged"]);
+
+  const initialAudit = makeProject();
+  setupTwoCleanRounds(initialAudit);
+  assertCommandFails(initialAudit, ["advance", "--to", "report"]);
+  const initialState = JSON.parse(fs.readFileSync(path.join(initialAudit, ".review-evidence/state.json"), "utf8"));
+  assert.equal(initialState.final_audit.reentry_pending, false);
+  assert.equal(initialState.current_phase, "final_audit");
 });
 
 test("accepted final-audit finding can trigger a new round and re-audit", () => {
