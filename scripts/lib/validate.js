@@ -98,6 +98,18 @@ function gitFileMatchesHead(project, file) {
   }
 }
 
+function gitCommitIsAncestor(project, commit) {
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", commit, "HEAD"], {
+      cwd: project,
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function verdictIsPass(markdown) {
   const lines = String(markdown).replace(/\r/g, "").split("\n");
   let value = "";
@@ -490,13 +502,18 @@ function validateFindingFiles(project, finding, errors) {
     if (!/^[0-9a-f]{7,40}$/i.test(finding.commit)) {
       errors.push(`${label}: commit 不是合法 SHA`);
     } else {
+      let exists = true;
       try {
         execFileSync("git", ["cat-file", "-e", `${finding.commit}^{commit}`], {
           cwd: project,
           stdio: "ignore",
         });
       } catch {
+        exists = false;
         errors.push(`${label}: commit 不存在：${finding.commit}`);
+      }
+      if (exists && !gitCommitIsAncestor(project, finding.commit)) {
+        errors.push(`${label}: commit 不在当前 HEAD 历史中：${finding.commit}`);
       }
     }
   }
@@ -746,6 +763,7 @@ module.exports = {
   isAdjacentTestFile,
   isFormalTestFile,
   gitTracks,
+  gitCommitIsAncestor,
   gitFileMatchesHead,
   readHeadFile,
   verdictIsPass,

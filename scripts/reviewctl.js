@@ -56,6 +56,7 @@ const {
   isAdjacentTestFile,
   isFormalTestFile,
   gitTracks,
+  gitCommitIsAncestor,
   gitFileMatchesHead,
   readHeadFile,
   inside,
@@ -657,10 +658,12 @@ function commandRecordImplementation(flags) {
   if (status === "already_fixed" && commit !== "none") {
     if (!/^[0-9a-f]{7,40}$/i.test(commit)) fail("already_fixed 的 --commit 必须是合法 SHA");
     if (!commitExists(project, commit)) fail(`commit 不存在：${commit}`);
+    if (!gitCommitIsAncestor(project, commit)) fail(`already_fixed 的 commit 不在当前 HEAD 历史中：${commit}`);
   }
   if (status === "fixed") {
     if (!/^[0-9a-f]{7,40}$/i.test(commit)) fail("fixed 必须提供合法 --commit");
     if (!commitExists(project, commit)) fail(`commit 不存在：${commit}`);
+    if (!gitCommitIsAncestor(project, commit)) fail(`fixed 的 commit 不在当前 HEAD 历史中：${commit}`);
     const changed = execFileSync(
       "git",
       ["show", "--name-only", "--pretty=format:", commit],

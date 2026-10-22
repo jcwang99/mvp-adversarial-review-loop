@@ -861,6 +861,62 @@ test("already_fixed requires a tracked test file", () => {
   ], { expectFail: true });
 });
 
+test("repair commits must be reachable from HEAD", () => {
+  const project = makeProject();
+  init(project, 2);
+  const evidence = setupAcceptedFinding(project, {
+    id: "R1-F001-SEC", role: "SEC", original: "SEC-001", severity: "P1",
+    slug: "r1_f001_auth",
+  });
+  run(project, ["advance", "--to", "repair"]);
+  write(project, `${evidence}/implementation-result.md`, "# Implementation Result\n\n## RED Phase\nreproduced\n\n## GREEN Phase\nfixed\n");
+  write(project, "tests/fix.test.js", "// R1-F001-SEC baseline test\n");
+  execFileSync("git", ["add", "tests/fix.test.js"], { cwd: project });
+  execFileSync("git", ["commit", "-qm", "test(review): baseline R1-F001-SEC"], { cwd: project });
+
+  const worktree = path.join(os.tmpdir(), `reviewctl-external-${path.basename(project)}`);
+  try {
+  execFileSync("git", ["worktree", "add", "-q", "-b", "reviewctl-external-repair", worktree, "HEAD"], {
+    cwd: project,
+  });
+  write(worktree, "src/fix.js", "module.exports = 1;\n");
+  write(worktree, "tests/fix.test.js", "// R1-F001-SEC repair regression\n");
+  execFileSync("git", ["add", "src/fix.js", "tests/fix.test.js"], { cwd: worktree });
+  execFileSync("git", ["commit", "-qm", "fix(review): R1-F001-SEC external worktree"], { cwd: worktree });
+  const externalCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: worktree,
+    encoding: "utf8",
+  }).trim();
+
+  const fixed = run(project, [
+    "record-implementation", "--id", "R1-F001-SEC", "--status", "fixed",
+    "--commit", externalCommit, "--test", "tests/fix.test.js",
+  ], { expectFail: true });
+  assert.match(String(fixed.stderr), /HEAD|祖先/i);
+
+  const alreadyFixed = run(project, [
+    "record-implementation", "--id", "R1-F001-SEC", "--status", "already_fixed",
+    "--commit", externalCommit, "--test", "tests/fix.test.js",
+  ], { expectFail: true });
+  assert.match(String(alreadyFixed.stderr), /HEAD|祖先/i);
+
+  const findingsPath = path.join(project, ".review-evidence/findings.json");
+  const findings = JSON.parse(fs.readFileSync(findingsPath, "utf8"));
+  const finding = findings.findings.find((entry) => entry.id === "R1-F001-SEC");
+  finding.implementation_status = "fixed";
+  finding.test_files = ["tests/fix.test.js"];
+  finding.commit = externalCommit;
+  writeJson(project, ".review-evidence/findings.json", findings);
+  run(project, ["render"]);
+  const validation = run(project, ["validate"], { expectFail: true });
+  assert.match(String(validation.stderr), /HEAD|祖先/i);
+  } finally {
+    try {
+      execFileSync("git", ["worktree", "remove", "--force", worktree], { cwd: project });
+    } catch {}
+  }
+});
+
 test("verdict parsing requires an exact final pass", () => {
   assert.equal(verdictIsPass("**Final Verdict**: pass\n"), true);
   assert.equal(verdictIsPass("## Verdict\npass\n"), true);
