@@ -290,15 +290,24 @@ function commandNewInbox(flags) {
 function commandRecordRound(flags) {
   const project = projectRoot(flags);
   const { config, state, data } = loadAll(project);
-  if (state.current_phase !== "review") fail("record-round 只能在 review 阶段使用");
+  if (!["review", "adjudication"].includes(state.current_phase)) {
+    fail("record-round 只能在 review 或 adjudication 阶段使用");
+  }
   const roundNumber = intFlag(flags.round, "round");
   if (roundNumber !== state.current_round) fail(`round 必须是当前轮 ${state.current_round}`);
+  const entry = roundEntry(state, roundNumber);
+  if (!entry || entry.status !== "in_progress") {
+    fail(`第 ${roundNumber} 轮已完成或尚未启动，不能更改轮次计数`);
+  }
   const raw = intFlag(flags.raw, "raw");
   const duplicates = intFlag(flags.duplicates, "duplicates");
   const screened = intFlag(flags.screened, "screened");
   const newInScope = intFlag(flags["new-p0p1p2"], "new-p0p1p2");
   if (raw < duplicates + screened) fail("raw 不能小于 duplicates + screened");
-  const entry = ensureRound(state, roundNumber);
+  const computed = computedNewInScope(data, roundNumber);
+  if (newInScope < computed) {
+    fail(`第 ${roundNumber} 轮记录的新 P0/P1/P2 数量 (${newInScope}) 小于 findings.json 中的 ${computed}`);
+  }
   entry.raw_candidates = raw;
   entry.duplicates = duplicates;
   entry.screened_out = screened;

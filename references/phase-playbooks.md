@@ -11,7 +11,7 @@
 | 初始化/确认 max_rounds | `reviewctl init --max-rounds N --user-confirmed`（或 `--interactive`） |
 | 查看/校验 | `reviewctl status`、`reviewctl validate` |
 | 创建评审 inbox | `reviewctl new-inbox --round N --role SEC --temp-id SEC-001` |
-| 记录轮次计数 | `reviewctl record-round --round N --raw N --duplicates N --screened N --new-p0p1p2 N` |
+| 记录/修订轮次计数 | `reviewctl record-round --round N --raw N --duplicates N --screened N --new-p0p1p2 N`（review 或 adjudication 中仅限当前未完成轮次）|
 | 记录 finding | `reviewctl record-finding --id ... --decision ... [--source final-audit --audit-attempt K]` |
 | 记录实现/验证 | `reviewctl record-implementation ... [--manual] [--status prepared|blocked|cannot_fix --reason ...]`、`reviewctl record-verification ... [--merged-test PATH ...]` |
 | 下一个 finding | `reviewctl next-finding` |
@@ -61,6 +61,8 @@
 - 要求代理记录 `uncovered_paths` 和 `blockers`；没有发现时返回 `findings: []`，不要用偏好凑数。
 
 **完成后**：运行 `reviewctl record-round --round N --raw N --duplicates N --screened N --new-p0p1p2 N`，再运行 `reviewctl advance --to adjudication`。
+
+若裁决使 finding 升级至 P0/P1/P2，在 adjudication 阶段重新运行 `record-round` 修订当前轮计数。该计数不得小于 `findings.json` 中本轮未 rejected 的 P0/P1/P2 数；已完成轮次不可修订。
 
 ## 2. adjudication
 

@@ -323,6 +323,38 @@ test("accepted finding requires evidence before it is recorded", () => {
   run(project, ["advance", "--to", "repair"]);
 });
 
+test("adjudication can revise current-round counts after a P3 candidate is upgraded to deferred P2", () => {
+  const project = makeProject();
+  init(project, 2);
+  run(project, ["advance", "--to", "review"]);
+  addRoundHandoffs(project, 1);
+  run(project, ["record-round", "--round", "1", "--raw", "1", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+  run(project, ["advance", "--to", "adjudication"]);
+
+  const evidence = ".review-evidence/round-1/R1-F001-FUNC";
+  write(project, `${evidence}/counterexample.md`, "# Counterexample\\n");
+  write(project, `${evidence}/adjudication.md`, "# Adjudication\\n\\n## Decision\\n**Status**: deferred\\n");
+  write(project, `${evidence}/replay-review.md`, "# Replay Review\\n\\n**Status**: reproduced\\n");
+  write(project, `${evidence}/reproduce.test.js`, "// repro\\n");
+  const findingArgs = ["record-finding", "--id", "R1-F001-FUNC", "--role", "FUNC", "--original-id", "FUNC-001", "--severity", "P3", "--decision", "deferred", "--reproduced", "true", "--reproduction-status", "reproduced", "--evidence-dir", evidence, "--change-origin", "pre-existing", "--deferred-reason", "limited repair capacity", "--disposition-plan", "address in the next release"];
+  run(project, findingArgs);
+  findingArgs[findingArgs.indexOf("P3")] = "P2";
+  run(project, findingArgs);
+
+  const blockedAdvance = run(project, ["advance", "--to", "round_decision"], { expectFail: true });
+  assert.match(String(blockedAdvance.stderr), /record-round 计数/);
+  const undercount = run(project, ["record-round", "--round", "1", "--raw", "1", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"], { expectFail: true });
+  assert.match(String(undercount.stderr), /小于 findings.json 中的 1/);
+  run(project, ["record-round", "--round", "1", "--raw", "1", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "1"]);
+  run(project, ["advance", "--to", "round_decision"]);
+  const state = JSON.parse(fs.readFileSync(path.join(project, ".review-evidence/state.json"), "utf8"));
+  assert.equal(state.current_phase, "round_decision");
+  assert.equal(state.rounds[0].new_in_scope_p0p1p2, 1);
+  const completedRoundEdit = run(project, ["record-round", "--round", "1", "--raw", "1", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"], { expectFail: true });
+  assert.match(String(completedRoundEdit.stderr), /只能在 review 或 adjudication/);
+  run(project, ["validate"]);
+});
+
 test("full happy path reaches converged", () => {
   const project = makeProject();
   init(project, 2);
