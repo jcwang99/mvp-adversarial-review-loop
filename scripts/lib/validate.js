@@ -18,6 +18,7 @@ const {
   validateFindings,
 } = require("./state");
 const { verifyViews } = require("./render");
+const { wasAuthorized } = require("./authorization");
 
 const TEST_SUFFIX =
   /(?:\.test\.[a-z0-9]+|\.spec\.[a-z0-9]+|_test\.[a-z0-9]+|_spec\.[a-z0-9]+|Test\.[a-z0-9]+|\.rs)$/i;
@@ -799,21 +800,11 @@ function validateProject(project, config, state, data) {
       errors.push(`${finding.id}: accepted ${finding.severity} 未标记必须挑战`);
     }
     if (finding.challenge_result === "skipped") {
-      const authorized = state.authorizations.some(
-        (authorization) =>
-          authorization.action === "skip-mandatory-challenge" &&
-          authorization.decision === "authorized" &&
-          (!authorization.scope || authorization.scope === finding.id)
-      );
+      const authorized = wasAuthorized(state, "skip-mandatory-challenge", finding.id, finding.authorization_receipts);
       if (!authorized) errors.push(`${finding.id}: 跳过挑战缺少用户授权记录`);
     }
     if (finding.reproduced_by === "main-agent") {
-      const authorized = state.authorizations.some(
-        (authorization) =>
-          authorization.action === "main-agent-reproduction" &&
-          authorization.decision === "authorized" &&
-          (!authorization.scope || authorization.scope === finding.id)
-      );
+      const authorized = wasAuthorized(state, "main-agent-reproduction", finding.id, finding.authorization_receipts);
       if (!authorized) errors.push(`${finding.id}: 主代理复现缺少该 finding 的用户授权记录`);
       const adjudicationPath = path.join(
         path.resolve(project, finding.evidence_dir),
@@ -824,12 +815,7 @@ function validateProject(project, config, state, data) {
       }
     }
     if (finding.verified_by === "main-agent") {
-      const authorized = state.authorizations.some(
-        (authorization) =>
-          authorization.action === "main-agent-verification" &&
-          authorization.decision === "authorized" &&
-          (!authorization.scope || authorization.scope === finding.id)
-      );
+      const authorized = wasAuthorized(state, "main-agent-verification", finding.id, finding.authorization_receipts);
       if (!authorized) errors.push(`${finding.id}: 主代理验证缺少该 finding 的用户授权记录`);
       const verificationPath = path.join(
         path.resolve(project, finding.evidence_dir),

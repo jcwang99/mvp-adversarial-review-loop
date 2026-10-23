@@ -50,6 +50,7 @@ const {
   convergenceReasons,
 } = require("./lib/state");
 const { writeViews } = require("./lib/render");
+const { hasAuthorization, authorizationReceipt } = require("./lib/authorization");
 const {
   validateProject,
   validateInbox,
@@ -328,14 +329,6 @@ function findingById(data, id) {
   return data.findings.find((finding) => finding.id === id) || null;
 }
 
-function hasAuthorization(state, action, findingId = null) {
-  return state.authorizations.some(
-    (authorization) =>
-      authorization.action === action &&
-      authorization.decision === "authorized" &&
-      (!findingId || !authorization.scope || authorization.scope === findingId)
-  );
-}
 
 function hasFormalReproduction(project, round, number) {
   const dir = path.join(project, "tests/review/reproductions");
@@ -613,6 +606,10 @@ function commandRecordFinding(flags) {
     challenge_required: challengeRequired,
     challenge_result: challengeResult,
     reproduced_by: reproducedBy,
+    authorization_receipts: {
+      ...(reproducedBy === "main-agent" ? { "main-agent-reproduction": authorizationReceipt(state, "main-agent-reproduction", id) } : {}),
+      ...(challengeResult === "skipped" ? { "skip-mandatory-challenge": authorizationReceipt(state, "skip-mandatory-challenge", id) } : {}),
+    },
     change_origin: changeOrigin,
     needs_evidence_clarity: needsClarity,
     deferred_reason: deferredReason,
@@ -842,6 +839,11 @@ function commandRecordVerification(flags) {
   }
   finding.verification = status;
   finding.verified_by = verifiedBy;
+  finding.authorization_receipts = { ...finding.authorization_receipts };
+  delete finding.authorization_receipts["main-agent-verification"];
+  if (verifiedBy === "main-agent") {
+    finding.authorization_receipts["main-agent-verification"] = authorizationReceipt(state, "main-agent-verification", id);
+  }
   finding.adjacent_tests = adjacentTests.map((file) => String(file).replace(/\\/g, "/"));
   finding.adjacent_reason = adjacentReason;
   finding.merged_tests = mergedTests.map((file) => String(file).replace(/\\/g, "/"));

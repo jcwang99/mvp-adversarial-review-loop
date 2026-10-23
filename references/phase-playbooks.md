@@ -18,6 +18,8 @@
 | 标记未解决 | `reviewctl mark-unresolved --id ID --reason TEXT`（repair 阶段用于 blocked/cannot_fix） |
 | 记录终审 | `reviewctl record-audit --attempt N --status complete|failed --new-issues N --auditor NAME` |
 | 授权留痕 | `reviewctl authorize --action NAME --decision authorized 或 declined` |
+
+授权按追加顺序取最后一条适用记录（全局或相同 finding 的 `--scope`）；其他 scope 不影响本项。`declined` 撤销后续动作权限，重新授权后才能再次登记。登记动作时保存授权日志位置、摘要和时间，后续撤销不追溯否定合法完成的动作。旧数据没有此凭据时，仅接受从未出现适用拒绝的明确授权历史；有歧义时需重新取得授权并重新执行、登记动作。
 | 阶段转移 | `reviewctl advance --to PHASE` |
 | 覆盖率/收尾 | `reviewctl coverage`、`reviewctl finalize --status ...` |
 | 状态修复 | `reviewctl normalize`（重算派生字段） |

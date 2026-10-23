@@ -2,6 +2,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
+const { validAuthorization } = require("./authorization");
+
 const SCHEMA_VERSION = 1;
 
 const PHASES = [
@@ -296,6 +298,7 @@ function validateState(state, config) {
   }
   if (!Array.isArray(state.blockers)) errors.push("blockers 必须是数组");
   if (!Array.isArray(state.authorizations)) errors.push("authorizations 必须是数组");
+  else if (!state.authorizations.every(validAuthorization)) errors.push("authorizations 包含非法记录");
   if (!Array.isArray(state.rounds)) errors.push("rounds 必须是数组");
   if (state.repair_baseline_staged !== undefined && !Array.isArray(state.repair_baseline_staged)) {
     errors.push("repair_baseline_staged 必须是数组");
