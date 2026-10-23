@@ -33,6 +33,7 @@ node <skill-dir>/scripts/reviewctl.js validate
 - **不要在第 1 轮后就结束**：至少需要 2 轮常规评审。
 - **检查当前轮是否完成**：所有 accepted findings 是否已终结（verified / blocked_by_user_changes / 已登记未解决）。
 - **检查是否该进入最终审计**：按 SKILL.md 的轮次策略和收敛判定。
+- **检查更早轮次 deferred**：在 adjudication 阶段，所有更早轮次的 deferred 是否已逐条记录本轮结论（include / continue / reject）及理由；遗漏时 `advance` 会拒绝。
 - 未解决的验证阻塞（inconclusive，不含 blocked_by_user_changes）不阻止终审执行，但结论只能为 INCOMPLETE。
 
 ### 3. 确认是否需要委派子代理
@@ -62,6 +63,7 @@ node <skill-dir>/scripts/reviewctl.js validate
 | 自己做评审 | 主代理自己读代码、写 counterexample | 委派至少 3 个评审子代理 |
 | 修复后不验证 | 实现完成后直接进入下一个 finding | 每个修复后必须委派独立验证代理 |
 | 跳过 adjudication | 评审完成后直接进入 repair 或 round_decision | 先筛查、去重、独立复现、必要挑战 |
+| 忘记复核上一轮 deferred | 只在 disposition_plan 写“下一轮处理”，之后再没看 | 在 adjudication 逐条记录 include / continue / reject 及理由；`advance` 会强制检查 |
 | 忘记更新状态 | 完成阶段后没有更新状态 | 用 `reviewctl advance` / `record-*` |
 | 手改生成文件 | 直接编辑 run-state.md 或 findings-index.md | 运行 `reviewctl render` |
 | 校验失败就手改 JSON | 直接编辑 `state.json` | 先运行 `reviewctl normalize`，仍失败再按错误修复 |

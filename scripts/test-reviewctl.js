@@ -157,6 +157,35 @@ function setupAcceptedFinding(project, { id, role, original, severity, slug }) {
   return evidence;
 }
 
+function setupDeferredFinding(project, { id = "R1-F001-PERF", role = "PERF", original = "PERF-001", severity = "P2", slug = "perf" } = {}) {
+  run(project, ["advance", "--to", "review"]);
+  addRoundHandoffs(project, 1);
+  run(project, ["record-round", "--round", "1", "--raw", "1", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", severity === "P3" ? "0" : "1"]);
+  run(project, ["advance", "--to", "adjudication"]);
+  const evidence = `.review-evidence/round-1/${id}`;
+  write(project, `${evidence}/counterexample.md`, "# Counterexample\n");
+  write(project, `${evidence}/adjudication.md`, "# Adjudication\n\n## Decision\n**Status**: deferred\n");
+  write(project, `${evidence}/replay-review.md`, "# Replay Review\n\n**Status**: reproduced\n");
+  write(project, `${evidence}/reproduce.test.js`, "// repro\n");
+  const args = [
+    "record-finding", "--id", id, "--role", role, "--original-id", original,
+    "--severity", severity, "--decision", "deferred", "--reproduced", "true",
+    "--reproduction-status", "reproduced", "--evidence-dir", evidence,
+    "--change-origin", "pre-existing", "--deferred-reason", "limited repair capacity",
+    "--disposition-plan", "address in the next release",
+  ];
+  run(project, args);
+  run(project, ["advance", "--to", "round_decision"]);
+  return { evidence, args, slug };
+}
+
+function startAdjudication(project, round) {
+  run(project, ["advance", "--to", "review"]);
+  addRoundHandoffs(project, round);
+  run(project, ["record-round", "--round", String(round), "--raw", "0", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+  run(project, ["advance", "--to", "adjudication"]);
+}
+
 function setupTwoCleanRounds(project) {
   init(project, 2);
   for (const round of [1, 2]) {
@@ -381,6 +410,86 @@ test("adjudication can revise current-round counts after a P3 candidate is upgra
   const completedRoundEdit = run(project, ["record-round", "--round", "1", "--raw", "1", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"], { expectFail: true });
   assert.match(String(completedRoundEdit.stderr), /只能在 review 或 adjudication/);
   run(project, ["validate"]);
+});
+
+test("prior-round deferred must be reviewed before leaving adjudication", () => {
+  const project = makeProject();
+  init(project, 3);
+  const { args } = setupDeferredFinding(project);
+  startAdjudication(project, 2);
+
+  const blocked = run(project, ["advance", "--to", "round_decision"], { expectFail: true });
+  assert.match(String(blocked.stderr), /deferred.*复核|复核.*deferred/i);
+
+  const missing = run(project, args, { expectFail: true });
+  assert.match(String(missing.stderr), /deferred-review/);
+
+  run(project, [
+    ...args,
+    "--deferred-review-action", "continue",
+    "--deferred-review-reason", "still deferred this round",
+  ]);
+  run(project, ["advance", "--to", "round_decision"]);
+
+  const data = JSON.parse(fs.readFileSync(path.join(project, ".review-evidence/findings.json"), "utf8"));
+  assert.equal(data.findings.length, 1);
+  assert.equal(data.findings[0].decision, "deferred");
+  assert.equal(data.findings[0].deferred_review_action, "continue");
+  assert.equal(data.findings[0].deferred_review_round, 2);
+  assert.equal(data.findings[0].deferred_review_reason, "still deferred this round");
+});
+
+test("prior-round deferred can be included without duplicating the finding", () => {
+  const project = makeProject();
+  init(project, 2);
+  const { evidence } = setupDeferredFinding(project);
+  startAdjudication(project, 2);
+
+  const before = JSON.parse(fs.readFileSync(path.join(project, ".review-evidence/findings.json"), "utf8")).findings[0];
+  write(project, `${evidence}/adjudication.md`, "# Adjudication\n\n## Decision\n**Status**: accepted\n");
+  write(project, "tests/review/reproductions/r1_f001_perf.test.js", "// formal repro\n");
+  run(project, [
+    "record-finding", "--id", "R1-F001-PERF", "--role", "PERF", "--original-id", "PERF-001",
+    "--severity", "P2", "--decision", "accepted", "--reproduced", "true",
+    "--reproduction-status", "reproduced", "--evidence-dir", evidence,
+    "--change-origin", "pre-existing",
+    "--deferred-review-action", "include",
+    "--deferred-review-reason", "now worth fixing this round",
+  ]);
+  run(project, ["advance", "--to", "repair"]);
+
+  const data = JSON.parse(fs.readFileSync(path.join(project, ".review-evidence/findings.json"), "utf8"));
+  assert.equal(data.findings.length, 1);
+  assert.equal(data.findings[0].id, "R1-F001-PERF");
+  assert.equal(data.findings[0].created_at, before.created_at);
+  assert.equal(data.findings[0].decision, "accepted");
+  assert.equal(data.findings[0].deferred_review_action, "include");
+  assert.equal(data.findings[0].deferred_review_round, 2);
+});
+
+test("prior-round deferred can be rejected with counter-evidence", () => {
+  const project = makeProject();
+  init(project, 2);
+  const { evidence } = setupDeferredFinding(project);
+  startAdjudication(project, 2);
+
+  write(project, `${evidence}/adjudication.md`, "# Adjudication\n\n## Decision\n**Status**: rejected\n");
+  write(project, `${evidence}/replay-review.md`, "# Replay Review\n\n**Status**: not-reproduced\n");
+  run(project, [
+    "record-finding", "--id", "R1-F001-PERF", "--role", "PERF", "--original-id", "PERF-001",
+    "--severity", "P2", "--decision", "rejected", "--reproduced", "false",
+    "--reproduction-status", "not-reproduced", "--evidence-dir", evidence,
+    "--change-origin", "pre-existing",
+    "--deferred-review-action", "reject",
+    "--deferred-review-reason", "counter-evidence invalidated the claim",
+  ]);
+  run(project, ["advance", "--to", "round_decision"]);
+
+  const data = JSON.parse(fs.readFileSync(path.join(project, ".review-evidence/findings.json"), "utf8"));
+  assert.equal(data.findings.length, 1);
+  assert.equal(data.findings[0].decision, "rejected");
+  assert.equal(data.findings[0].deferred_review_action, "reject");
+  assert.equal(data.findings[0].deferred_review_round, 2);
 });
 
 test("full happy path reaches converged", () => {

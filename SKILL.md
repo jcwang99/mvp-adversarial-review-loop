@@ -38,6 +38,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 10. **轮次有界**：最少 2 轮常规评审，最多 `max_rounds`（默认 5，最小 2）；最终审计不计入轮次，但终审触发的新常规轮计入。
 11. **手工与阻塞 finding**：确实无法自动化时用 `reviewctl record-implementation --id ID --status fixed --manual`，并在验证中提供独立人工复测；用户改动导致无法提交时运行 `reviewctl record-implementation --id ID --status prepared --reason "user changes conflict"`，再运行 `record-verification --status blocked_by_user_changes`；无法修复时运行 `reviewctl record-implementation --id ID --status cannot_fix --reason "REASON"`，环境或依赖阻塞时运行 `reviewctl record-implementation --id ID --status blocked --reason "REASON"`，然后登记未解决或进入 `adjudication` 重新裁决。本流程要求 Git（commit、worktree、guard-commit）；无 Git 时不得启动。
 12. **编译缓存与磁盘预算**：长编译项目应在 baseline 预热，并在 `baseline.md` 记录的磁盘预算内复用共享缓存；不要为每个 finding 重建依赖或创建独立 target。缓存超过预算或磁盘紧张时，在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建。短编译项目不强制引入缓存层。
+13. **复核更早轮次的 deferred**：每轮 adjudication 必须对更早轮次所有 `deferred` finding 逐条给出本轮结论（`include` / `continue` / `reject`）并记录理由，使用 `record-finding --deferred-review-action ... --deferred-review-reason ...`；遗漏时 `advance` 会拒绝。`continue` 保持 deferred，`include` 改为 accepted 并进入本轮修复，`reject` 改为 rejected（需反证）。
 
 ## 2. 阶段状态机
 
@@ -45,7 +46,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 |-------|--------------|----------|------|
 | `baseline` | 确认范围/验收/max_rounds，初始化证据，隔离临时测试，部署恢复指南 | 无 | `review` |
 | `review` | 选角色、定范围、建 inbox | 至少 3 个独立评审代理，串行 | `adjudication` |
-| `adjudication` | 筛查、去重、分配标准 ID、检查证据、裁决 | 独立复现审查代理；必须范围内的挑战代理；必要时补强代理 | 有 accepted → `repair`；否则 → `round_decision` |
+| `adjudication` | 筛查、去重、分配标准 ID、检查证据、裁决、复核更早轮次 deferred | 独立复现审查代理；必须范围内的挑战代理；必要时补强代理 | 有 accepted → `repair`；否则 → `round_decision` |
 | `repair` | 一次一个 finding，检查 RED 和提交 | 实现代理 | `verification`；`cannot_fix`/`blocked` 时进入 `adjudication` 重新裁决，或登记未解决后 `round_decision` |
 | `verification` | 检查证据、更新 finding 状态 | 验证代理（不能是实现者） | 下一个 finding；fail 回到 `repair`；回归问题进入 `adjudication`；全部终结后 `round_decision` |
 | `round_decision` | 计数、判断提前收敛/轮次上限 | 无 | 下一轮 `review`、`final_audit`，或终审后的 `report` |

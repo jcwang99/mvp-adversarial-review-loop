@@ -12,7 +12,7 @@
 | 查看/校验 | `reviewctl status`、`reviewctl validate` |
 | 创建评审 inbox | `reviewctl new-inbox --round N --role SEC --temp-id SEC-001` |
 | 记录/修订轮次计数 | `reviewctl record-round --round N --raw N --duplicates N --screened N --new-p0p1p2 N`（review 或 adjudication 中仅限当前未完成轮次）|
-| 记录 finding | `reviewctl record-finding --id ... --decision ... [--source final-audit --audit-attempt K]` |
+| 记录 finding | `reviewctl record-finding --id ... --decision ... [--source final-audit --audit-attempt K] [--deferred-review-action include|continue|reject --deferred-review-reason TEXT]` |
 | 记录实现/验证 | `reviewctl record-implementation --id ID --status fixed --commit SHA --test PATH`、`reviewctl record-implementation --id ID --status already_fixed --commit SHA --test PATH`、`reviewctl record-implementation --id ID --status prepared --reason "REASON"`、`reviewctl record-implementation --id ID --status blocked --reason "REASON"`、`reviewctl record-implementation --id ID --status cannot_fix --reason "REASON"`（手工 finding 加 `--manual`）；`reviewctl record-verification ... [--merged-test PATH ...]` |
 | 下一个 finding | `reviewctl next-finding` |
 | 标记未解决 | `reviewctl mark-unresolved --id ID --reason TEXT`（repair 阶段用于 blocked/cannot_fix） |
@@ -176,6 +176,32 @@
 - blocked 或证据不足：needs-evidence，列出所需证据；可派补强代理修正小瑕疵。
 - 补强失败不能证明 finding 不存在；不能仅因补强失败而 rejected。
 - deferred 必须记录原因（如资源限制、优先级排序、等待外部依赖、需要架构重构）和后续处置建议（如下一轮修复、建议在 vX.Y 修复、等待依赖升级），并在最终报告披露。
+
+#### 2.4.1 更早轮次 deferred 复核
+
+每轮 adjudication 开始时，主代理读取 `findings.json`，找出所有 `decision=deferred` 且 ID 轮次小于 `current_round` 的 finding，逐条给出本轮结论。不能只在上一轮的 `disposition_plan` 里写“下一轮处理”就跳过。
+
+对每条 finding，使用原标准 ID、原证据目录和原 `--original-id` 重新运行 `record-finding`，不要新建 finding 或复制证据目录：
+
+| 结论 | 状态处理 | 必填参数 |
+|------|----------|----------|
+| `include` | 改 `accepted`，进入本轮 repair | `--decision accepted --reproduced true --reproduction-status reproduced --deferred-review-action include --deferred-review-reason TEXT` |
+| `continue` | 保持 `deferred` | `--decision deferred --deferred-reason TEXT --disposition-plan TEXT --deferred-review-action continue --deferred-review-reason TEXT` |
+| `reject` | 改 `rejected` | `--decision rejected --reproduced false --reproduction-status not-reproduced --deferred-review-action reject --deferred-review-reason TEXT` |
+
+例如把上一轮的 deferred 纳入本轮：
+
+```bash
+reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
+  --severity P2 --decision accepted --reproduced true --reproduction-status reproduced \
+  --evidence-dir .review-evidence/round-1/R1-F001-PERF --change-origin pre-existing \
+  --deferred-review-action include --deferred-review-reason "本轮纳入修复"
+```
+
+- 同步更新原 finding 的 `adjudication.md`：`include` 改为 `accepted`，`reject` 改为 `rejected`，`continue` 保持 `deferred`；`reject` 还必须在 `replay-review.md` 记录新的反证。
+- `include` 后需要正式复现测试才能进入 repair。先检查 `tests/review/reproductions/` 是否已有 `r{轮次}_f{编号}_*`；上一轮 accepted 的测试会保留，存在就直接复用，不要重新生成。仅当该文件确实不存在时，才从 finding 目录的 `reproduce.*` 恢复为 `tests/review/reproductions/r{轮次}_f{编号}_{slug}{后缀}`，或提供 `manual-steps.md`。不要清空 `tests/review/` 中其他 finding 的测试。
+- 脚本在离开 adjudication 前检查：所有更早轮次的 deferred 必须有 `deferred_review_round = current_round`、合法 action 和理由；否则 `advance --to repair` / `--to round_decision` 会拒绝。
+- 本轮新产生的 deferred 不要求本轮复核，从下一轮 adjudication 开始检查。
 
 ### 2.5 挑战（必须挑战范围）
 

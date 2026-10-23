@@ -10,6 +10,7 @@ const {
   PHASES,
   TRANSITIONS,
   DECISIONS,
+  DEFERRED_REVIEW_ACTIONS,
   VERIFICATIONS,
   SEVERITIES,
   CHANGE_ORIGINS,
@@ -473,6 +474,29 @@ function commandRecordFinding(flags) {
   if (decision === "deferred" && (!deferredReason || !dispositionPlan)) {
     fail("deferred 必须提供 --deferred-reason 和 --disposition-plan");
   }
+  const deferredReviewAction = stringFlag(flags, "deferred-review-action", { fallback: null });
+  const deferredReviewReason = stringFlag(flags, "deferred-review-reason", { fallback: null });
+  const isPriorDeferred =
+    Boolean(existingFinding) &&
+    existingFinding.decision === "deferred" &&
+    Number(match[1]) < state.current_round;
+  if (isPriorDeferred) {
+    if (!deferredReviewAction) {
+      fail(`${id}: 复核更早轮次的 deferred 必须提供 --deferred-review-action include|continue|reject`);
+    }
+    if (!DEFERRED_REVIEW_ACTIONS.includes(deferredReviewAction)) {
+      fail("deferred-review-action 必须是 include、continue 或 reject");
+    }
+    if (!deferredReviewReason) {
+      fail(`${id}: 复核更早轮次的 deferred 必须提供 --deferred-review-reason`);
+    }
+    const expectedDecision = { include: "accepted", continue: "deferred", reject: "rejected" }[deferredReviewAction];
+    if (decision !== expectedDecision) {
+      fail(`${id}: deferred-review-action=${deferredReviewAction} 需要 --decision ${expectedDecision}`);
+    }
+  } else if (deferredReviewAction || deferredReviewReason) {
+    fail("--deferred-review-action/--deferred-review-reason 只能用于复核更早轮次的 deferred finding");
+  }
 
   const challengeFlag = boolFlag(flags["challenge-required"], "challenge-required");
   const challengeRequired =
@@ -545,6 +569,10 @@ function commandRecordFinding(flags) {
       unresolved: false,
       unresolved_reason: null,
       verified_at: null,
+      deferred_review_action: null,
+      deferred_review_reason: null,
+      deferred_review_round: null,
+      deferred_reviewed_at: null,
       created_at: now(),
     };
     data.findings.push(finding);
@@ -591,6 +619,12 @@ function commandRecordFinding(flags) {
     merge_conflict: boolFlag(flags["merge-conflict"], "merge-conflict", false),
     updated_at: now(),
   });
+  if (isPriorDeferred) {
+    finding.deferred_review_action = deferredReviewAction;
+    finding.deferred_review_reason = deferredReviewReason;
+    finding.deferred_review_round = state.current_round;
+    finding.deferred_reviewed_at = now();
+  }
   persist(project, config, state, data);
   console.log(`${isNew ? "recorded" : "updated"} ${id}: ${decision}/${severity}`);
 }
@@ -959,6 +993,28 @@ function earlyConvergence(state) {
     .every((round) => round.new_in_scope_p0p1p2 === 0);
 }
 
+function validateDeferredReviews(state, data) {
+  const errors = [];
+  for (const finding of data.findings) {
+    if (finding.decision !== "deferred") continue;
+    const match = String(finding.id).match(FINDING_ID);
+    if (!match || Number(match[1]) >= state.current_round) continue;
+    if (finding.deferred_review_round !== state.current_round) {
+      errors.push(`${finding.id}: 更早轮次的 deferred 尚未在 round ${state.current_round} 给出复核结论`);
+      continue;
+    }
+    if (!DEFERRED_REVIEW_ACTIONS.includes(finding.deferred_review_action)) {
+      errors.push(`${finding.id}: deferred 复核结论非法`);
+    } else if (finding.deferred_review_action !== "continue") {
+      errors.push(`${finding.id}: deferred 复核结论为 ${finding.deferred_review_action}，但 decision 仍是 deferred`);
+    }
+    if (!finding.deferred_review_reason) {
+      errors.push(`${finding.id}: deferred 复核缺少理由`);
+    }
+  }
+  return errors;
+}
+
 function commandAdvance(flags) {
   const project = projectRoot(flags);
   const { config, state, data } = loadAll(project);
@@ -970,6 +1026,11 @@ function commandAdvance(flags) {
     fail(`非法状态转移：${state.current_phase} -> ${target}`);
   }
   const from = state.current_phase;
+
+  if (from === "adjudication") {
+    const deferredErrors = validateDeferredReviews(state, data);
+    if (deferredErrors.length) fail(deferredErrors.join("; "));
+  }
 
   if (from === "baseline" && target === "review") {
     const errors = validateConfig(config);
@@ -1406,6 +1467,7 @@ function usage() {
   new-inbox --round N --role SEC --temp-id SEC-001
   record-round --round N --raw N --duplicates N --screened N --new-p0p1p2 N
   record-finding --id R1-F001-SEC --role SEC --original-id SEC-001 --severity P1 --decision accepted --reproduced true --reproduction-status reproduced --evidence-dir ... [--challenge-required true --challenge-result supports] [--reproduced-by agent|main-agent]
+  record-finding --id R1-F001-PERF ... --deferred-review-action include|continue|reject --deferred-review-reason TEXT  # 复核更早轮次的 deferred
   record-implementation --id ID --status fixed --commit SHA --test PATH
   record-verification --id ID --status pass [--adjacent-test PATH ...] [--verified-by agent|main-agent]
   next-finding
@@ -1426,6 +1488,7 @@ record-finding 必填：--reproduction-status reproduced|not-reproduced|blocked|
   accepted/deferred/rejected 需要目录内有 replay-review.md；
   P2/P3 needs-evidence 需要 --needs-evidence-clarity clear_claim_lacking_env|unclear_claim；
   deferred 需要 --deferred-reason 和 --disposition-plan；
+  复核更早轮次的 deferred 必须提供 --deferred-review-action include|continue|reject 和 --deferred-review-reason；
   final-audit finding 需要 --source final-audit --audit-attempt K。
 record-implementation 额外支持 --status prepared|blocked|cannot_fix --reason TEXT，以及 --manual。
 record-verification 额外支持 --adjacent-reason TEXT、--merged-test PATH ...、--unresolved-reason TEXT。`);

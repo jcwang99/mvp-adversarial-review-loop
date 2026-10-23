@@ -35,6 +35,7 @@ const STATUSES = [
 ];
 
 const DECISIONS = ["accepted", "deferred", "rejected", "needs-evidence"];
+const DEFERRED_REVIEW_ACTIONS = ["include", "continue", "reject"];
 const VERIFICATIONS = [
   "pending",
   "pass",
@@ -425,6 +426,17 @@ function validateFindings(data) {
       if (!finding.deferred_reason) errors.push(`${label}: deferred 必须记录 deferred_reason`);
       if (!finding.disposition_plan) errors.push(`${label}: deferred 必须记录 disposition_plan`);
     }
+    if (finding.deferred_review_action !== undefined && finding.deferred_review_action !== null) {
+      if (!DEFERRED_REVIEW_ACTIONS.includes(finding.deferred_review_action)) {
+        errors.push(`${label}: deferred_review_action 非法`);
+      }
+      if (!finding.deferred_review_reason) {
+        errors.push(`${label}: deferred 复核必须记录 deferred_review_reason`);
+      }
+      if (!Number.isInteger(finding.deferred_review_round) || finding.deferred_review_round < 1) {
+        errors.push(`${label}: deferred 复核必须记录 deferred_review_round`);
+      }
+    }
     if (finding.decision === "needs-evidence") {
       if (finding.reproduced !== false) errors.push(`${label}: needs-evidence 不能标记为已复现`);
       if (!["blocked", "not_run"].includes(finding.reproduction_status)) {
@@ -604,6 +616,7 @@ module.exports = {
   TRANSITIONS,
   STATUSES,
   DECISIONS,
+  DEFERRED_REVIEW_ACTIONS,
   VERIFICATIONS,
   SEVERITIES,
   CHANGE_ORIGINS,

@@ -217,7 +217,7 @@ required-features = ["adversarial-review"]
 
 每个评审角色使用唯一的 role-slug 目录，例如 security、functionality、api。临时 ID 只需在该角色目录内唯一。不同角色即使都使用 SEC-001，也不会写入同一路径。
 
-主代理记录纯偏好和明确不构成现存风险的范围/契约请求后，对剩余候选去重；只有进入 finding 生命周期的独立候选才分配标准 ID，并将其 inbox 目录移动到该轮目录下的标准 ID 目录。分配 ID 时同时将候选复现文件复制为标准 ID 目录中的 `reproduce.*`（tests/review/ 中的原始文件保留运行用，流程结束时删除；手工 finding 的 manual-steps.md 随 inbox 移动）。之后即使 decision 为 rejected、deferred 或 needs-evidence，也保留 ID 和索引行。重复候选不另分配标准 ID：保留其 inbox 目录，在索引和主 finding 记录中标注 deduplicated_with。
+主代理记录纯偏好和明确不构成现存风险的范围/契约请求后，对剩余候选去重；只有进入 finding 生命周期的独立候选才分配标准 ID，并将其 inbox 目录移动到该轮目录下的标准 ID 目录。分配 ID 时同时将候选复现文件复制为标准 ID 目录中的 `reproduce.*`（accepted 的原始文件保留到流程结束；rejected/needs-evidence/deferred 的候选临时测试按 `phase-playbooks.md` §2.7 处理，若仍保留则直接复用，`reproduce.*` 始终保留在 finding 目录；手工 finding 的 manual-steps.md 随 inbox 移动）。之后即使 decision 为 rejected、deferred 或 needs-evidence，也保留 ID 和索引行。重复候选不另分配标准 ID：保留其 inbox 目录，在索引和主 finding 记录中标注 deduplicated_with。
 
 经确认无法自动化的反例使用 manual-steps.md，并记录无法自动化的原因、前提、精确操作和观察点。自动化反例应保存完整可执行文件。完整命令输出保存在 finding 目录内，记录中引用路径并摘要关键结果。
 
@@ -253,7 +253,7 @@ required-features = ["adversarial-review"]
 | `rounds` | 每轮计数和角色 |
 | `final_audit` | 审计尝试和重入状态 |
 
-`findings.json` 每个 finding 至少包含：`id`、`original_ids`、`source`（`review` / `final-audit`）、`audit_attempt`、`role`、`severity`、`decision`、`verification`、`evidence_dir`、`reproduced`、`reproduced_by`、`reproduction_status`、`challenge_required`、`challenge_result`、`change_origin`、`implementation_status`、`manual`、`commit`、`test_files`、`verification_attempts`、`verified_by`、`adjacent_tests`、`adjacent_reason`、`merged_tests`、`unresolved`。
+`findings.json` 每个 finding 至少包含：`id`、`original_ids`、`source`（`review` / `final-audit`）、`audit_attempt`、`role`、`severity`、`decision`、`verification`、`evidence_dir`、`reproduced`、`reproduced_by`、`reproduction_status`、`challenge_required`、`challenge_result`、`change_origin`、`implementation_status`、`manual`、`commit`、`test_files`、`verification_attempts`、`verified_by`、`adjacent_tests`、`adjacent_reason`、`merged_tests`、`unresolved`。更早轮次的 deferred 被复核后还会记录 `deferred_review_action`（`include` / `continue` / `reject`）、`deferred_review_reason`、`deferred_review_round` 和 `deferred_reviewed_at`。
 
 **操作**：
 
@@ -329,6 +329,8 @@ node <skill-dir>/scripts/reviewctl.js render
 Decision 取 accepted、needs-evidence、rejected 或 deferred。验证结果单独取 pending、pass、fail、inconclusive 或 blocked_by_user_changes；只有 accepted 且 verification 为 pass 时，用户报告中才可称 verified（verified 是报告用词，不是 verification 枚举值）。verification 为 inconclusive 时仍是 accepted、未 verified，不是新的 decision 值。
 
 裁决理由、命令、输出、挑战过程、补强过程和验证细节写在对应 finding 目录的记录中。
+
+更早轮次的 deferred 在每轮 adjudication 都必须由主代理复核：用原 finding ID 调用 `record-finding`，并带 `--deferred-review-action include|continue|reject` 和 `--deferred-review-reason TEXT`。脚本把结论写入 `deferred_review_*` 字段；离开 adjudication 前若还有遗漏或 action/decision 不一致，`advance` 会拒绝。
 
 ## screening-log.md
 
