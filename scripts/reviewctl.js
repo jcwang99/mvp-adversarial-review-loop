@@ -590,7 +590,7 @@ function commandRecordFinding(flags) {
     finding.manual = false;
     finding.commit = null;
     finding.test_files = [];
-    finding.verification_attempts = 0;
+    // Re-adjudication changes the decision, not the lifetime repair budget.
     finding.unresolved = false;
     finding.unresolved_reason = null;
     finding.verified_at = null;
@@ -651,6 +651,7 @@ function commandRecordImplementation(flags) {
   if (!finding) fail(`finding 不存在：${id}`);
   if (finding.decision !== "accepted") fail(`${id} 不是 accepted`);
   if (state.active_finding !== id) fail(`active_finding 是 ${state.active_finding}，不是 ${id}`);
+  assertRepairBudget(finding);
   const status = stringFlag(flags, "status", { required: true });
   if (!["fixed", "already_fixed", "prepared", "blocked", "cannot_fix"].includes(status)) {
     fail("status 必须是 fixed、already_fixed、prepared、blocked 或 cannot_fix");
@@ -856,7 +857,7 @@ function commandNextFinding(flags) {
   const active = findingById(data, state.active_finding);
   if (!active) fail("active_finding 不存在");
   if (!isTerminal(active)) fail(`${active.id} 还未终结，不能切到下一个 finding`);
-  const pending = pendingAccepted(data).filter((finding) => finding.id !== active.id);
+  const pending = repairableAccepted(data).filter((finding) => finding.id !== active.id);
   if (!pending.length) fail("没有其他待修复的 accepted finding；运行 advance --to round_decision");
   state.active_finding = pending[0].id;
   state.repair_baseline_staged = stagedFiles(project);
@@ -868,8 +869,8 @@ function commandNextFinding(flags) {
 function commandMarkUnresolved(flags) {
   const project = projectRoot(flags);
   const { config, state, data } = loadAll(project);
-  if (!["repair", "verification", "round_decision"].includes(state.current_phase)) {
-    fail("mark-unresolved 只能在 repair、verification 或 round_decision 阶段使用");
+  if (!["repair", "verification", "round_decision", "adjudication"].includes(state.current_phase)) {
+    fail("mark-unresolved 只能在 repair、verification、round_decision 或 adjudication 阶段使用");
   }
   const id = String(stringFlag(flags, "id", { required: true })).toUpperCase();
   const finding = findingById(data, id);
@@ -881,7 +882,8 @@ function commandMarkUnresolved(flags) {
   const verificationBlocked =
     ["verification", "round_decision"].includes(state.current_phase) &&
     ["fail", "inconclusive"].includes(finding.verification);
-  if (!repairBlocked && !verificationBlocked) {
+  const exhausted = finding.verification_attempts >= 2;
+  if (!repairBlocked && !verificationBlocked && !exhausted) {
     fail(`${id}: repair 阶段只能标记 blocked/cannot_fix，验证阶段只能标记 fail/inconclusive`);
   }
   const reason = stringFlag(flags, "reason", { required: true });
@@ -951,6 +953,16 @@ function pendingAccepted(data) {
   return data.findings.filter(
     (finding) => finding.decision === "accepted" && !isTerminal(finding)
   );
+}
+
+function assertRepairBudget(finding) {
+  if (finding.verification_attempts >= 2) {
+    fail(`${finding.id}: 已达两次修复验证上限；登记 unresolved 或重新裁决，不得再次修复`);
+  }
+}
+
+function repairableAccepted(data) {
+  return pendingAccepted(data).filter((finding) => (finding.verification_attempts || 0) < 2);
 }
 
 function markRoundCompleted(state, round) {
@@ -1051,7 +1063,7 @@ function commandAdvance(flags) {
     const round = roundEntry(state, state.current_round);
     if (!round || round.raw_candidates === null) fail("先运行 reviewctl record-round 记录本轮计数");
     const inboxErrors = [];
-    validateInbox(project, inboxErrors);
+    validateInbox(project, inboxErrors, data);
     if (inboxErrors.length) fail(`inbox 校验失败：${inboxErrors.join("; ")}`);
     const roles = countHandoffRoles(project, state.current_round);
     if (roles.length < 3) fail(`本轮只有 ${roles.length} 个角色提交 handoff.json，至少需要 3 个`);
@@ -1060,7 +1072,7 @@ function commandAdvance(flags) {
     round.status = "in_progress";
     event(state, "adjudication", "筛查、去重并裁决候选 findings");
   } else if (from === "adjudication" && target === "repair") {
-    const pending = pendingAccepted(data);
+    const pending = repairableAccepted(data);
     const requested = stringFlag(flags, "finding", { fallback: null });
     let finding;
     if (requested) {
@@ -1070,6 +1082,7 @@ function commandAdvance(flags) {
       finding = pending[0];
     }
     if (!finding) fail("没有待修复的 accepted finding");
+    assertRepairBudget(finding);
     const match = finding.id.match(FINDING_ID);
     const evidenceDir = path.resolve(project, finding.evidence_dir);
     const manualAllowed = fs.existsSync(path.join(evidenceDir, "manual-steps.md"));
@@ -1092,6 +1105,7 @@ function commandAdvance(flags) {
   } else if (from === "repair" && target === "verification") {
     const finding = findingById(data, state.active_finding);
     if (!finding) fail("active_finding 不存在");
+    assertRepairBudget(finding);
     if (!["fixed", "already_fixed"].includes(finding.implementation_status)) {
       fail(`${finding.id}: 先运行 reviewctl record-implementation`);
     }
@@ -1136,7 +1150,7 @@ function commandAdvance(flags) {
       state.repair_baseline_staged = stagedFiles(project);
       event(state, "repair", `重新修复 ${finding.id}`);
     } else {
-      const pending = pendingAccepted(data).filter((item) => item.id !== finding.id);
+      const pending = repairableAccepted(data).filter((item) => item.id !== finding.id);
       if (!pending.length) fail("没有待修复的 accepted finding；应进入 round_decision");
       state.active_finding = pending[0].id;
       state.repair_baseline_staged = stagedFiles(project);

@@ -357,12 +357,123 @@ test("FUNC-001 preserves batched handoffs copied into canonical evidence", () =>
     return errors.join("; ");
   };
   assert.equal(check(), "");
+  // Agents may save their complete batch response in each candidate inbox.
+  writeHandoff(project, 1, "FUNC", "FUNC-002", batch.findings);
+  assert.equal(check(), "");
   // Removing only the original handoff exercises recovery from retained copies.
   fs.unlinkSync(path.join(project, inbox, "handoff.json"));
   assert.equal(check(), "");
   batch.findings[0].claim = "Conflicting copy";
   writeJson(project, ".review-evidence/round-1/R1-F002-FUNC/handoff.json", batch);
   assert.match(check(), /FUNC-001.*矛盾/);
+});
+
+test("OPS-001 permits documented candidate promotion without losing evidence", () => {
+  const project = makeProject();
+  init(project);
+  const id = "R1-F001-FUNC";
+  const evidence = setupAcceptedFinding(project, {
+    id, role: "FUNC", original: "FUNC-001", severity: "P2", slug: "r1_f001_promoted",
+  });
+  const inbox = ".review-evidence/round-1/inbox/functionality/FUNC-001";
+  const candidate = "tests/review/candidates/r1_func_001.test.js";
+  const handoff = JSON.parse(fs.readFileSync(path.join(project, inbox, "handoff.json")));
+  handoff.findings[0].reproduction_file = candidate;
+  writeJson(project, `${inbox}/handoff.json`, handoff);
+  write(project, candidate, "// durable reproduction\n");
+  run(project, ["validate"]);
+  fs.renameSync(path.join(project, candidate), path.join(project, "tests/review/reproductions/r1_f001_promoted.test.js"));
+  run(project, ["validate"]);
+  run(project, ["advance", "--to", "repair"]);
+  const promoted = path.join(project, "tests/review/reproductions/r1_f001_promoted.test.js");
+  fs.unlinkSync(promoted);
+  assert.match(String(run(project, ["validate"], { expectFail: true }).stderr), /复现测试/);
+  fs.writeFileSync(promoted, "// durable reproduction\n");
+  fs.unlinkSync(path.join(project, evidence, "reproduce.test.js"));
+  assert.match(String(run(project, ["validate"], { expectFail: true }).stderr), /reproduce|reproduction_file/);
+});
+
+test("OPS-001 permits adjudicated rejected candidate deletion but rejects lost provenance", () => {
+  const project = makeProject();
+  init(project);
+  run(project, ["advance", "--to", "review"]);
+  addRoundHandoffs(project, 1);
+  addCandidate(project, 1, "FUNC-001");
+  const inbox = ".review-evidence/round-1/inbox/functionality/FUNC-001";
+  const candidate = "tests/review/candidates/r1_func_001.test.js";
+  const handoff = JSON.parse(fs.readFileSync(path.join(project, inbox, "handoff.json")));
+  handoff.findings[0].reproduction_file = candidate;
+  writeJson(project, `${inbox}/handoff.json`, handoff);
+  write(project, candidate, "// candidate\n");
+  run(project, ["record-round", "--round", "1", "--raw", "1", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+  run(project, ["advance", "--to", "adjudication"]);
+  const id = recordRejectedCandidate(project, 1, 1, ["FUNC-001"]);
+  fs.unlinkSync(path.join(project, candidate));
+  run(project, ["advance", "--to", "round_decision"]);
+  run(project, ["validate"]);
+  fs.unlinkSync(path.join(project, `.review-evidence/round-1/${id}/reproduce.test.js`));
+  const failure = run(project, ["validate"], { expectFail: true });
+  assert.match(String(failure.stderr), /reproduction_file|reproduce/);
+});
+
+test("FUNC-002 preserves the repair limit through re-adjudication", () => {
+  const project = makeProject();
+  init(project);
+  const id = "R1-F001-FUNC";
+  const evidence = setupAcceptedFinding(project, { id, role: "FUNC", original: "FUNC-001", severity: "P2", slug: "r1_f001_retry" });
+  write(project, `${evidence}/implementation-result.md`, "# Manual implementation\nRED GREEN\n");
+  write(project, `${evidence}/verification-result.md`, "# Manual verification\n**Final Verdict**: fail\n");
+  run(project, ["advance", "--to", "repair"]);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) run(project, ["advance", "--to", "repair"]);
+    run(project, ["record-implementation", "--id", id, "--status", "already_fixed", "--manual"]);
+    run(project, ["advance", "--to", "verification"]);
+    run(project, ["record-verification", "--id", id, "--status", "fail"]);
+  }
+  run(project, ["advance", "--to", "repair"], { expectFail: true });
+  run(project, ["advance", "--to", "adjudication"]);
+  run(project, ["advance", "--to", "repair"], { expectFail: true });
+  run(project, ["record-finding", "--id", id, "--role", "FUNC", "--original-id", "FUNC-001", "--severity", "P2",
+    "--decision", "accepted", "--reproduced", "true", "--reproduction-status", "reproduced", "--change-origin", "pre-existing"]);
+  const finding = JSON.parse(fs.readFileSync(path.join(project, ".review-evidence/findings.json"))).findings[0];
+  assert.equal(finding.verification_attempts, 2);
+  run(project, ["advance", "--to", "repair"], { expectFail: true });
+  run(project, ["mark-unresolved", "--id", id, "--reason", "Two attempts exhausted"]);
+  run(project, ["advance", "--to", "round_decision"]);
+});
+
+test("FUNC-002 skips exhausted findings when selecting the next repair", () => {
+  const project = makeProject();
+  init(project);
+  const id = "R1-F001-FUNC";
+  const evidence = setupAcceptedFinding(project, { id, role: "FUNC", original: "FUNC-001", severity: "P2", slug: "r1_f001_retry" });
+  write(project, `${evidence}/implementation-result.md`, "# Manual implementation\nRED GREEN\n");
+  write(project, `${evidence}/verification-result.md`, "# Manual verification\n**Final Verdict**: fail\n");
+  run(project, ["advance", "--to", "repair"]);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) run(project, ["advance", "--to", "repair"]);
+    run(project, ["record-implementation", "--id", id, "--status", "already_fixed", "--manual"]);
+    run(project, ["advance", "--to", "verification"]);
+    run(project, ["record-verification", "--id", id, "--status", "fail"]);
+  }
+  run(project, ["advance", "--to", "adjudication"]);
+  const second = "R1-F002-FUNC";
+  const secondEvidence = `.review-evidence/round-1/${second}`;
+  addCandidate(project, 1, "FUNC-002");
+  for (const name of ["counterexample.md", "adjudication.md", "replay-review.md", "reproduce.test.js", "implementation-result.md"]) {
+    write(project, `${secondEvidence}/${name}`, fs.readFileSync(path.join(project, evidence, name), "utf8"));
+  }
+  write(project, "tests/review/reproductions/r1_f002_retry.test.js", "// second reproduction\n");
+  run(project, ["record-finding", "--id", second, "--role", "FUNC", "--original-id", "FUNC-002", "--severity", "P2",
+    "--decision", "accepted", "--reproduced", "true", "--reproduction-status", "reproduced", "--change-origin", "pre-existing"]);
+  run(project, ["advance", "--to", "repair"]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(project, ".review-evidence/state.json"))).active_finding, second);
+  run(project, ["record-implementation", "--id", second, "--status", "blocked", "--reason", "dependency missing"]);
+  run(project, ["next-finding"], { expectFail: true });
+  run(project, ["mark-unresolved", "--id", id, "--reason", "repair budget exhausted"]);
+  run(project, ["advance", "--to", "adjudication"]);
+  run(project, ["record-round", "--round", "1", "--raw", "2", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "2"]);
+  run(project, ["advance", "--to", "round_decision"]);
 });
 
 test("init records max_rounds and generated views", () => {
@@ -824,6 +935,18 @@ test("full happy path reaches converged", () => {
   run(project, ["finalize", "--status", "converged"]);
   assert.match(fs.readFileSync(reportPath, "utf8"), /USER NARRATIVE/);
   run(project, ["validate"]);
+  // OPS-002: completed cleanup must remain auditable from durable evidence.
+  fs.rmSync(path.join(project, "tests/review"), { recursive: true });
+  run(project, ["validate"]);
+  run(project, ["normalize"]);
+  run(project, ["finalize", "--status", "converged"]);
+  const formalTest = path.join(project, "tests/app.test.js");
+  const formalContent = fs.readFileSync(formalTest);
+  fs.unlinkSync(formalTest);
+  run(project, ["validate"], { expectFail: true });
+  fs.writeFileSync(formalTest, formalContent);
+  fs.unlinkSync(path.join(project, evidence, "reproduce.test.js"));
+  run(project, ["validate"], { expectFail: true });
 });
 
 test("final audit rejected issue at max_rounds can still converge", () => {

@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
+const { isDeepStrictEqual } = require("node:util");
 
 const {
   EVIDENCE,
@@ -212,7 +213,21 @@ function listDirs(dir) {
     .sort();
 }
 
-function validateHandoff(project, file, round, roleSlugName, errors) {
+function hasArchivedCandidate(project, candidate, round, data) {
+  const dirs = [path.resolve(project, candidate.evidence_dir || "")];
+  for (const finding of data?.findings || []) {
+    const match = String(finding.id).match(FINDING_ID);
+    if (finding.source !== "final-audit" && Number(match?.[1]) === Number(round) &&
+        finding.original_ids?.includes(candidate.finding_id)) {
+      dirs.push(path.join(project, EVIDENCE, `round-${round}`, finding.id));
+    }
+  }
+  return dirs.some((dir) => inside(path.join(project, EVIDENCE), dir) &&
+    exists(dir) && fs.statSync(dir).isDirectory() &&
+    fs.readdirSync(dir, { withFileTypes: true }).some((entry) => entry.isFile() && /^reproduce\..+$/i.test(entry.name)));
+}
+
+function validateHandoff(project, file, round, roleSlugName, errors, data) {
   const handoff = readJsonSafe(file);
   const label = rel(project, file);
   if (!handoff) {
@@ -261,14 +276,14 @@ function validateHandoff(project, file, round, roleSlugName, errors) {
       if (!isCandidateTestFile(path.basename(finding.reproduction_file))) {
         errors.push(`${label}: ${id} 候选测试命名非法`);
       }
-      if (!exists(path.resolve(project, finding.reproduction_file))) {
+      if (!exists(path.resolve(project, finding.reproduction_file)) && !hasArchivedCandidate(project, finding, round, data)) {
         errors.push(`${label}: ${id} reproduction_file 不存在`);
       }
     }
   }
 }
 
-function validateInbox(project, errors) {
+function validateInbox(project, errors, data) {
   const root = path.join(project, EVIDENCE);
   for (const roundName of listDirs(root)) {
     const roundMatch = roundName.match(/^round-(\d+)$/);
@@ -306,7 +321,7 @@ function validateInbox(project, errors) {
         if (!exists(handoffPath)) {
           errors.push(`${rel(project, dir)}: 缺少 handoff.json`);
         } else {
-          validateHandoff(project, handoffPath, round, roleName, errors);
+          validateHandoff(project, handoffPath, round, roleName, errors, data);
         }
       }
     }
@@ -355,7 +370,7 @@ function hasFormalReproduction(project, round, number) {
   return fs.readdirSync(dir).some((file) => file.startsWith(prefix));
 }
 
-function validateFindingFiles(project, finding, errors) {
+function validateFindingFiles(project, finding, errors, state) {
   const label = finding.id;
   const evidenceDir = path.resolve(project, finding.evidence_dir || "");
   if (!inside(path.join(project, EVIDENCE), evidenceDir)) {
@@ -368,6 +383,11 @@ function validateFindingFiles(project, finding, errors) {
   }
   const match = String(finding.id).match(FINDING_ID);
   if (!match) return;
+  // After finalization, verified findings retain their canonical reproduction
+  // and committed tests; the documented temporary test cleanup is then safe.
+  const cleanedFinalFinding = state?.current_phase === "report" &&
+    ["converged", "converged_with_manual_merge", "incomplete"].includes(state.overall_status) &&
+    finding.verification === "pass" && exists(path.join(project, EVIDENCE, "final-report.md"));
   const expectedDir = path.join(project, EVIDENCE, `round-${match[1]}`, finding.id);
   if (path.resolve(evidenceDir) !== path.resolve(expectedDir)) {
     errors.push(`${label}: evidence_dir 必须是 ${rel(project, expectedDir)}`);
@@ -394,6 +414,7 @@ function validateFindingFiles(project, finding, errors) {
   }
   if (
     finding.decision === "accepted" &&
+    !cleanedFinalFinding &&
     !hasFormalReproduction(project, match[1], match[2]) &&
     !exists(path.join(evidenceDir, "manual-steps.md"))
   ) {
@@ -479,7 +500,7 @@ function validateFindingFiles(project, finding, errors) {
       const normalized = String(adjacentTest).replace(/\\/g, "/");
       if (!normalized.startsWith("tests/review/verifications/")) {
         errors.push(`${label}: 相邻测试必须位于 tests/review/verifications/：${adjacentTest}`);
-      } else if (!exists(path.resolve(project, adjacentTest))) {
+      } else if (!cleanedFinalFinding && !exists(path.resolve(project, adjacentTest))) {
         errors.push(`${label}: 相邻测试不存在：${adjacentTest}`);
       } else if (!isAdjacentTestFile(path.basename(adjacentTest)) || !testMatchesFinding(adjacentTest, finding.id)) {
         errors.push(`${label}: 相邻测试命名非法或不属于该 finding：${adjacentTest}`);
@@ -620,7 +641,7 @@ function validateRoundCandidates(project, round, data, errors) {
   const readHandoff = (file, role, canonical = null) => {
     if (!exists(file)) return;
     const handoff = readJsonSafe(file);
-    validateHandoff(project, file, round.round, role, errors);
+    validateHandoff(project, file, round.round, role, errors, data);
     if (!Array.isArray(handoff?.findings)) return;
     if (canonical && !handoff.findings.some((candidate) => canonical.original_ids?.includes(candidate.finding_id))) {
       errors.push(`${label}: ${canonical.id} handoff 没有该 finding 的原始候选`);
@@ -638,8 +659,7 @@ function validateRoundCandidates(project, round, data, errors) {
       const previous = candidates.get(id);
       if (previous) {
         // A preserved inbox and its canonical copy describe one submission.
-        if (!canonical ||
-            ["claim", "severity", "kind", "confidence"].some((key) => previous[key] !== candidate[key])) {
+        if (!isDeepStrictEqual(previous, candidate)) {
           errors.push(`${label}: ${id} 存在重复或矛盾的 handoff`);
         }
       } else {
@@ -748,7 +768,7 @@ function validateProject(project, config, state, data) {
   errors.push(...validateState(state, config));
   errors.push(...validateFindings(data));
   errors.push(...verifyViews(project, state, config, data));
-  validateInbox(project, errors);
+  validateInbox(project, errors, data);
   validateFindingDirectories(project, data, errors);
   validateTestDirectories(project, errors);
   validateRounds(state, errors);
@@ -764,7 +784,7 @@ function validateProject(project, config, state, data) {
     warnings.push("baseline.md 仍有 [TODO]");
   }
   for (const finding of data.findings) {
-    validateFindingFiles(project, finding, errors);
+    validateFindingFiles(project, finding, errors, state);
     if (
       finding.source === "final-audit" &&
       !state.final_audit.attempts.some((attempt) => attempt.attempt === finding.audit_attempt)

@@ -61,7 +61,7 @@
 
 ### 必须删除
 
-以下临时内容在归档前必须删除：
+以下临时内容仅在所属 finding 已完成时删除。INCOMPLETE 或存在手工合并项时，保留未完成项的复现测试及 `_testdata`，不要执行下面的整目录清理命令；归档不能丢失恢复工作需要的证据。
 
 ```
 tests/review/                      # 整个临时测试目录
@@ -90,10 +90,10 @@ ls .review-evidence/final-report.md
 ### 2. 清理临时文件
 
 ```bash
-# 删除临时测试目录
+# 仅当所有 accepted 均已验证：删除临时测试目录
 rm -rf tests/review/
 
-# 删除遗留的 _testdata（如果有）
+# 仅当没有未完成 finding：删除遗留的 _testdata（如果有）
 find .review-evidence/ -type d -name "_testdata" -exec rm -rf {} +
 
 # 验证清理结果

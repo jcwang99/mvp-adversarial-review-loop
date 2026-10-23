@@ -231,6 +231,8 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 - accepted：按 `r{round}_f{num}_{slug}` 重命名并移到 `tests/review/reproductions/`，保留语言对应的测试后缀（`.test.js`、`_test.py`、`_test.go`、`_spec.rb`、`Test.java`、`Test.cs`、`.rs` 等）。
 - rejected / needs-evidence / deferred：删除临时测试文件；手工 finding 保留 `manual-steps.md`。
 
+移动或删除前，必须把自动化反例保存为标准 finding 目录中的 `reproduce.*`；筛除项则保存在原 inbox 的 `reproduce.*`。保留原始 handoff 及其候选路径作为来源记录，不把 `reproduction_file` 改成正式复现测试名。校验器在临时路径不存在时检查该轮候选对应的持久反例；原文件及持久副本均丢失仍会失败。
+
 **完成后**：有 accepted → `reviewctl advance --to repair`；无 accepted → `reviewctl advance --to round_decision`。
 
 ## 3. repair
@@ -258,6 +260,7 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 - 验证代理把相邻测试合并到正式测试后，按 `add(adjacent): [ID] ...` 提交；主代理用 `--merged-test` 记录这些正式测试路径，确保它们进入 git 历史。
 - 验证代理不得强制清理或以任何方式覆盖用户改动；兜底流程必须记录原 HEAD 并验证恢复结果。
 - 无法生成有意义的相邻测试时，必须说明理由才能 pass。
+- 两次失败/无法确定的验证记录耗尽同一 finding 的修复预算；所有 repair 入口都执行此上限，重新裁决不会清零次数。耗尽后用 `mark-unresolved --id ID --reason TEXT` 登记未解决（包括重新进入 adjudication 的情况），或根据新证据改为 deferred/rejected；可继续处理其他有预算的 finding。
 - 若所有可用代理都已参与该 finding 的实现，先获得用户明确授权，用 `reviewctl authorize --action main-agent-verification --decision authorized` 留痕，再由主代理执行验证；`record-verification` 加 `--verified-by main-agent`，在 `verification-result.md` 标注 `verified_by: main-agent`，在 `adjudication.md` 标为高风险，并在最终报告列明。
 - 验证开始前对照 `baseline_head` 运行 `git status --short`；发现与被验 finding 相关的新外部改动时，记为 `inconclusive`，在 `blockers` 说明并列出冲突文件。不要使用 `blocked_by_user_changes`（该状态只用于 repair 无法提交）。
 - 结果：
@@ -378,7 +381,7 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 
 ### 7.3 清理
 
-- 删除 `tests/review/` 整个目录；保留已合并到正式测试文件的用例。
+- 完成 `finalize` 后清理临时测试。所有 accepted 均已验证时可删除 `tests/review/`；INCOMPLETE 或有手工合并项时保留未完成 finding 的复现/验证文件，仅删除已完成项。保留标准目录中的 `reproduce.*`、原始 handoff 和已提交的正式测试。已最终报告且 verified 的 finding 不再要求临时复现/相邻测试存在，但仍校验持久证据和正式测试。
 - 清理 `.review-evidence/**/_testdata/`（如果所有 findings 已终结）；保留失败/未结论 finding 仍需复现的数据。
 - 保留 `.review-evidence/` 作为审计证据。
 - 还原 baseline 阶段为隔离临时测试对项目测试配置做的临时改动；只还原自己引入的部分，不触碰用户改动；无法安全还原时记录。
