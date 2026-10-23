@@ -51,6 +51,7 @@ const {
 } = require("./lib/state");
 const { writeViews } = require("./lib/render");
 const { hasAuthorization, authorizationReceipt } = require("./lib/authorization");
+const { captureStagedBaseline, clearStagedBaseline } = require("./lib/staged-baseline");
 const {
   validateProject,
   validateInbox,
@@ -64,7 +65,6 @@ const {
   gitNameOnlyPaths,
   readHeadFile,
   inside,
-  stagedFiles,
   verdictIsPass,
   extractSection,
 } = require("./lib/validate");
@@ -862,7 +862,7 @@ function commandNextFinding(flags) {
   const pending = repairableAccepted(data).filter((finding) => finding.id !== active.id);
   if (!pending.length) fail("没有其他待修复的 accepted finding；运行 advance --to round_decision");
   state.active_finding = pending[0].id;
-  state.repair_baseline_staged = stagedFiles(project);
+  captureStagedBaseline(project, state);
   event(state, "repair", `修复 ${pending[0].id}`);
   persist(project, config, state, data);
   console.log(`next finding: ${pending[0].id}`);
@@ -973,7 +973,7 @@ function markRoundCompleted(state, round) {
   entry.completed_at = now();
   state.rounds_consumed = round;
   state.active_finding = null;
-  state.repair_baseline_staged = [];
+  clearStagedBaseline(state);
 }
 
 function computedNewInScope(data, round) {
@@ -1092,7 +1092,7 @@ function commandAdvance(flags) {
       fail(`${finding.id}: 先把复现测试移到 tests/review/reproductions/，或提供 manual-steps.md`);
     }
     state.active_finding = finding.id;
-    state.repair_baseline_staged = stagedFiles(project);
+    captureStagedBaseline(project, state);
     event(state, "repair", `修复 ${finding.id}`);
   } else if (from === "adjudication" && target === "round_decision") {
     if (pendingAccepted(data).length > 0) fail("仍有待修复的 accepted finding，不能进入 round_decision");
@@ -1123,13 +1123,13 @@ function commandAdvance(flags) {
     const active = findingById(data, state.active_finding);
     if (!active) fail("active_finding 不存在");
     state.active_finding = null;
-    state.repair_baseline_staged = [];
+    clearStagedBaseline(state);
     event(state, "adjudication", "重新裁决无法修复或需要调整范围的 finding");
   } else if (from === "verification" && target === "adjudication") {
     const active = findingById(data, state.active_finding);
     if (!active) fail("active_finding 不存在");
     state.active_finding = null;
-    state.repair_baseline_staged = [];
+    clearStagedBaseline(state);
     event(state, "adjudication", "裁决验证阶段发现的新问题或回归");
   } else if (from === "repair" && target === "round_decision") {
     const active = findingById(data, state.active_finding);
@@ -1149,13 +1149,13 @@ function commandAdvance(flags) {
     const finding = findingById(data, state.active_finding);
     if (!finding) fail("active_finding 不存在");
     if (finding.verification === "fail" && finding.verification_attempts < 2) {
-      state.repair_baseline_staged = stagedFiles(project);
+      captureStagedBaseline(project, state);
       event(state, "repair", `重新修复 ${finding.id}`);
     } else {
       const pending = repairableAccepted(data).filter((item) => item.id !== finding.id);
       if (!pending.length) fail("没有待修复的 accepted finding；应进入 round_decision");
       state.active_finding = pending[0].id;
-      state.repair_baseline_staged = stagedFiles(project);
+      captureStagedBaseline(project, state);
       event(state, "repair", `修复 ${pending[0].id}`);
     }
   } else if (from === "verification" && target === "round_decision") {

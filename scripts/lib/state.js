@@ -156,6 +156,7 @@ function defaultState(config) {
     baseline_head: config.baseline_head,
     current_head: config.baseline_head,
     repair_baseline_staged: [],
+    repair_baseline_index: null,
     last_completed_event: "initialized",
     next_action: "建立 baseline 并进入 review",
     blockers: [],
@@ -302,6 +303,20 @@ function validateState(state, config) {
   if (!Array.isArray(state.rounds)) errors.push("rounds 必须是数组");
   if (state.repair_baseline_staged !== undefined && !Array.isArray(state.repair_baseline_staged)) {
     errors.push("repair_baseline_staged 必须是数组");
+  }
+  const indexBaseline = state.repair_baseline_index;
+  if (indexBaseline !== undefined && indexBaseline !== null) {
+    if (!indexBaseline || typeof indexBaseline !== "object" ||
+        typeof indexBaseline.head !== "string" || !/^[a-f0-9]{40,64}$/.test(indexBaseline.head) ||
+        !indexBaseline.files || typeof indexBaseline.files !== "object" || Array.isArray(indexBaseline.files)) {
+      errors.push("repair_baseline_index 必须包含 HEAD 和逐文件暂存 diff");
+    } else {
+      const paths = Array.isArray(state.repair_baseline_staged) ? state.repair_baseline_staged : [];
+      if (Object.keys(indexBaseline.files).length !== paths.length || paths.some((file) => {
+        const change = indexBaseline.files[file];
+        return !change || typeof change.raw !== "string" || typeof change.patch !== "string";
+      })) errors.push("repair_baseline_index 与 repair_baseline_staged 不一致");
+    }
   }
   if (!state.final_audit || !Array.isArray(state.final_audit.attempts)) {
     errors.push("final_audit.attempts 必须是数组");

@@ -1,3 +1,4 @@
+const { stagedBaselineConflict } = require("./staged-baseline");
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
@@ -848,7 +849,7 @@ function guardCommit(project, findingId, testPaths, data, state) {
   const errors = [];
   let staged = [];
   try {
-    staged = gitNameOnlyPaths(project, ["diff", "--cached", "--name-only", "-z"]);
+    staged = gitNameOnlyPaths(project, ["diff", "--cached", "--no-renames", "--name-only", "-z"]);
   } catch (error) {
     return [`无法读取 git 暂存区：${error.message}`];
   }
@@ -856,7 +857,8 @@ function guardCommit(project, findingId, testPaths, data, state) {
   const baselineStaged = new Set((state && state.repair_baseline_staged) || []);
   for (const file of staged) {
     if (baselineStaged.has(file)) {
-      errors.push(`暂存区包含开始修复前就存在的用户暂存改动：${file}；先运行 git restore --staged ${file}`);
+      const conflict = stagedBaselineConflict(project, file, state);
+      if (conflict) errors.push(`${file}：${conflict}；保留用户工作区改动，仅分块暂存独立修复；无法分离时登记 blocked_by_user_changes`);
     }
     if (file.startsWith(`${EVIDENCE}/`) || file === EVIDENCE) {
       errors.push(`修复提交不能包含 ${EVIDENCE}/：${file}`);

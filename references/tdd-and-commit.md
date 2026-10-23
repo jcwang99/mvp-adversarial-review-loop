@@ -82,7 +82,7 @@
 
 ## 工作区与暂存隔离
 
-共享工作区可能已有用户改动。实现代理必须在开始和提交前各执行一次 `git status --short`，比较基线；只暂存自己为当前 finding 新增或修改的明确路径，例如 `git add -- path/to/test path/to/source`，禁止 `git add -A` 或 `git commit -am`。进入 repair 时 `reviewctl` 会记录 `repair_baseline_staged`；`guard-commit` 会拒绝在进入 repair 前就已暂存的用户改动，必要时先 `git restore --staged <file>`。
+共享工作区可能已有用户改动。实现代理必须在开始和提交前各执行一次 `git status --short`，比较基线；只暂存自己为当前 finding 新增或修改的明确路径，例如 `git add -- path/to/test path/to/source`，禁止 `git add -A` 或 `git commit -am`。进入 repair 时 `reviewctl` 会记录 `repair_baseline_staged` 路径和 `repair_baseline_index` 内容基线（HEAD 与暂存 diff）；`guard-commit` 会拒绝仍包含用户改动的提交。同一文件可先取消暂存，再用 `git add -p` 仅暂存与用户改动不重叠的修复，用户改动保留在工作区。守卫只读，不会刷新基线或修改索引。旧状态只有路径基线、HEAD 已变化、重叠块、重复文本造成对齐歧义、二进制或文件类型/模式变化时，守卫保守拒绝；无法安全分离则登记 `blocked_by_user_changes`，不要通过重建基线绕过检查。
 
 ### 工作区冲突处理
 
