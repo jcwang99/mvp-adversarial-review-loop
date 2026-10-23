@@ -248,12 +248,15 @@ required-features = ["adversarial-review"]
 | `final_audit_attempt` | 0..3 |
 | `active_finding` | 当前修复/验证的 finding ID 或 null |
 | `repair_baseline_staged` | 进入 repair 时已暂存的文件，用于 guard-commit 识别用户改动 |
+| `repair_baseline_index` | 同次 repair 入口的 HEAD 和逐文件暂存 diff；用于判定分块后是否仍夹带用户改动 |
 | `next_action` | 下一步动作 |
 | `blockers` / `authorizations` | 阻塞和用户授权记录 |
 | `rounds` | 每轮计数和角色 |
 | `final_audit` | 审计尝试和重入状态 |
 
 `findings.json` 每个 finding 至少包含：`id`、`original_ids`、`source`（`review` / `final-audit`）、`audit_attempt`、`role`、`severity`、`decision`、`verification`、`evidence_dir`、`reproduced`、`reproduced_by`、`reproduction_status`、`challenge_required`、`challenge_result`、`change_origin`、`implementation_status`、`manual`、`commit`、`test_files`、`verification_attempts`、`verified_by`、`adjacent_tests`、`adjacent_reason`、`merged_tests`、`unresolved`。更早轮次的 deferred 被复核后还会记录 `deferred_review_action`（`include` / `continue` / `reject`）、`deferred_review_reason`、`deferred_review_round` 和 `deferred_reviewed_at`。
+
+`authorization_receipts` 按例外操作名记录登记时适用的授权日志位置、摘要和时间。后续撤销阻止新操作；已有合法记录仍可审计。该字段由命令生成，不手工填写。
 
 **操作**：
 
