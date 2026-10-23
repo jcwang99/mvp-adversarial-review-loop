@@ -608,6 +608,115 @@ function validateRounds(state, errors) {
   }
 }
 
+// Reconcile identities as well as totals: a plausible aggregate must never hide
+// an omitted candidate or an invented canonical finding.
+function validateRoundCandidates(project, round, data, errors) {
+  const label = `round ${round.round}: candidate accounting`;
+  const root = path.join(project, EVIDENCE, `round-${round.round}`);
+  const candidates = new Map();
+  const allFindings = new Map((data.findings || []).map((finding) => [finding.id, finding]));
+  const findings = (data.findings || []).filter((finding) =>
+    finding.source !== "final-audit" && Number(String(finding.id).match(FINDING_ID)?.[1]) === round.round);
+  const readHandoff = (file, role, canonical = null) => {
+    if (!exists(file)) return;
+    const handoff = readJsonSafe(file);
+    validateHandoff(project, file, round.round, role, errors);
+    if (!Array.isArray(handoff?.findings)) return;
+    if (canonical && !handoff.findings.some((candidate) => canonical.original_ids?.includes(candidate.finding_id))) {
+      errors.push(`${label}: ${canonical.id} handoff 没有该 finding 的原始候选`);
+      return;
+    }
+    const seen = new Set();
+    for (const candidate of handoff.findings) {
+      const id = candidate.finding_id;
+      if (!TEMP_ID.test(String(id)) || roleSlug(String(id).split("-")[0]) !== role) {
+        errors.push(`${label}: ${id} 与 handoff 角色不一致`);
+        continue;
+      }
+      if (seen.has(id)) errors.push(`${label}: ${id} 在 handoff 中重复`);
+      seen.add(id);
+      const previous = candidates.get(id);
+      if (previous) {
+        // A preserved inbox and its canonical copy describe one submission.
+        if (!canonical ||
+            ["claim", "severity", "kind", "confidence"].some((key) => previous[key] !== candidate[key])) {
+          errors.push(`${label}: ${id} 存在重复或矛盾的 handoff`);
+        }
+      } else {
+        candidates.set(id, candidate);
+      }
+    }
+  };
+  const inbox = path.join(root, "inbox");
+  for (const role of listDirs(inbox)) {
+    for (const tempId of listDirs(path.join(inbox, role))) {
+      readHandoff(path.join(inbox, role, tempId, "handoff.json"), role);
+    }
+  }
+  // Older instructions permitted moving inbox directories into canonical paths.
+  for (const finding of findings) {
+    readHandoff(path.join(root, finding.id, "handoff.json"), roleSlug(finding.role || finding.id.split("-").at(-1)), finding);
+  }
+
+  const screeningPath = path.join(root, "screening.json");
+  const screening = exists(screeningPath) ? readJsonSafe(screeningPath) : [];
+  const dispositions = new Map();
+  if (!Array.isArray(screening)) errors.push(`${label}: screening.json 必须是数组`);
+  for (const item of Array.isArray(screening) ? screening : []) {
+    if (!item || typeof item !== "object") {
+      errors.push(`${label}: screening.json 条目必须是对象`);
+      continue;
+    }
+    const id = item.original_id;
+    if (!candidates.has(id)) errors.push(`${label}: screening original_id ${id} 没有原始候选`);
+    if (dispositions.has(id)) errors.push(`${label}: ${id} 有重复的 screening 记录`);
+    if (!["duplicate", "screened_out_preference", "screened_out_scope", "screened_out_contract"].includes(item.disposition)) {
+      errors.push(`${label}: ${id} disposition 非法`);
+    }
+    if (typeof item.reason !== "string" || !item.reason.trim()) errors.push(`${label}: ${id} 缺少筛查理由`);
+    if (item.disposition === "duplicate") {
+      const canonical = allFindings.get(item.canonical_id);
+      if (!canonical || Number(String(canonical.id).match(FINDING_ID)?.[1]) > round.round) {
+        errors.push(`${label}: ${id} canonical_id ${item.canonical_id} 不存在或属于未来轮次`);
+      }
+    } else if (item.canonical_id) {
+      errors.push(`${label}: ${id} screened_out 不能指定 canonical_id`);
+    }
+    dispositions.set(id, item);
+  }
+
+  const owners = new Map();
+  let duplicates = 0;
+  let screened = 0;
+  for (const finding of findings) {
+    const originals = Array.isArray(finding.original_ids) ? finding.original_ids : [];
+    let primaryCount = 0;
+    for (const id of originals) {
+      if (!candidates.has(id)) errors.push(`${label}: ${finding.id} original_id ${id} 没有原始候选`);
+      if (owners.has(id)) errors.push(`${label}: ${id} 同时属于 ${owners.get(id)} 和 ${finding.id}`);
+      owners.set(id, finding.id);
+      const disposition = dispositions.get(id);
+      if (disposition && (disposition.disposition !== "duplicate" || disposition.canonical_id !== finding.id)) {
+        errors.push(`${label}: ${id} 的 canonical/original mapping 与 ${finding.id} 矛盾`);
+      }
+      if (!disposition) primaryCount += 1;
+    }
+    if (!primaryCount) errors.push(`${label}: ${finding.id} 缺少独立的原始候选`);
+    duplicates += Math.max(0, originals.length - 1);
+  }
+  for (const id of candidates.keys()) {
+    if (owners.has(id)) continue;
+    const disposition = dispositions.get(id);
+    if (!disposition) errors.push(`${label}: ${id} 未登记 finding、筛除或去重结论`);
+    else if (disposition.disposition === "duplicate") duplicates += 1;
+    else if (String(disposition.disposition).startsWith("screened_out_")) screened += 1;
+  }
+  const expected = { raw_candidates: candidates.size, duplicates, screened_out: screened, replay_eligible: findings.length };
+  for (const [key, value] of Object.entries(expected)) {
+    if (round[key] !== value) errors.push(`${label}: ${key}=${round[key]}，实际应为 ${value}`);
+  }
+}
+
 function validateAudits(project, state, errors) {
   for (const attempt of state.final_audit.attempts) {
     const dir = path.join(
@@ -643,6 +752,9 @@ function validateProject(project, config, state, data) {
   validateFindingDirectories(project, data, errors);
   validateTestDirectories(project, errors);
   validateRounds(state, errors);
+  for (const round of state.rounds) {
+    if (round.status === "completed") validateRoundCandidates(project, round, data, errors);
+  }
   validateAudits(project, state, errors);
 
   const baselinePath = path.join(project, EVIDENCE, "baseline.md");
@@ -778,6 +890,7 @@ module.exports = {
   validateTestDirectories,
   validateFindingFiles,
   validateRounds,
+  validateRoundCandidates,
   validateAudits,
   guardCommit,
   isCandidateTestFile,

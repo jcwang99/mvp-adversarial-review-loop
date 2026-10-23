@@ -133,9 +133,37 @@ function addRoundHandoffs(project, round) {
   writeHandoff(project, round, "REL", `REL-00${round}`);
 }
 
+function addCandidate(project, round, original, severity = "P2") {
+  const role = original.split("-")[0];
+  const evidence = `.review-evidence/round-${round}/inbox/${roleSlug(role)}/${original}`;
+  write(project, `${evidence}/counterexample.md`, "# Candidate accounting fixture\n");
+  writeHandoff(project, round, role, original, [{
+    finding_id: original, severity, kind: "defect", confidence: "high",
+    claim: "Synthetic lifecycle accounting fixture", evidence_dir: evidence,
+    counterexample_file: `${evidence}/counterexample.md`, reproduction_file: "none",
+    reproduction_status: "not_observed",
+  }]);
+}
+
+function recordRejectedCandidate(project, round, number, originals) {
+  const role = originals[0].split("-")[0];
+  const id = `R${round}-F${String(number).padStart(3, "0")}-${role}`;
+  const evidence = `.review-evidence/round-${round}/${id}`;
+  write(project, `${evidence}/counterexample.md`, "# Counterexample\n");
+  write(project, `${evidence}/adjudication.md`, "# Adjudication\n\n## Decision\n**Status**: rejected\n");
+  write(project, `${evidence}/replay-review.md`, "# Replay Review\nNot reproduced.\n");
+  write(project, `${evidence}/reproduce.test.js`, "// Accounting fixture reproduction\n");
+  run(project, ["record-finding", "--id", id, "--role", role,
+    ...originals.flatMap((original) => ["--original-id", original]),
+    "--severity", "P2", "--decision", "rejected", "--reproduced", "false",
+    "--reproduction-status", "not-reproduced", "--change-origin", "pre-existing"]);
+  return id;
+}
+
 function setupAcceptedFinding(project, { id, role, original, severity, slug }) {
   run(project, ["advance", "--to", "review"]);
   addRoundHandoffs(project, 1);
+  addCandidate(project, 1, original, severity);
   run(project, ["record-round", "--round", "1", "--raw", "1", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "1"]);
   run(project, ["advance", "--to", "adjudication"]);
   const evidence = `.review-evidence/round-1/${id}`;
@@ -160,6 +188,7 @@ function setupAcceptedFinding(project, { id, role, original, severity, slug }) {
 function setupDeferredFinding(project, { id = "R1-F001-PERF", role = "PERF", original = "PERF-001", severity = "P2", slug = "perf" } = {}) {
   run(project, ["advance", "--to", "review"]);
   addRoundHandoffs(project, 1);
+  addCandidate(project, 1, original, severity);
   run(project, ["record-round", "--round", "1", "--raw", "1", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", severity === "P3" ? "0" : "1"]);
   run(project, ["advance", "--to", "adjudication"]);
   const evidence = `.review-evidence/round-1/${id}`;
@@ -199,6 +228,7 @@ function setupTwoCleanRounds(project) {
 }
 
 function test(name, fn) {
+  if (process.env.REVIEWCTL_TEST_FILTER && !name.includes(process.env.REVIEWCTL_TEST_FILTER)) return;
   try {
     fn();
     passed += 1;
@@ -209,6 +239,131 @@ function test(name, fn) {
     console.error(error.message);
   }
 }
+
+// FUNC-001: every raw candidate must have exactly one accounted disposition.
+test("FUNC-001 blocks omitted candidates at the regular round boundary", () => {
+  const project = makeProject();
+  init(project);
+  run(project, ["advance", "--to", "review"]);
+  addRoundHandoffs(project, 1);
+  addCandidate(project, 1, "FUNC-001");
+  addCandidate(project, 1, "FUNC-002");
+  run(project, ["record-round", "--round", "1", "--raw", "2", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+  run(project, ["advance", "--to", "adjudication"]);
+  recordRejectedCandidate(project, 1, 1, ["FUNC-001"]);
+  const failure = run(project, ["advance", "--to", "round_decision"], { expectFail: true });
+  assert.match(String(failure.stderr), /candidate accounting.*FUNC-002/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(project, ".review-evidence/state.json"))).current_phase, "adjudication");
+  recordRejectedCandidate(project, 1, 2, ["FUNC-002"]);
+  run(project, ["advance", "--to", "round_decision"]);
+  run(project, ["validate"]);
+});
+
+test("FUNC-001 reconciles identities, exclusions, duplicate mappings and counts", () => {
+  const { validateRoundCandidates } = require("./lib/validate");
+  const project = makeProject();
+  init(project);
+  addRoundHandoffs(project, 1);
+  for (const original of ["FUNC-001", "FUNC-002", "SEC-001", "REL-001"]) addCandidate(project, 1, original);
+  const entry = { round: 1, raw_candidates: 4, duplicates: 2, screened_out: 1, replay_eligible: 1 };
+  const data = { findings: [{ id: "R1-F001-FUNC", source: "review", original_ids: ["FUNC-001", "FUNC-002"] }] };
+  const exclusions = [
+    { original_id: "SEC-001", disposition: "duplicate", canonical_id: "R1-F001-FUNC", reason: "Same root cause" },
+    { original_id: "REL-001", disposition: "screened_out_scope", reason: "Outside explicit MVP contract" },
+  ];
+  const check = () => {
+    const errors = [];
+    validateRoundCandidates(project, entry, data, errors);
+    return errors.join("; ");
+  };
+  writeJson(project, ".review-evidence/round-1/screening.json", exclusions);
+  assert.equal(check(), "");
+  // Same-role duplicates can also be explicitly documented without double counting.
+  exclusions.push({ original_id: "FUNC-002", disposition: "duplicate", canonical_id: "R1-F001-FUNC", reason: "Same claim" });
+  writeJson(project, ".review-evidence/round-1/screening.json", exclusions);
+  assert.equal(check(), "");
+  for (const key of ["raw_candidates", "duplicates", "screened_out", "replay_eligible"]) {
+    entry[key] += 1;
+    assert.match(check(), new RegExp(key));
+    entry[key] -= 1;
+  }
+  exclusions[2].canonical_id = "R1-F999-FUNC";
+  writeJson(project, ".review-evidence/round-1/screening.json", exclusions);
+  assert.match(check(), /canonical/);
+  exclusions[2].canonical_id = "R1-F001-FUNC";
+  exclusions[2].disposition = "screened_out_scope";
+  writeJson(project, ".review-evidence/round-1/screening.json", exclusions);
+  assert.match(check(), /FUNC-002/);
+  exclusions.pop();
+  exclusions.push({ original_id: "FUNC-999", disposition: "screened_out_scope", reason: "Invented candidate" });
+  writeJson(project, ".review-evidence/round-1/screening.json", exclusions);
+  assert.match(check(), /FUNC-999/);
+  exclusions.pop();
+  writeJson(project, ".review-evidence/round-1/screening.json", exclusions);
+  data.findings[0].original_ids.push("FUNC-999");
+  assert.match(check(), /FUNC-999/);
+  data.findings[0].original_ids.pop();
+  data.findings.push({ id: "R1-F002-FUNC", source: "review", original_ids: ["FUNC-001"] });
+  assert.match(check(), /FUNC-001/);
+  data.findings.pop();
+  // Prior deferred and audit findings have independent accounting scopes.
+  data.findings.push({ id: "R2-F001-FUNC", source: "review", original_ids: ["FUNC-001"], decision: "deferred" });
+  data.findings.push({ id: "R1-F003-FUNC", source: "final-audit", original_ids: ["FA-001"] });
+  assert.equal(check(), "");
+  // Canonical directories retain handoffs when evidence is moved out of inbox.
+  const moved = path.join(project, ".review-evidence/round-1/R1-F001-FUNC");
+  fs.renameSync(path.join(project, ".review-evidence/round-1/inbox/functionality/FUNC-001"), moved);
+  const movedHandoff = JSON.parse(fs.readFileSync(path.join(moved, "handoff.json")));
+  movedHandoff.findings[0].evidence_dir = ".review-evidence/round-1/R1-F001-FUNC";
+  movedHandoff.findings[0].counterexample_file = ".review-evidence/round-1/R1-F001-FUNC/counterexample.md";
+  writeJson(project, ".review-evidence/round-1/R1-F001-FUNC/handoff.json", movedHandoff);
+  assert.equal(check(), "");
+});
+
+test("FUNC-001 completed rounds are rechecked by validate and finalize", () => {
+  const project = makeProject();
+  setupTwoCleanRounds(project);
+  const audit = ".review-evidence/round-2/final-audit/attempt-1";
+  write(project, `${audit}/blind-scan.md`, "# Blind Scan\n");
+  write(project, `${audit}/targeted-review.md`, "# Targeted Review\n");
+  run(project, ["record-audit", "--attempt", "1", "--status", "complete", "--new-issues", "0", "--auditor", "independent-auditor"]);
+  run(project, ["advance", "--to", "report"]);
+  run(project, ["finalize", "--status", "converged", "--ack-empty-coverage"]);
+  addCandidate(project, 1, "FUNC-099");
+  for (const args of [["validate"], ["finalize", "--status", "converged", "--ack-empty-coverage"]]) {
+    const failure = run(project, args, { expectFail: true });
+    assert.match(String(failure.stderr || failure.stdout), /candidate accounting/);
+  }
+});
+
+test("FUNC-001 preserves batched handoffs copied into canonical evidence", () => {
+  const { validateRoundCandidates } = require("./lib/validate");
+  const project = makeProject();
+  init(project);
+  addCandidate(project, 1, "FUNC-001");
+  const inbox = ".review-evidence/round-1/inbox/functionality/FUNC-001";
+  const batch = JSON.parse(fs.readFileSync(path.join(project, inbox, "handoff.json")));
+  batch.findings.push({ ...batch.findings[0], finding_id: "FUNC-002" });
+  writeJson(project, `${inbox}/handoff.json`, batch);
+  const data = { findings: [
+    { id: "R1-F001-FUNC", role: "FUNC", original_ids: ["FUNC-001"] },
+    { id: "R1-F002-FUNC", role: "FUNC", original_ids: ["FUNC-002"] },
+  ] };
+  const round = { round: 1, raw_candidates: 2, duplicates: 0, screened_out: 0, replay_eligible: 2 };
+  for (const finding of data.findings) writeJson(project, `.review-evidence/round-1/${finding.id}/handoff.json`, batch);
+  const check = () => {
+    const errors = [];
+    validateRoundCandidates(project, round, data, errors);
+    return errors.join("; ");
+  };
+  assert.equal(check(), "");
+  // Removing only the original handoff exercises recovery from retained copies.
+  fs.unlinkSync(path.join(project, inbox, "handoff.json"));
+  assert.equal(check(), "");
+  batch.findings[0].claim = "Conflicting copy";
+  writeJson(project, ".review-evidence/round-1/R1-F002-FUNC/handoff.json", batch);
+  assert.match(check(), /FUNC-001.*矛盾/);
+});
 
 test("init records max_rounds and generated views", () => {
   const project = makeProject();
@@ -385,6 +540,7 @@ test("adjudication can revise current-round counts after a P3 candidate is upgra
   init(project, 2);
   run(project, ["advance", "--to", "review"]);
   addRoundHandoffs(project, 1);
+  addCandidate(project, 1, "FUNC-001", "P3");
   run(project, ["record-round", "--round", "1", "--raw", "1", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
   run(project, ["advance", "--to", "adjudication"]);
 
@@ -497,6 +653,7 @@ test("full happy path reaches converged", () => {
   init(project, 2);
   run(project, ["advance", "--to", "review"]);
   addRoundHandoffs(project, 1);
+  addCandidate(project, 1, "SEC-001", "P1");
   run(project, [
     "record-round",
     "--round",
@@ -679,7 +836,7 @@ test("final audit rejected issue at max_rounds can still converge", () => {
   run(project, ["advance", "--to", "round_decision"]);
   run(project, ["advance", "--to", "review"]);
   addRoundHandoffs(project, 2);
-  run(project, ["record-round", "--round", "2", "--raw", "1", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+  run(project, ["record-round", "--round", "2", "--raw", "0", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
   run(project, ["advance", "--to", "adjudication"]);
   run(project, ["advance", "--to", "round_decision"]);
   run(project, ["advance", "--to", "final_audit"]);
@@ -756,6 +913,8 @@ test("blocked finding can advance to the next finding", () => {
   init(project, 2);
   run(project, ["advance", "--to", "review"]);
   addRoundHandoffs(project, 1);
+  addCandidate(project, 1, "SEC-001", "P1");
+  addCandidate(project, 1, "FUNC-001");
   run(project, ["record-round", "--round", "1", "--raw", "2", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "2"]);
   run(project, ["advance", "--to", "adjudication"]);
 
@@ -828,6 +987,7 @@ test("manual finding can be repaired and verified without an automated test", ()
   init(project, 2);
   run(project, ["advance", "--to", "review"]);
   addRoundHandoffs(project, 1);
+  addCandidate(project, 1, "FUNC-001");
   run(project, ["record-round", "--round", "1", "--raw", "1", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "1"]);
   run(project, ["advance", "--to", "adjudication"]);
 

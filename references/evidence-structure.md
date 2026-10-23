@@ -217,7 +217,7 @@ required-features = ["adversarial-review"]
 
 每个评审角色使用唯一的 role-slug 目录，例如 security、functionality、api。临时 ID 只需在该角色目录内唯一。不同角色即使都使用 SEC-001，也不会写入同一路径。
 
-主代理记录纯偏好和明确不构成现存风险的范围/契约请求后，对剩余候选去重；只有进入 finding 生命周期的独立候选才分配标准 ID，并将其 inbox 目录移动到该轮目录下的标准 ID 目录。分配 ID 时同时将候选复现文件复制为标准 ID 目录中的 `reproduce.*`（accepted 的原始文件保留到流程结束；rejected/needs-evidence/deferred 的候选临时测试按 `phase-playbooks.md` §2.7 处理，若仍保留则直接复用，`reproduce.*` 始终保留在 finding 目录；手工 finding 的 manual-steps.md 随 inbox 移动）。之后即使 decision 为 rejected、deferred 或 needs-evidence，也保留 ID 和索引行。重复候选不另分配标准 ID：保留其 inbox 目录，在索引和主 finding 记录中标注 deduplicated_with。
+主代理记录纯偏好和明确不构成现存风险的范围/契约请求后，对剩余候选去重；只有进入 finding 生命周期的独立候选才分配标准 ID，并将其 inbox 内容平铺复制到该轮目录下的标准 ID 目录，保留原始 inbox 和 handoff。分配 ID 时同时将候选复现文件复制为标准 ID 目录中的 `reproduce.*`（accepted 的原始文件保留到流程结束；rejected/needs-evidence/deferred 的候选临时测试按 `phase-playbooks.md` §2.7 处理，若仍保留则直接复用，`reproduce.*` 始终保留在 finding 目录；手工 finding 的 manual-steps.md 同样复制）。之后即使 decision 为 rejected、deferred 或 needs-evidence，也保留 ID 和索引行。重复候选不另分配标准 ID：保留其 inbox 目录，在本轮 `screening.json` 和 `screening-log.md` 中记录 canonical ID。
 
 经确认无法自动化的反例使用 manual-steps.md，并记录无法自动化的原因、前提、精确操作和观察点。自动化反例应保存完整可执行文件。完整命令输出保存在 finding 目录内，记录中引用路径并摘要关键结果。
 
@@ -342,6 +342,23 @@ screening-log.md 按轮次记录全部原始评审报告及其去重/筛查结�
 - 进入 finding 生命周期的候选：记录 canonical ID 和证据目录路径。
 
 这样 raw_candidates 的计数可审计，同时 `findings.json` 只维护实际进入 finding 生命周期的唯一候选。
+
+### round-N/screening.json：机器可校验的筛查结果
+
+有筛除或跨角色重复时，在对应轮次目录写入 `screening.json` 数组；没有这些项时可省略或写 `[]`。每个条目必须来自本轮 handoff 的一个 `finding_id`，且仅出现一次：
+
+```json
+[
+  { "original_id": "SEC-002", "disposition": "duplicate", "canonical_id": "R1-F001-FUNC", "reason": "与该 finding 是同一根因" },
+  { "original_id": "REL-003", "disposition": "screened_out_scope", "reason": "baseline 明确排除该功能，且没有现有行为风险" }
+]
+```
+
+`disposition` 只能为 `duplicate`、`screened_out_preference`、`screened_out_scope`、`screened_out_contract`；`reason` 必填。只有 duplicate 指定 `canonical_id`，且必须指向本轮或更早轮次已登记的 finding。同角色去重可把多个 `--original-id` 映射到同一个标准 finding，此时多出的原始 ID 自动计入 duplicates；也可在 screening.json 中显式记录其中的重复项，但 canonical_id 必须一致，并至少保留一个没有 duplicate 标记的独立原始候选。跨角色重复使用 screening.json，不能违反 `record-finding` 的角色前缀限制。
+
+常规轮关闭前，脚本按候选身份核对 handoff、original_ids、screening.json 和 raw/duplicates/screened/replay_eligible 计数。每个原始候选必须有且仅有一个一致的去向；筛除项不能同时属于标准 finding。completed 轮次在 `validate` 和 `finalize` 时仍会复核。跨轮 deferred 继续使用原 finding ID，不算当前轮新候选；终审 finding 不计入常规轮独立 finding 数。
+
+兼容旧版移动 inbox 的证据布局：标准 finding 目录中保留的 handoff 可作为候选来源，但必须包含该 finding 的 original_id，且轮次、角色、证据路径有效。一份批量 handoff 被复制到多个标准目录只按候选身份计算一次；冲突副本会报错。建议保留原始 inbox，避免移动后留下失效的证据路径。
 
 ## Finding 记录
 

@@ -84,10 +84,11 @@
 
 ### 2.1 筛查与去重
 
-1. 把纯偏好、措辞建议、明确不在 MVP 范围内的功能请求筛到 `screening-log.md`，写明依据；不分配标准 ID，不进入覆盖率分母，也无需运行反例。
-2. 对其余候选去重；重复项指向 canonical ID，保留原始 inbox。
-3. 进入生命周期的候选分配标准 ID（`R[N]-F[XXX]-[CAT]`），把 inbox 的内容平铺到 `.review-evidence/round-[N]/[标准 ID]/`（不要把 `inbox/[...]/[临时 ID]/` 整个目录嵌套进去），并把候选复现文件复制为 `reproduce.*`；`tests/review/` 中的原文件保留运行用。然后运行 `reviewctl record-finding --id ... --decision ...` 写入状态。
+1. 把纯偏好、措辞建议、明确不在 MVP 范围内的功能请求筛到 `screening-log.md`，写明依据；同时在 `round-[N]/screening.json` 记录 original_id、disposition 和 reason（格式见 `evidence-structure.md`）。不分配标准 ID，不进入覆盖率分母，也无需运行反例。
+2. 对其余候选去重；重复项指向 canonical ID，保留原始 inbox。跨角色重复必须在 screening.json 中记录 duplicate 和 canonical_id；同角色多 original-id 映射到同一标准 finding 时自动计算重复数。
+3. 进入生命周期的候选分配标准 ID（`R[N]-F[XXX]-[CAT]`），把 inbox 的内容平铺复制到 `.review-evidence/round-[N]/[标准 ID]/`（保留原始 inbox；不要把 `inbox/[...]/[临时 ID]/` 整个目录嵌套进去），并把候选复现文件复制为 `reproduce.*`；`tests/review/` 中的原文件保留运行用。然后运行 `reviewctl record-finding --id ... --decision ...` 写入状态。
 4. 标准 ID 一旦分配，永久计入覆盖率分母，即使后来 rejected 或 deferred。
+5. 关闭本轮前核对所有候选的去向并更新 record-round 计数。脚本会在进入 round_decision 以及已完成轮次的 validate/finalize 时拒绝遗漏候选、无来源的标准 finding、矛盾的筛查映射或不符的计数。
 
 筛查决策流程：
 

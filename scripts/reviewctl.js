@@ -53,6 +53,7 @@ const { writeViews } = require("./lib/render");
 const {
   validateProject,
   validateInbox,
+  validateRoundCandidates,
   guardCommit,
   isAdjacentTestFile,
   isFormalTestFile,
@@ -974,7 +975,7 @@ function computedNewInScope(data, round) {
   }).length;
 }
 
-function completeRound(state, data, round) {
+function completeRound(project, state, data, round) {
   const entry = roundEntry(state, round);
   const computed = computedNewInScope(data, round);
   if (entry && computed > Number(entry.new_in_scope_p0p1p2 || 0)) {
@@ -982,6 +983,9 @@ function completeRound(state, data, round) {
       `第 ${round} 轮记录的新 P0/P1/P2 数量 (${entry.new_in_scope_p0p1p2 || 0}) 小于 findings.json 中的 ${computed}；先更正 record-round 计数`
     );
   }
+  const errors = [];
+  validateRoundCandidates(project, entry, data, errors);
+  if (errors.length) fail(errors.join("; "));
   markRoundCompleted(state, round);
 }
 
@@ -1083,7 +1087,7 @@ function commandAdvance(flags) {
     }
     const round = roundEntry(state, state.current_round);
     if (!round || round.raw_candidates === null) fail("先运行 record-round 记录本轮计数");
-    completeRound(state, data, state.current_round);
+    completeRound(project, state, data, state.current_round);
     event(state, "round_decision", "检查提前收敛/轮次上限");
   } else if (from === "repair" && target === "verification") {
     const finding = findingById(data, state.active_finding);
@@ -1123,7 +1127,7 @@ function commandAdvance(flags) {
     }
     const round = roundEntry(state, state.current_round);
     if (!round || round.raw_candidates === null) fail("先运行 record-round 记录本轮计数");
-    completeRound(state, data, state.current_round);
+    completeRound(project, state, data, state.current_round);
     event(state, "round_decision", "检查提前收敛/轮次上限");
   } else if (from === "verification" && target === "repair") {
     const finding = findingById(data, state.active_finding);
@@ -1151,7 +1155,7 @@ function commandAdvance(flags) {
     }
     const round = roundEntry(state, state.current_round);
     if (!round || round.raw_candidates === null) fail("先运行 record-round 记录本轮计数");
-    completeRound(state, data, state.current_round);
+    completeRound(project, state, data, state.current_round);
     event(state, "round_decision", "检查提前收敛/轮次上限");
   } else if (from === "round_decision" && target === "review") {
     if (!canTriggerNewRound(state, config)) fail("已达到 max_rounds，不能再开常规评审轮");
