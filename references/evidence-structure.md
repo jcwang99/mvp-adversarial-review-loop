@@ -301,6 +301,97 @@ node <skill-dir>/scripts/reviewctl.js render
 - Baseline results: [summary and paths to full logs]
 - Known environment limits:
 
+## Test Scope / Regression Policy
+本小节是 focused/impacted/full 分级的唯一权威；`## Verification` 的测试命令仅作 baseline 参考，必须与本小节的对应命令一致。
+- Tiering mode: [default | full-everywhere]
+- Full-suite duration: [实测耗时]
+- Baseline full result: [pass | fail；fail 时必须停止并报告 blocked]
+- Baseline full log: [日志路径]
+- Expected test count: [total / passed / failed / skipped]
+- Full suite composition: [unit / integration / E2E / doctest / feature matrix]
+- Feature matrix: [default | all-features | 逐项列表]
+- Focused test command: [反例/单模块]
+- Impacted test command: [改动 package/crate + 直接依赖方]
+- Full test command: [项目/workspace 全量；Rust 包含 doctest]
+- High-risk paths: [构建/依赖清单、公共 API、认证、数据迁移、并发、feature flag 等]
+- Verification default: [impacted；P0/P1/高风险/full-everywhere 重新运行 full]
+- Notes: [小项目可直接全量，不必分级]
+
+## Machine-validated test evidence
+
+reviewctl 读取下面两个精确标题下的单个 JSON 代码块；接受三反引号或三波浪线围栏。实现代理和验证代理仍应提供上方 YAML 摘要，但不得只写散文或摘要而漏掉机器证据。命令必须与 baseline 完全一致，数字、布尔值和 tree hash 按真实运行结果填写。
+
+### implementation-result.md
+
+提交 GREEN 前在报告中加入以下精确标题。测试计数差异按 baseline 填写；新增/删除测试造成 total 变化时填写 expected_test_count_delta_reason，skip 数变化时填写 expected_skipped_count_delta_reason。
+
+~~~text
+## Reviewctl GREEN Evidence
+~~~
+
+~~~json
+{
+  "full_suite": {
+    "status": "pass",
+    "command": "npm test",
+    "exit_status": 0,
+    "tree_hash_before": "0123456789abcdef0123456789abcdef01234567",
+    "tree_hash_after": "0123456789abcdef0123456789abcdef01234567",
+    "run_location": "main-workspace",
+    "workspace_clean_before": true,
+    "workspace_clean_after": true,
+    "test_counts": {
+      "total": 120,
+      "passed": 120,
+      "failed": 0,
+      "skipped": 0
+    },
+    "expected_test_count_delta": 0,
+    "expected_skipped_count_delta": 0,
+    "log": ".review-evidence/round-1/R1-F001-SEC/output-full-suite.log"
+  }
+}
+~~~
+
+### verification-result.md
+
+加入以下精确标题。对 impacted 回归填写完整 changed_paths、impacted_targets、impact_basis 和传递反向依赖闭包；full 回归也要提供 regression 与 full_test_suite 两个对象，且两者的命令和日志相同。fixed finding 的 implementation_full_suite_status 必须为 pass。高风险必须填写 risk_reason。
+
+~~~text
+## Reviewctl Verification Evidence
+~~~
+
+~~~json
+{
+  "schema_version": 1,
+  "verdict": "pass",
+  "regression": {
+    "scope": "impacted",
+    "status": "pass",
+    "command": "npm run test:impacted",
+    "exit_status": 0,
+    "log": ".review-evidence/round-1/R1-F001-SEC/output-impacted.log",
+    "tree_hash_before": "0123456789abcdef0123456789abcdef01234567",
+    "tree_hash_after": "0123456789abcdef0123456789abcdef01234567",
+    "tested_commit": "0123456789abcdef0123456789abcdef01234567",
+    "changed_paths": ["src/auth.js"],
+    "impacted_targets": ["tests/auth.test.js"],
+    "impact_basis": "direct import plus transitive reverse dependencies",
+    "dependency_closure": "transitive_reverse",
+    "test_counts": {
+      "total": 8,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "risk_assessment": "normal",
+  "implementation_full_suite_status": "pass"
+}
+~~~
+
+当 scope 为 full 时，regression.command 必须是 baseline 的 full command；regression.log 必须等于 full_test_suite.log，且 JSON 中要附加 full_test_suite 对象。该对象复用 GREEN full 的字段，并增加 tested_commit（固定提交后的 HEAD SHA）。already_fixed 默认也运行 verification full。只有 severity 为 P2/P3、risk_assessment 为 normal、tiering mode 为 default，且修复 commit 是 baseline_head 祖先、baseline full 为 pass 时，才可省略 verification full 并填写 already_fixed_baseline_exception，其中 baseline_head_ancestor 和 baseline_full_pass 都为 true。
+
 ## Build Cache / Compile Prewarm
 - Slow-compile stack: [Rust / C++ / large TypeScript / none]
 - Shared cache or target directory:
@@ -403,8 +494,8 @@ screening-log.md 按轮次记录全部原始评审报告及其去重/筛查结�
 - replay-review.md：独立复现审查的命令、观察、结果和证据路径。
 - challenge-result.md：触发挑战时的短结论和证据路径。
 - reinforce-result.md：需要补强时的修改摘要和运行结果。
-- implementation-result.md：RED/GREEN、回归、差异、提交和未解决项。
-- verification-result.md：验证命令、结果、执行者、变体和阻塞。
+- implementation-result.md：RED/GREEN、full 证据、回归、差异、提交和未解决项。
+- verification-result.md：验证命令、regression scope、full 证据、结果、执行者、变体和阻塞。
 - output.log：完整且脱敏的命令输出；体积较大时可按阶段分文件。
 
 ## Final audit records

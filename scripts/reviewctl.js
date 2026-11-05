@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline/promises");
 const { execFileSync } = require("node:child_process");
+const testPolicy = require("./lib/test-policy");
 
 const {
   EVIDENCE,
@@ -190,6 +191,21 @@ function initTemplates(project) {
         "- Build/type-check/lint/security commands: [TODO]",
         "- Baseline results: [TODO]",
         "- Known environment limits: [TODO]",
+        "",
+        "## Test Scope / Regression Policy",
+        "- Tiering mode: [TODO]",
+        "- Full-suite duration: [TODO]",
+        "- Baseline full result: [TODO]",
+        "- Baseline full log: [TODO]",
+        "- Expected test count: [TODO]",
+        "- Full suite composition: [TODO]",
+        "- Feature matrix: [TODO]",
+        "- Focused test command: [TODO]",
+        "- Impacted test command: [TODO]",
+        "- Full test command: [TODO]",
+        "- High-risk paths: [TODO]",
+        "- Verification default: impacted; P0/P1/high-risk/full-everywhere rerun full",
+        "- Notes: [TODO]",
         "",
         "## Review",
         "- Started at: [TODO]",
@@ -683,8 +699,12 @@ function commandRecordImplementation(flags) {
   }
   if (status === "already_fixed") {
     for (const testFile of tests) {
-      if (!gitTracks(project, String(testFile).replace(/\\/g, "/"))) {
+      const normalized = String(testFile).replace(/\\/g, "/");
+      if (!gitTracks(project, normalized)) {
         fail(`already_fixed 的测试文件必须已提交到 git：${testFile}`);
+      }
+      if (!gitFileMatchesHead(project, normalized)) {
+        fail(`already_fixed 的测试内容必须已提交并进入 HEAD：${testFile}`);
       }
     }
   }
@@ -716,6 +736,12 @@ function commandRecordImplementation(flags) {
         !file.endsWith(".md")
     );
     if (sourceFiles.length === 0) fail("修复 commit 没有源代码改动");
+    const greenEvidence = testPolicy.parseImplementationEvidence(
+      project,
+      path.join(evidenceDir, "implementation-result.md"),
+      testPolicy.gitTree(project, commit)
+    );
+    if (greenEvidence.errors.length) fail(greenEvidence.errors.join("; "));
   }
   finding.implementation_status = status;
   finding.manual = manual;
@@ -812,6 +838,14 @@ function commandRecordVerification(flags) {
         fail(`merged-test 内容必须包含 finding ID ${id}：${file}`);
       }
     }
+    const verificationErrors = testPolicy.validateVerificationEvidence(
+      project,
+      finding,
+      config,
+      path.join(evidenceDir, "verification-result.md"),
+      testPolicy.gitTree(project, "HEAD")
+    );
+    if (verificationErrors.length) fail(verificationErrors.join("; "));
     finding.verified_at = now();
     finding.unresolved = false;
     finding.unresolved_reason = null;
@@ -1056,6 +1090,8 @@ function commandAdvance(flags) {
     const baselinePath = path.join(project, EVIDENCE, "baseline.md");
     if (!fs.existsSync(baselinePath)) fail("缺少 .review-evidence/baseline.md");
     if (/\[TODO\]/.test(readText(baselinePath))) fail("baseline.md 仍有 [TODO]，先补全 baseline");
+    const baselinePolicy = testPolicy.parseBaselinePolicy(project);
+    if (baselinePolicy.errors.length) fail(baselinePolicy.errors.join("; "));
     state.current_round = 1;
     state.rounds_consumed = 0;
     const round = ensureRound(state, 1);

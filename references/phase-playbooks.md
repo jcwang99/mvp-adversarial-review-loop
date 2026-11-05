@@ -30,6 +30,7 @@
 ## 委派通用要求
 
 - 委派任何子代理时，把提示模板中的 `[skill-dir]` 替换为当前 harness 的技能安装目录绝对路径（各 harness 不同，动态解析；路径含空格时给命令加引号），并提供 `node [skill-dir]/scripts/reviewctl.js` 的可执行形式。子代理只读使用脚本，不得修改状态或推进阶段。
+- 委派实现或验证代理时，同时提供 `baseline.md` 的 “Test Scope / Regression Policy” 摘要（focused/impacted/full 命令、高风险路径、baseline full result）和 finding 的 severity；验证代理无法判断高风险时按高风险处理。
 - 长编译项目（Rust、C++、大型 TypeScript 等）在 baseline 完成编译预热，并把共享缓存路径、环境变量和磁盘预算写入 `baseline.md`；委派时要求子代理在预算内复用同一缓存，不要每个 finding 重建依赖或创建独立 target。超预算时在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理。
 
 ## 0. baseline
@@ -38,7 +39,12 @@
 
 1. 确认 MVP 范围、明确排除项、验收标准及来源、技术栈、入口和关键数据流、外部服务与认证边界、部署方式。
 2. 记录仓库路径、分支、`baseline_head`、初始 `git status`、已有用户改动。
-3. 确认测试/构建/类型检查/lint/安全扫描命令。
+3. 确认测试/构建/类型检查/lint/安全扫描命令，并记录测试范围分级：
+   - `focused`：反例、相邻测试或单个模块/测试目标的命令
+   - `impacted`：改动所在 package/crate、直接依赖方及相关测试目标的命令
+   - `full`：项目/workspace 的完整测试套件命令（Rust 需包含 doctest；`cargo test <filter>` 仍会编译当前 package/workspace 默认成员的全部测试目标，缩小编译范围要用 `-p`、`--lib`、`--test` 或 `cargo nextest`）
+   - 高风险路径清单、full 单次耗时、full suite composition、feature matrix 和 baseline full result
+   写入 `baseline.md` 的 "Test Scope / Regression Policy"。
 4. **按实测决定是否编译预热**：只有全量测试/构建耗时明显（例如单次超过 2-3 分钟）或会生成大量临时测试的项目才做；短编译项目沿用现有命令，不要额外引入缓存层。
    - 先确定磁盘预算：记录可用空间和缓存上限，云端环境尤其要留足余量；缓存目录放在仓库外，不要放进 `.review-evidence/`，也不要提交。
    - Rust：可设置共享的 `CARGO_TARGET_DIR`，先运行 `cargo test --tests --no-run`（或 `cargo nextest run --no-run`）预编译测试目标；类型检查用 `cargo check --tests`，聚焦测试用 `cargo test --test <target> <filter>` 或 `cargo nextest run <filter>`；保持 `CARGO_INCREMENTAL=1`。
@@ -47,7 +53,7 @@
    - 可选：项目已有 `sccache`/构建缓存配置时沿用，不要覆盖；没有且实测收益明显时再考虑安装。
    - 其他长编译栈：仅在实测确实拖慢流程时启用依赖预编译/缓存，并设置同样的磁盘预算和轮次边界清理策略；短编译栈不要过度优化。
    - 把预热命令、缓存路径、环境变量、磁盘预算、清理时机和单次测试耗时写入 `baseline.md` 的 "Build Cache / Compile Prewarm"；无法安全预热时记录耗时和阻塞，不要跳过。
-5. 运行基线（使用预热后的缓存）；完整日志路径、耗时和已知环境限制写入 `baseline.md`。
+5. 运行基线 full（使用预热后的缓存）；记录结果（pass/fail）、完整日志路径、耗时、测试计数和已知环境限制。full 失败时停止并报告 blocked，不得带红灯基线进入 review；不得用排除项或过滤命令冒充 full。
 6. 与用户确认 `max_rounds`：默认 5，用户可指定，最小 2；小于 2 时 `reviewctl init` 会拒绝。然后运行 `reviewctl init --max-rounds N --user-confirmed`（终端场景可用 `--interactive`），由脚本创建 `review-config.json`、`state.json`、`findings.json` 和生成视图。`init` 拒绝覆盖任何已有状态文件；需要重跑时先归档或手动清理 `.review-evidence/`。
 7. 填写 `init` 创建的 `baseline.md` 和 `screening-log.md` 模板。
 8. 确保项目测试配置忽略 `tests/review/`（或使用 `ADVERSARIAL_REVIEW` 等开关），把方式和结束时如何还原写入 `baseline.md`；无法确保时记录阻塞。
@@ -242,10 +248,11 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 **必须委派实现代理**，一次一个 accepted finding，按 `tdd-and-commit.md` 执行 RED-GREEN-REFACTOR 并提交。委派时替换提示模板中的 `[skill-dir]`，并要求复用 baseline 的编译缓存。
 
 - 实现代理只处理当前 finding；RED 必须先确认，测试必须合并到项目正式测试文件。确实无法自动化时使用 `--manual`，并在 `implementation-result.md` / `verification-result.md` 记录人工复测。
+- **GREEN 提交前必须运行 full 测试**，并在 `implementation-result.md` 记录命令、退出码、tree hash、workspace clean/run location、测试计数和日志；同时写入 `Reviewctl GREEN Evidence` JSON 区块供 `reviewctl` 校验。full 失败不得提交。验证阶段默认只跑 impacted，并复核这份 full 证据。
 - 进入 repair 时脚本会记录 `repair_baseline_staged`；提交只包含当前 finding 的源代码、正式测试和必要配置；不包含 `.review-evidence/` 或 `tests/review/` 临时文件。
 - 提交前运行 `reviewctl guard-commit --finding [ID] --test [PATH]`；脚本会拒绝证据目录、临时测试目录，以及在进入 repair 前就已暂存的用户改动。
 - 提交后运行 `reviewctl record-implementation --id ID --status fixed --commit SHA --test PATH` 或 `reviewctl record-implementation --id ID --status already_fixed --commit SHA --test PATH`；手工 finding 加 `--manual`；用户改动导致无法提交时运行 `reviewctl record-implementation --id ID --status prepared --reason "user changes conflict"`。
-- `already_fixed`：确认现有提交覆盖后进入验证；测试文件必须存在于当前 HEAD（`git cat-file -e HEAD:<path>`）；仅在历史 commit 或其他分支中存在不算；能定位历史修复 commit 时用 `--commit SHA` 记录。
+- `already_fixed`：确认现有提交覆盖后进入验证；测试文件必须已跟踪，且内容已提交、工作区/index 与 HEAD 一致（`git diff --quiet HEAD -- <path>`；`reviewctl` 会检查 `gitFileMatchesHead`）；仅在历史 commit 或其他分支中存在不算；能定位历史修复 commit 时用 `--commit SHA` 记录。
 - `cannot_fix` / `blocked`：无法修复时运行 `reviewctl record-implementation --id ID --status cannot_fix --reason "REASON"`；环境或依赖阻塞时运行 `reviewctl record-implementation --id ID --status blocked --reason "REASON"`，登记未解决；随后可 `next-finding` 或 `advance --to round_decision`。需要调整范围/降级时运行 `advance --to adjudication` 重新裁决。
 - `blocked_by_user_changes`：按 `tdd-and-commit.md` 处理，先用 `reviewctl record-implementation --id ID --status prepared --reason "user changes conflict"` 记录准备好的修复并提供手工合并建议；再用 `record-verification --status blocked_by_user_changes` 记录；有下一个 finding 时运行 `next-finding`，否则 `advance --to round_decision`。可能导致 `CONVERGED_WITH_MANUAL_MERGE`。
 
@@ -256,17 +263,17 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 **必须委派验证代理**，且不能是实现该 finding 的代理。委派时替换提示模板中的 `[skill-dir]`，并要求复用 baseline 的编译缓存。
 
 - 状态机一次只有一个 `active_finding`，因此一个验证代理一次验证一个 finding；不同 finding 的验证串行进行。
-- 使用 `agent-prompts.md` 的验证代理模板，并按其 YAML 结构回收摘要；提供原始 counterexample、reproduction、修复 commit、当前 HEAD、正式测试路径和运行入口。
-- 验证代理写 `verification-result.md`；主代理用 `reviewctl record-verification --id [ID] --status pass|fail|inconclusive|blocked_by_user_changes` 写入状态（代理输出的 `blocked` 按 `inconclusive` 记录）。pass 时必须提供至少 2 个 `--adjacent-test`，或用 `--adjacent-reason` 说明无法生成的理由；有相邻测试时必须用 `--merged-test` 记录已合并到正式测试文件的路径。
-- 检查 RED 证据、在修复前 commit 重放原始反例（默认独立 worktree；兜底 stash + checkout 必须经主代理批准）、在修复后验证、生成至少 2 个相邻测试（正常 + 边界）、合并到正式测试、运行完整回归。不得把实现代理的结论当作验证结果。
-- 验证代理把相邻测试合并到正式测试后，按 `add(adjacent): [ID] ...` 提交；主代理用 `--merged-test` 记录这些正式测试路径，确保它们进入 git 历史。
+- 使用 `agent-prompts.md` 的验证代理模板，并按其 YAML 结构回收摘要；`verification-result.md` 还必须包含 `Reviewctl Verification Evidence` JSON 区块，字段见 `evidence-structure.md`。提供原始 counterexample、reproduction、修复 commit 和 changed files、当前 HEAD、正式测试路径和运行入口、baseline 的 “Test Scope / Regression Policy” 摘要、finding severity；`risk_assessment` 由验证代理根据 changed files 独立判断。
+- 验证代理写 `verification-result.md`；主代理用 `reviewctl record-verification --id [ID] --status pass|fail|inconclusive|blocked_by_user_changes` 写入状态（代理输出的 `blocked` 按 `inconclusive` 记录）。pass 时必须提供至少 2 个 `--adjacent-test`，或用 `--adjacent-reason` 说明无法生成的理由；有相邻测试时必须用 `--merged-test` 记录已合并到正式测试文件的路径。`Reviewctl Verification Evidence` JSON 必须记录 regression scope/命令/退出状态/tree hash/tested commit/测试计数/日志、风险评估、实现阶段 full 状态；验证阶段重跑 full 时还要记录完整 `full_test_suite`。`reviewctl` 会校验结构化字段、baseline 命令和计数、tree hash 与日志退出标记，但不会自行运行测试，也无法独立证明日志确由所写命令产生或风险分类准确；主代理仍须对照原始日志、HEAD 和 changed files 复核这些事实。
+- 检查 RED 证据、在修复前 commit 重放原始反例（默认独立 worktree；兜底 stash + checkout 必须经主代理批准）、在修复后验证、生成至少 2 个相邻测试（正常 + 边界）、合并到正式测试并提交 `add(adjacent)`，再在提交后的 HEAD 上运行 impacted 回归。P0/P1、`risk_assessment = high`、baseline 为 full-everywhere，或实现阶段 full 证据缺失/不匹配时，验证代理必须自己重跑完整回归；full 证据失败时先重新修复并重新 GREEN full，或按环境/flaky 记录后判 `inconclusive`。P0/P1 和高风险不能复用实现证据。不得把实现代理的结论当作验证结果。
+- 验证代理把相邻测试合并到正式测试后，按 `add(adjacent): [ID] ...` 提交。提交前运行 `git diff --cached --name-only`，确认只包含正式测试文件，不包含源代码、`.review-evidence/`、`tests/review/` 或用户暂存改动；主代理用 `--merged-test` 记录这些正式测试路径和 commit SHA，确保它们进入 git 历史。
 - 验证代理不得强制清理或以任何方式覆盖用户改动；兜底流程必须记录原 HEAD 并验证恢复结果。
 - 无法生成有意义的相邻测试时，必须说明理由才能 pass。
 - 两次失败/无法确定的验证记录耗尽同一 finding 的修复预算；所有 repair 入口都执行此上限，重新裁决不会清零次数。耗尽后用 `mark-unresolved --id ID --reason TEXT` 登记未解决（包括重新进入 adjudication 的情况），或根据新证据改为 deferred/rejected；可继续处理其他有预算的 finding。
 - 若所有可用代理都已参与该 finding 的实现，先获得用户明确授权，用 `reviewctl authorize --action main-agent-verification --decision authorized` 留痕，再由主代理执行验证；`record-verification` 加 `--verified-by main-agent`，在 `verification-result.md` 标注 `verified_by: main-agent`，在 `adjudication.md` 标为高风险，并在最终报告列明。
 - 验证开始前对照 `baseline_head` 运行 `git status --short`；发现与被验 finding 相关的新外部改动时，记为 `inconclusive`，在 `blockers` 说明并列出冲突文件。不要使用 `blocked_by_user_changes`（该状态只用于 repair 无法提交）。
 - 结果：
-  - `pass`：完成所有检查，主代理确认证据后 finding 可标 verified。
+  - `pass`：完成所有检查，`regression_scope` 至少为 impacted；P0/P1、`risk_assessment = high`、`full-everywhere` 或 `already_fixed` 时验证代理重跑 full（普通风险 P2/P3 的 `already_fixed` 可按模板使用 baseline ancestor 例外），主代理确认证据后 finding 可标 verified。
   - `fail`：保持未 verified，回到 repair；同一 finding 最多 2 次修复-验证循环。第 2 次仍 fail 时先运行 `reviewctl mark-unresolved --id [ID] --reason ...` 登记原 finding 未解决，再运行 `reviewctl advance --to adjudication` 记录更高优先级回归 finding。
   - `inconclusive`：保持 accepted 但未 verified；最多重新委派 1 次，仍无法判定则用 `reviewctl mark-unresolved` 登记未解决并继续其他项；不得当作 pass 或 CONVERGED 依据。脚本不再自动把第二次 inconclusive/fail 视为终结，必须显式 `mark-unresolved`。
 
@@ -335,12 +342,13 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 - 主代理从 `baseline.md` 提取 MVP 范围、验收标准、当前 HEAD、测试/构建命令，直接写在提示中。
 - 不提供 finding、adjudication、历史评审结论或修复清单。
 - 审计代理不得读取 `.review-evidence/` 中任何历史内容；完整候选证据写入 `inbox/`，摘要只在 `blind-scan.md` 记录一次。
-- 使用 `agent-prompts.md` 的最终审计第一阶段模板；没有发现时返回 `findings: []`。
+- 使用 `agent-prompts.md` 的最终审计第一阶段模板；没有发现时返回 `findings: []`。第一阶段可用 focused/impacted 探索，full 测试留给第二阶段。
 
 ### 6.2 第二阶段：定向复核
 
 - 第一阶段保存后，提供所有 accepted finding、未结的范围内 needs-evidence P0/P1、原始证据路径、修复测试路径和提交。
-- 要求逐项复核修复有效性、回归、测试覆盖、遗留风险，并运行完整测试、构建和适用静态检查。
+- 第一阶段盲扫可用 focused/impacted 探索；**第二阶段必须运行 full 测试、构建和适用静态检查**，并记录 HEAD、tree hash、workspace clean、run location、测试计数和日志；第一阶段结果不能替代第二阶段 full。
+- 要求逐项复核修复有效性、回归、测试覆盖、遗留风险。
 - 结果写入 `targeted-review.md`；不得改写第一阶段结论。
 - 运行 `reviewctl record-audit --attempt K --status complete --new-issues N --auditor NAME` 记录结果；审计代理身份写入 state 和 `blind-scan.md`。审计无法完成时可用 `--status failed` 记录（不要求两份报告），随后从 `final_audit` 进入 `report` 并 `finalize --status incomplete`；已记录的 attempt 不能覆盖。
 - `new_issues=N` 表示该 attempt 报告了 N 个新问题；进入 `adjudication` 后必须为这 N 个问题各记录一个 `source=final-audit`、`audit_attempt=K` 的 finding（重复项也要记录并裁决/去重），否则 `advance --to round_decision` 和 `finalize` 都会拒绝。仅记录 1 个 rejected finding 不能代表 N 个问题已裁决。
@@ -397,7 +405,7 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 
 压缩上下文后：
 
-1. 立即读取 `.review-evidence/run-state.md` 和 `.review-evidence/state.json`。
+1. 立即读取 `.review-evidence/run-state.md`、`.review-evidence/state.json` 和 `baseline.md` 的 “Test Scope / Regression Policy”。
 2. 运行 `reviewctl status` 和 `reviewctl validate`；失败时先运行 `reviewctl normalize`。没有 Node.js 时无法推进状态机，停止并报告阻塞。
 3. 确认 `current_phase`、`current_round`、`max_rounds`、`rounds_consumed`、`can_trigger_new_round`、`final_audit_attempt` 和 `next_action`。
 4. 按 `next_action` 继续；不要跳过或重复已完成的阶段。

@@ -8,7 +8,7 @@
 
 ### 1. 读取并校验 `.review-evidence/state.json`
 
-`state.json` 和 `findings.json` 是事实来源；`run-state.md` / `findings-index.md` 是生成视图。
+`state.json` 和 `findings.json` 是事实来源；`run-state.md` / `findings-index.md` 是生成视图。同时读取 `baseline.md` 的 **Test Scope / Regression Policy**，确认 focused/impacted/full 命令、高风险路径和 baseline full result；委派实现/验证代理时必须一并提供。
 
 获取当前状态：
 
@@ -50,10 +50,11 @@ node <skill-dir>/scripts/reviewctl.js validate
 
 **唯一例外**：没有未参与该 finding 的独立代理可用（所有可用代理都提交过相关候选，或没有代理可用）时，主代理经用户明确授权后才能亲自复现或验证；必须在 `adjudication.md` 标为高风险，并在最终报告单独披露。
 
-**委派时还要传两样东西**：
+**委派时还要传三样东西**：
 
 - 当前技能目录的绝对路径：把模板中的 `[skill-dir]` 替换为当前 harness 的实际安装路径（各 harness 不同，动态解析），并给出 `node "[skill-dir]/scripts/reviewctl.js"` 的可执行形式；子代理只读使用，不得修改状态或推进阶段。
 - 编译缓存信息：长编译项目（Rust、C++、大型 TypeScript 等）已在 baseline 完成编译预热，委派时附上共享缓存路径/环境变量和磁盘预算，要求子代理在预算内复用；不要每个 finding 重建依赖或创建独立 target。超预算时在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理。
+- 测试范围信息：`baseline.md` 的 “Test Scope / Regression Policy” 摘要（focused/impacted/full 命令、高风险路径、baseline full result），以及当前 finding 的 severity；验证代理无法判断高风险时按高风险处理。
 
 ## 常见压缩后错误
 
@@ -71,6 +72,10 @@ node <skill-dir>/scripts/reviewctl.js validate
 | 手工 finding 被测试卡住 | `record-implementation` 报缺少 `--test` | 用 `--manual` 并记录独立人工复测 |
 | 到 max_rounds 仍开新轮 | 终审发现新问题后启动第 max_rounds+1 轮 | 报告 INCOMPLETE |
 | 每个 finding 全量编译 | Rust 等长编译项目反复重建 | baseline 预热共享缓存，子代理复用；超预算时按轮次集中清理 |
+| GREEN 只跑 focused/impacted | 提交前没有全量证据 | 重新运行 baseline 的 full 命令，记录命令、退出码、tree hash、测试计数和日志 |
+| 验证阶段重复全量 | 实现和验证各跑一次 full | 验证默认 impacted + 复核 GREEN full 证据；P0/P1、高风险、full-everywhere 或证据不可信时才重跑 full |
+| 误以为结构化证据等于真实运行 | CLI 校验结构化字段，但不会执行测试或验证日志真实性/风险判断 | 主代理对照原始日志、HEAD 和 changed files 复核 |
+| baseline full 红灯 | 直接进入 review，后续每个 GREEN full 都失败 | 停止并报告 blocked；不得带红灯基线进入 review，也不得用排除项冒充 full |
 | 委派提示缺少脚本路径 | 子代理找不到 `reviewctl` | 把 `[skill-dir]` 替换为动态解析的绝对路径 |
 
 ## 阶段流转简图

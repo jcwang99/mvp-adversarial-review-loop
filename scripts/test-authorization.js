@@ -6,6 +6,7 @@ const { execFileSync, spawnSync } = require("node:child_process");
 const { test } = require("node:test");
 const { hasAuthorization, authorizationReceipt, wasAuthorized } = require("./lib/authorization");
 const CLI = path.join(__dirname, "reviewctl.js");
+const testPolicyFixtures = require('./test-policy-fixtures');
 const ID = "R1-F001-SEC";
 const OTHER = "R1-F002-SEC";
 const ACTIONS = ["main-agent-reproduction", "main-agent-verification", "skip-mandatory-challenge"];
@@ -29,7 +30,7 @@ function fixture(t) {
   execFileSync("git", ["add", "README.md"], { cwd: project });
   execFileSync("git", ["commit", "-qm", "fixture"], { cwd: project });
   run(project, ["init", "--max-rounds", "2", "--user-confirmed"]);
-  write(project, ".review-evidence/baseline.md", "# Baseline\nScope: authorization regression fixture\n");
+  testPolicyFixtures.writeBaseline(project);
   run(project, ["advance", "--to", "review"]);
   phase(project, "adjudication");
   const evidence = `.review-evidence/round-1/${ID}`;

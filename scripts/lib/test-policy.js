@@ -1,0 +1,416 @@
+const fs = require("node:fs");
+const path = require("node:path");
+
+const EVIDENCE = ".review-evidence";
+
+function section(markdown, title) {
+  const lines = String(markdown).replace(/\r/g, "").split("\n");
+  const start = lines.findIndex((line) => line.trim().toLowerCase() === `## ${title}`.toLowerCase());
+  if (start < 0) return "";
+  const result = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^##\s+/.test(lines[index].trim())) break;
+    result.push(lines[index]);
+  }
+  return result.join("\n");
+}
+
+function bullet(sectionText, label) {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = sectionText.match(new RegExp(`^\\s*-\\s*${escaped}:\\s*(.*?)\\s*$`, "im"));
+  return match ? match[1].trim().replace(/^`|`$/g, "") : "";
+}
+
+function parseBaselinePolicy(project) {
+  const errors = [];
+  const filename = path.join(project, EVIDENCE, "baseline.md");
+  if (!fs.existsSync(filename)) {
+    return { policy: null, errors: ["缺少 .review-evidence/baseline.md"] };
+  }
+  const text = fs.readFileSync(filename, "utf8");
+  const scope = section(text, "Test Scope / Regression Policy");
+  if (!scope) return { policy: null, errors: ["baseline.md 缺少 Test Scope / Regression Policy 小节"] };
+
+  const policy = {
+    tieringMode: bullet(scope, "Tiering mode").toLowerCase(),
+    baselineResult: bullet(scope, "Baseline full result").toLowerCase(),
+    baselineLog: bullet(scope, "Baseline full log"),
+    expectedTestCount: Number((bullet(scope, "Expected test count").match(/\d+/) || [])[0]),
+    focusedCommand: bullet(scope, "Focused test command"),
+    impactedCommand: bullet(scope, "Impacted test command"),
+    fullCommand: bullet(scope, "Full test command"),
+  };
+  const baselineTestValues = bullet(scope, "Expected test count").split(" / ").map((value) => Number.parseInt(value.trim(), 10));
+  policy.baselineTestCounts = {
+    total: baselineTestValues[0],
+    passed: baselineTestValues[1],
+    failed: baselineTestValues[2],
+    skipped: baselineTestValues[3],
+  };
+  policy.expectedTestCount = policy.baselineTestCounts.total;
+  if (!["default", "full-everywhere"].includes(policy.tieringMode)) {
+    errors.push("baseline.md 的 Tiering mode 必须是 default 或 full-everywhere");
+  }
+  if (policy.baselineResult !== "pass") {
+    errors.push("baseline full result 必须为 pass 才能进入 review");
+  }
+  if (baselineTestValues.length < 4 || !Object.values(policy.baselineTestCounts).every((value) => Number.isSafeInteger(value) && value >= 0) || policy.expectedTestCount < 1) {
+    errors.push("baseline.md 的 Expected test count 必须依次记录 total / passed / failed / skipped");
+  } else if (policy.baselineTestCounts.failed !== 0 || policy.baselineTestCounts.passed + policy.baselineTestCounts.failed + policy.baselineTestCounts.skipped !== policy.expectedTestCount) {
+    errors.push("baseline.md 的测试计数必须满足 failed=0 且 passed + failed + skipped = total");
+  }
+  for (const [label, value] of [
+    ["Focused test command", policy.focusedCommand],
+    ["Impacted test command", policy.impactedCommand],
+    ["Full test command", policy.fullCommand],
+  ]) {
+    if (!value || /\[|\]|TODO|<[^>]+>/i.test(value)) errors.push(`baseline.md 的 ${label} 未填写有效命令`);
+  }
+  if (policy.baselineLog) {
+    const logPath = resolveEvidencePath(project, policy.baselineLog, errors, "Baseline full log");
+    if (logPath && !hasSuccessfulExit(logPath)) errors.push("baseline full log 缺少 EXIT_CODE=0");
+  } else {
+    errors.push("baseline.md 缺少 Baseline full log");
+  }
+  if (/\|\|\s*true|--passWithNoTests/i.test(policy.fullCommand)) {
+    errors.push("baseline Full test command 不得吞掉失败或允许零测试通过");
+  }
+  return { policy, errors };
+}
+
+function resolveEvidencePath(project, filename, errors, label) {
+  const normalized = String(filename || "").replace(/\\/g, "/");
+  const absolute = path.resolve(project, normalized);
+  const relative = path.relative(path.resolve(project), absolute).replace(/\\/g, "/");
+  if (relative !== EVIDENCE && !relative.startsWith(`${EVIDENCE}/`)) {
+    errors.push(`${label} 必须位于 ${EVIDENCE}/ 内`);
+    return null;
+  }
+  if (!fs.existsSync(absolute) || !fs.statSync(absolute).isFile()) {
+    errors.push(`${label} 不存在或不是普通文件：${filename}`);
+    return null;
+  }
+  try {
+    const evidenceRoot = fs.realpathSync(path.join(project, EVIDENCE));
+    const realFile = fs.realpathSync(absolute);
+    const realRelative = path.relative(evidenceRoot, realFile);
+    if (realRelative === ".." || realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) {
+      errors.push(`${label} 的真实路径越出 ${EVIDENCE}/`);
+      return null;
+    }
+  } catch {
+    errors.push(`${label} 无法解析真实路径：${filename}`);
+    return null;
+  }
+  return absolute;
+}
+
+function hasSuccessfulExit(logPath) {
+  try {
+    return /(?:^|\n)\s*EXIT_CODE\s*=\s*0\s*(?:\r?$|\n)/m.test(fs.readFileSync(logPath, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+function parseJsonSection(markdown, heading, label) {
+  const errors = [];
+  const content = section(markdown, heading);
+  if (!content) return { value: null, errors: [`缺少 ${label} 小节`] };
+  const fence = String.fromCharCode(96).repeat(3);
+  const slash = String.fromCharCode(92);
+  const body = "[" + slash + "s" + slash + "S]*?";
+  const blocks = [...content.matchAll(new RegExp(
+    fence + "json" + slash + "s*(" + body + ")" + fence +
+      "|~~~json" + slash + "s*(" + body + ")~~~",
+    "gi"
+  ))];
+  if (blocks.length !== 1) return { value: null, errors: [`${label} 必须恰有一个 JSON 代码块`] };
+  try {
+    const value = JSON.parse(blocks[0][1] ?? blocks[0][2]);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("JSON 根值必须是对象");
+    return { value, errors };
+  } catch (error) {
+    return { value: null, errors: [`${label} JSON 无效：${error.message}`] };
+  }
+}
+
+function isTreeHash(value) {
+  return typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value);
+}
+
+function validateFullRun(project, run, policy, label, expectedTreeHash = null) {
+  const errors = [];
+  if (!run || typeof run !== "object" || Array.isArray(run)) return [`${label} 缺少结构化 full 测试证据`];
+  if (run.status !== "pass") errors.push(`${label} status 必须为 pass`);
+  if (typeof run.command !== "string" || run.command.trim() !== policy.fullCommand.trim()) {
+    errors.push(`${label} command 必须与 baseline Full test command 完全一致`);
+  }
+  if (/\|\|\s*true|--passWithNoTests/i.test(String(run.command || ""))) {
+    errors.push(`${label} command 不得吞掉失败或允许零测试通过`);
+  }
+  if (run.exit_status !== 0) errors.push(`${label} exit_status 必须为数值 0`);
+
+  if (!isTreeHash(run.tree_hash_before) || !isTreeHash(run.tree_hash_after)) {
+    errors.push(`${label} 必须记录有效的 tree_hash_before 和 tree_hash_after`);
+  } else {
+    if (run.tree_hash_before.toLowerCase() !== run.tree_hash_after.toLowerCase()) errors.push(`${label} 测试前后 tree hash 不一致`);
+    if (expectedTreeHash !== null && run.tree_hash_after.toLowerCase() !== String(expectedTreeHash).toLowerCase()) {
+      errors.push(`${label} tree hash 与被验证的 index/commit tree 不一致`);
+    }
+  }
+
+  if (!(run.run_location === "main-workspace" || (typeof run.run_location === "string" && /^worktree:.+/.test(run.run_location.trim())))) {
+    errors.push(`${label} run_location 必须是 main-workspace 或 worktree:<path>`);
+  }
+  if (run.workspace_clean_before !== true || run.workspace_clean_after !== true) {
+    errors.push(`${label} 必须证明测试前后被测工作区均 clean`);
+  }
+
+  const counts = run.test_counts;
+  if (!counts || !["total", "passed", "failed", "skipped"].every((key) => Number.isSafeInteger(counts[key]) && counts[key] >= 0)) {
+    errors.push(`${label} test_counts 必须包含非负整数 total/passed/failed/skipped`);
+  } else {
+    if (counts.total < 1) errors.push(`${label} total 必须大于 0`);
+    if (counts.failed !== 0) errors.push(`${label} failed 必须为 0`);
+    if (counts.passed + counts.failed + counts.skipped !== counts.total) {
+      errors.push(`${label} passed + failed + skipped 必须等于 total`);
+    }
+    const delta = run.expected_test_count_delta;
+    if (!Number.isSafeInteger(delta)) {
+      errors.push(`${label} expected_test_count_delta 必须是整数`);
+    } else if (counts.total !== policy.expectedTestCount + delta) {
+      errors.push(`${label} total 必须等于 baseline 预期数量加 expected_test_count_delta`);
+    }
+    if (delta !== 0 && !(typeof run.expected_test_count_delta_reason === "string" && run.expected_test_count_delta_reason.trim())) {
+      errors.push(`${label} 新增测试数量变化必须说明 expected_test_count_delta_reason`);
+    }
+    const skippedDelta = run.expected_skipped_count_delta;
+    if (!Number.isSafeInteger(skippedDelta) || counts.skipped !== policy.baselineTestCounts.skipped + skippedDelta) {
+      errors.push(`${label} skipped 必须等于 baseline skipped 加 expected_skipped_count_delta`);
+    } else if (skippedDelta !== 0 && !(typeof run.expected_skipped_count_delta_reason === "string" && run.expected_skipped_count_delta_reason.trim())) {
+      errors.push(`${label} skipped 数量变化必须说明 expected_skipped_count_delta_reason`);
+    }
+  }
+
+  const logPath = resolveEvidencePath(project, run.log, errors, `${label} log`);
+  if (logPath && !hasSuccessfulExit(logPath)) errors.push(`${label} log 缺少 EXIT_CODE=0`);
+  return errors;
+}
+
+function gitTree(project, ref) {
+  const { execFileSync } = require("node:child_process");
+  return execFileSync("git", ["rev-parse", `${ref}^{tree}`], { cwd: project, encoding: "utf8" }).trim();
+}
+
+function indexTree(project) {
+  const { execFileSync } = require("node:child_process");
+  return execFileSync("git", ["write-tree"], { cwd: project, encoding: "utf8" }).trim();
+}
+
+function safeIndexTree(project) {
+  try {
+    return indexTree(project);
+  } catch {
+    return null;
+  }
+}
+
+function validateTestedCommit(project, testedCommit, expectedTree, label, errors) {
+  if (typeof testedCommit !== "string" || !testedCommit.trim()) {
+    errors.push(label + " 必须记录 tested_commit");
+    return;
+  }
+  try {
+    if (expectedTree && gitTree(project, testedCommit).toLowerCase() !== String(expectedTree).toLowerCase()) {
+      errors.push(label + " tree hash 与 tested_commit 不一致");
+    }
+    require("node:child_process").execFileSync("git", ["merge-base", "--is-ancestor", testedCommit, "HEAD"], { cwd: project, stdio: "ignore" });
+  } catch (error) {
+    errors.push(label + " tested_commit 无效或不在 HEAD 历史中：" + error.message);
+  }
+}
+
+function parseImplementationEvidence(project, filename, expectedTreeHash = null) {
+  const errors = [];
+  if (!fs.existsSync(filename)) return { run: null, policy: null, errors: ["缺少 implementation-result.md"] };
+  const baseline = parseBaselinePolicy(project);
+  errors.push(...baseline.errors);
+  if (!baseline.policy) return { run: null, policy: null, errors };
+  const report = fs.readFileSync(filename, "utf8");
+  const parsed = parseJsonSection(report, "Reviewctl GREEN Evidence", "Reviewctl GREEN Evidence");
+  errors.push(...parsed.errors);
+  const run = parsed.value?.full_suite;
+  if (run) errors.push(...validateFullRun(project, run, baseline.policy, "GREEN full evidence", expectedTreeHash));
+  else errors.push("Reviewctl GREEN Evidence 缺少 full_suite 对象");
+  return { run, policy: baseline.policy, errors };
+}
+
+function validateVerificationEvidence(project, finding, config, filename, expectedHeadTree = null) {
+  const errors = [];
+  if (!expectedHeadTree) {
+    try {
+      expectedHeadTree = gitTree(project, "HEAD");
+    } catch (error) {
+      errors.push("无法读取当前 HEAD tree：" + error.message);
+    }
+  }
+  const baseline = parseBaselinePolicy(project);
+  errors.push(...baseline.errors);
+  if (!baseline.policy) return errors;
+  if (!fs.existsSync(filename)) return [...errors, "缺少 verification-result.md"];
+
+  const report = fs.readFileSync(filename, "utf8");
+  const parsed = parseJsonSection(report, "Reviewctl Verification Evidence", "Reviewctl Verification Evidence");
+  errors.push(...parsed.errors);
+  const evidence = parsed.value;
+  if (!evidence) return errors;
+  if (evidence.schema_version !== 1) errors.push("Reviewctl Verification Evidence schema_version 必须为 1");
+  if (evidence.verdict !== "pass") errors.push("Reviewctl Verification Evidence verdict 必须为 pass");
+  const regression = evidence.regression;
+  if (!regression || !["impacted", "full"].includes(regression.scope)) {
+    errors.push("regression.scope 必须是 impacted 或 full");
+  }
+  if (!regression || regression.status !== "pass") errors.push("regression.status 必须为 pass");
+  if (!regression || typeof regression.command !== "string" || !regression.command.trim()) {
+    errors.push("regression.command 不能为空");
+  }
+  if (regression) {
+    if (regression.exit_status !== 0) errors.push("regression.exit_status 必须为数值 0");
+    const regressionCommand = String(regression.command || "").toLowerCase();
+    if (regressionCommand.includes("|| true") || regressionCommand.includes("--passwithnotests")) {
+      errors.push("regression.command 不得吞掉失败或允许零测试通过");
+    }
+    if (regression.scope === "impacted") {
+      if (regression.command?.trim() !== baseline.policy.impactedCommand.trim()) {
+        errors.push("impacted regression.command 必须与 baseline Impacted test command 一致");
+      }
+      if (regression.dependency_closure !== "transitive_reverse") {
+        errors.push("impacted 必须声明已覆盖直接依赖方的传递反向依赖闭包");
+      }
+      if (!Array.isArray(regression.changed_paths) || regression.changed_paths.length === 0 ||
+          !Array.isArray(regression.impacted_targets) || regression.impacted_targets.length === 0 ||
+          typeof regression.impact_basis !== "string" || !regression.impact_basis.trim()) {
+        errors.push("impacted evidence 必须记录 changed_paths、impacted_targets 和 impact_basis");
+      }
+      if (![...(regression.changed_paths || []), ...(regression.impacted_targets || [])].every((value) => typeof value === "string" && value.trim())) {
+        errors.push("changed_paths 和 impacted_targets 必须是非空字符串列表");
+      }
+      if (!isTreeHash(regression.tree_hash_before) || regression.tree_hash_before !== regression.tree_hash_after ||
+          regression.tree_hash_after.toLowerCase() !== String(expectedHeadTree || "").toLowerCase()) {
+        errors.push("impacted regression tree hash 必须在测试前后稳定并匹配当前 HEAD");
+      }
+      validateTestedCommit(project, regression.tested_commit, expectedHeadTree, "impacted regression", errors);
+      const counts = regression.test_counts;
+      if (!counts || !["total", "passed", "failed", "skipped"].every((key) => Number.isSafeInteger(counts[key]) && counts[key] >= 0) ||
+          counts.total < 1 || counts.failed !== 0 || counts.passed + counts.failed + counts.skipped !== counts.total) {
+        errors.push("impacted test_counts 无效或包含失败/零测试");
+      }
+      const regressionLog = resolveEvidencePath(project, regression.log, errors, "impacted regression log");
+      if (regressionLog && !hasSuccessfulExit(regressionLog)) errors.push("impacted regression log 缺少 EXIT_CODE=0");
+    }
+    if (regression.scope === "full" && regression.command?.trim() !== baseline.policy.fullCommand.trim()) {
+      errors.push("full regression.command 必须与 baseline Full test command 一致");
+    }
+  }
+  if (!['normal', 'high'].includes(evidence.risk_assessment)) {
+    errors.push("risk_assessment 必须是 normal 或 high");
+  }
+  if (evidence.risk_assessment === "high" && !(typeof evidence.risk_reason === "string" && evidence.risk_reason.trim())) {
+    errors.push("high risk_assessment 必须填写 risk_reason");
+  }
+
+  const verificationFull = evidence.full_test_suite;
+  if (verificationFull) {
+    errors.push(...validateFullRun(project, verificationFull, baseline.policy, "verification full evidence", expectedHeadTree));
+    if (typeof verificationFull.tested_commit !== "string" || !verificationFull.tested_commit.trim()) {
+      errors.push("verification full evidence 必须记录 tested_commit");
+    } else {
+      try {
+        if (gitTree(project, verificationFull.tested_commit).toLowerCase() !== String(verificationFull.tree_hash_after || "").toLowerCase()) {
+          errors.push("verification full evidence tree hash 与 tested_commit 不一致");
+        }
+        require("node:child_process").execFileSync("git", ["merge-base", "--is-ancestor", verificationFull.tested_commit, "HEAD"], { cwd: project, stdio: "ignore" });
+      } catch (error) {
+        errors.push(`verification full tested_commit 无效或不在 HEAD 历史中：${error.message}`);
+      }
+    }
+    if (regression?.log !== verificationFull.log) errors.push("regression.log 必须与 verification full log 一致");
+  }
+  if (baseline.policy.tieringMode === "full-everywhere" && regression?.scope !== "full") {
+    errors.push("full-everywhere 要求 verification regression.scope=full");
+  }
+  if (regression?.scope === "full") {
+    if (!verificationFull || regression.command?.trim() !== verificationFull.command?.trim()) {
+      errors.push("regression.scope=full 时必须提供同一命令的 verification full evidence");
+    }
+  }
+  if (verificationFull && regression?.scope !== "full") {
+    errors.push("提供 verification full evidence 时 regression.scope 必须为 full");
+  }
+
+  const implementationPath = path.join(path.dirname(filename), "implementation-result.md");
+  const impl = parseImplementationEvidence(project, implementationPath);
+  const implStatus = evidence.implementation_full_suite_status;
+  if (finding.implementation_status === "fixed") {
+    if (impl.run?.status === "fail") errors.push("实现阶段 GREEN full 为 fail，必须重新修复并通过 GREEN full");
+    if (!finding.commit || finding.commit === "none") errors.push("fixed finding 缺少修复 commit，无法核对 GREEN tree");
+    else {
+      try {
+        const fixTree = gitTree(project, finding.commit);
+        errors.push(...validateFullRun(project, impl.run, impl.policy || baseline.policy, "GREEN full evidence", fixTree));
+      } catch (error) {
+        errors.push(`无法读取修复 commit tree：${error.message}`);
+      }
+    }
+    if (implStatus !== "pass") errors.push("implementation_full_suite_status 必须为 pass");
+    errors.push(...impl.errors);
+  }
+
+  const severityRequiresFull = ["P0", "P1"].includes(finding.severity) || evidence.risk_assessment === "high";
+  const tieringRequiresFull = baseline.policy.tieringMode === "full-everywhere";
+  if (finding.implementation_status === "already_fixed" && !verificationFull) {
+    const fullRequired = severityRequiresFull || tieringRequiresFull;
+    const exception = evidence.already_fixed_baseline_exception;
+    let validException = false;
+    if (!fullRequired && exception && finding.commit && finding.commit !== "none" &&
+        baseline.policy.baselineResult === "pass" && config?.baseline_head) {
+      try {
+        const { execFileSync } = require("node:child_process");
+        execFileSync("git", ["merge-base", "--is-ancestor", finding.commit, config.baseline_head], {
+          cwd: project,
+          stdio: "ignore",
+        });
+        validException = true;
+      } catch {}
+    }
+    if (fullRequired) {
+      errors.push("P0/P1、高风险或 full-everywhere finding 必须由验证阶段重跑 full");
+    } else if (validException) {
+      if (exception.baseline_head_ancestor !== true || exception.baseline_full_pass !== true) {
+        errors.push("already_fixed baseline exception 必须记录 ancestry 与 baseline full pass 两项事实");
+      }
+    } else {
+      errors.push("already_fixed 默认必须运行 verification full；仅普通风险的 baseline ancestor finding 可例外");
+    }
+  } else if (finding.implementation_status === "fixed") {
+    if ((severityRequiresFull || tieringRequiresFull) && !verificationFull) {
+      errors.push("P0/P1、高风险或 full-everywhere finding 必须由验证阶段重跑 full");
+    }
+  }
+
+  if ((finding.implementation_status === "fixed" || finding.implementation_status === "already_fixed") &&
+      evidence.verdict !== "pass") errors.push("只有完整证据满足条件时才能记录 pass");
+  return errors;
+}
+
+module.exports = {
+  parseBaselinePolicy,
+  parseJsonSection,
+  parseImplementationEvidence,
+  validateFullRun,
+  validateVerificationEvidence,
+  gitTree,
+  indexTree,
+  safeIndexTree,
+};

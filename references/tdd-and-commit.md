@@ -15,16 +15,16 @@
 原始反例证据路径：[.review-evidence/round-[N]/R[N]-F[XXX]-[CAT]/ 中的 reproduce.* 或 manual-steps.md]（使用主代理分配的标准 ID）
 验收断言：[可测试的行为]
 允许改动：[文件/模块]
-必须运行：[聚焦测试、回归、静态或安全检查]
+必须运行：[focused 测试（RED）、full 测试（GREEN 提交前）、静态或安全检查]
 禁止：[用户已有改动、无关重构、真实外部写入]
 
 ## 运行约定
 - 从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
 - 项目测试套件使用项目本身的测试配置和数据机制
 - 若需要验证修复前后状态对比的临时数据，可放在：.review-evidence/round-[N]/_testdata/impl-[finding-id]/
-- **测试输出先落盘**：运行 RED/GREEN/完整回归命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；RED、GREEN、full-suite 可分别写入 `output-red.log`、`output-green.log`、`output-full-suite.log`
+- **测试输出先落盘**：运行 RED/GREEN/full 命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；RED、GREEN、full 可分别写入 `output-red.log`、`output-green.log`、`output-full-suite.log`
 - **技能脚本（如需）**：`node "[skill-dir]/scripts/reviewctl.js"`；`[skill-dir]` 由主代理替换为当前 harness 的实际绝对路径；用于 `guard-commit` 或状态查看，不要修改状态或推进阶段
-- **编译缓存复用（按磁盘预算）**：在 baseline 记录的磁盘预算内复用缓存（Rust 如 `CARGO_TARGET_DIR`）；优先 `cargo test --test <target> <filter>` 或 `cargo nextest run <filter>`，不要为每个 finding 新建 target 目录。缓存超预算时按主代理指示在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
+- **编译缓存复用（按磁盘预算）**：在 baseline 记录的磁盘预算内复用缓存（Rust 如 `CARGO_TARGET_DIR`）；focused 优先 `cargo test --test <target> <filter>` 或 `cargo nextest run -p <crate> -E 'test(<filter>)'`，impacted 用 `cargo nextest run -p <crate> -p <dependent>`，GREEN 按 baseline 的 full 命令运行；不要为每个 finding 新建 target 目录。缓存超预算时按主代理指示在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
 
 ## 输出约定
 - 完整实现报告写入：.review-evidence/round-[N]/[标准 ID]/implementation-result.md
@@ -32,6 +32,32 @@
 - 返回修复摘要、命令与退出状态摘要、证据路径、提交哈希和未解决问题
 - 不要在回复中粘贴完整日志，不要替其他 finding 改代码
 ```
+
+## 测试范围分级
+
+**GREEN 阶段始终运行完整测试套件**；focused/impacted 只用于 RED、实现内循环和验证阶段，不能替代 GREEN 的全量结果。
+
+| 范围 | 含义 | 典型用途 |
+|------|------|----------|
+| focused | 反例、相邻测试或单个模块/测试目标 | RED、快速反馈 |
+| impacted | 改动所在 package/crate、直接依赖方及相关测试目标 | 验证阶段的默认回归 |
+| full | 项目/workspace 的完整测试套件 | GREEN 提交前、P0/P1/高风险/full-everywhere 验证、already_fixed 默认验证、最终审计 |
+
+- **GREEN 全量证据**：提交前运行 baseline 记录的 full 命令。full 必须在干净工作区或独立 worktree 中运行；“干净”指除本次有意暂存的修复源代码和正式测试外，没有未暂存或 untracked 的源代码/测试改动。运行前暂存本次修复的源代码和正式测试，执行 `git diff --quiet`，并把 `git status --short`、HEAD 和完整命令写入日志头。full 通过后立即用 `git write-tree` 记录 tree hash，提交后与 `git rev-parse <commit>^{tree}` 比较；日志记录命令、退出码、测试计数（total/passed/failed/skipped）和日志路径。存在用户改动时必须使用独立 worktree；全量失败、工作区不干净且未使用 worktree、或 tree hash 不一致时不得提交。
+- **验证默认 impacted**：验证代理独立重放反例、运行 adjacent 和 impacted 回归，并核对实现阶段的 full 证据（命令、退出码、tree hash 与修复 commit 一致、测试计数）。pass 的最低回归范围是 **impacted**；focused 只能作为补充。P0/P1、高风险变更、baseline 设为 full-everywhere，或 full 证据失败/缺失/不匹配时，验证代理必须自己重跑 full；P0/P1 和高风险变更不能用实现证据替代验证重跑。
+- **高风险触发 full**：构建/依赖清单（`Cargo.toml`、`Cargo.lock`、`build.rs`、workspace 配置）、公共 API、共享核心模块、认证/权限、数据 schema/迁移、并发/全局状态、feature flag、序列化、测试基础设施，或改动跨多个 package、无法有把握判断影响范围。“测试基础设施”仅指影响多个测试的 harness、配置、fixture、helper 或测试运行器；在普通正式测试文件中新增一个用例不算。
+- 小项目如果 full 只需 1-2 分钟，可以直接在所有阶段使用 full，不必引入分级。
+- Rust：focused 示例 `cargo nextest run -p <crate> -E 'test(<module_or_name>)'` 或 `cargo test -p <crate> --lib <filter>`；impacted = 改动所在 crate + 反向依赖 crate，示例 `cargo nextest run -p <crate> -p <dependent>`（反向依赖可用 `cargo tree -i <crate>` 或 `cargo metadata` 计算）；full 示例 `cargo nextest run --workspace --all-targets` 加 `cargo test --workspace --doc`。`cargo test <filter>` 仍会编译当前 package/workspace 默认成员的所有测试目标，缩小编译范围要用 `-p`、`--lib`、`--test` 或 `cargo nextest` 的 package/target 选择。
+
+### 实现状态与 full 义务
+
+| implementation_status | 实现阶段 full | 验证阶段 |
+|---|---|---|
+| `fixed`（含 manual fixed） | 提交前必须 `pass`；失败不得提交 | 复核证据；P0/P1、高风险或 full-everywhere 必须重跑 full |
+| `already_fixed` | 允许 `not_run` | 默认在当前 HEAD 重跑 full；普通风险 P2/P3 可按验证模板使用 baseline ancestor 例外 |
+| `prepared` | 允许 `not_run` | 不走 pass，按 `blocked_by_user_changes` 记录 |
+| `blocked` / `cannot_fix` | 允许 `not_run` | 不 pass，登记 unresolved |
+| `blocked_by_user_changes` | 允许 `not_run` | 不 pass；报告披露无 full 证据 |
 
 ## RED-GREEN 循环与测试合并
 
@@ -71,12 +97,14 @@
 2. **GREEN**：实现满足验收断言的最小修复
    - **只修改项目源代码**（不修改测试文件）
    - 沿用项目现有抽象和错误处理，避免顺手升级依赖、重排格式或重写不相关模块
-   - 修复后，运行 `npm test`（或项目的测试命令）：
+   - 修复后，运行 baseline 记录的 **full** 测试命令（小项目可直接用项目测试命令）：
      - 正式测试文件中新合并的测试应该通过
      - 所有原有项目测试也应该通过（确认无回归）
+   - 在 `implementation-result.md` 记录 full 命令、退出码、测试时的 tree hash 和日志路径；full 失败不得提交
    - 不要为了让测试通过而删除/放宽断言、吞掉错误、跳过权限检查或把真实调用改成无条件 mock
 
-3. **回归检查**：运行项目完整测试套件、类型检查、lint、构建和适用的安全扫描
+3. **回归检查**：GREEN 的 full 已覆盖测试；这里运行类型检查、lint、构建和适用的安全扫描
+   - 高风险变更在验证阶段按“测试范围分级”重跑 full
    - 记录跳过项、失败项和环境限制，不把未执行写成通过
    - 后续 findings 的修复会自动检查之前的修复（因为测试已合并到正式套件）
 
@@ -165,7 +193,7 @@ fix(review): [ID] concise behavior being corrected
 
 - 聚焦测试没有按预期失败，或手工复现没有观察到预期现象：停止实现，由主代理重新确认 finding。只可撤销实现代理自己刚添加且与用户改动隔离的测试；无法安全区分时保留现场并报告，不能继续猜测实现。
 - 修复后测试仍失败：区分代码失败、测试错误和环境故障，保留原始输出；最多做有理由的修正，不以无限重试代替诊断。
-- 完整回归失败：暂停后续低优先级 finding，判断是否为回归；必要时创建更高优先级 finding。
+- GREEN full 失败：暂停后续低优先级 finding，判断是否为回归；必要时创建更高优先级 finding。
 - 需要架构改动、破坏性迁移、真实凭据或生产数据：停止并请求主代理确认范围；不得擅自扩大任务。
 - 确认当前轮无法修复：运行 `record-implementation --status cannot_fix --reason TEXT`；环境/依赖阻塞用 `--status blocked --reason TEXT`。随后由主代理决定 `next-finding`、`advance --to round_decision` 或 `advance --to adjudication` 重新裁决。
 - 修复无法安全隔离用户改动：不提交，给出最小人工操作建议和阻塞证据。
@@ -177,7 +205,7 @@ fix(review): [ID] concise behavior being corrected
 - RED 阶段失败证据与原始反例一致。
 - **临时测试已复制并合并到项目正式测试文件**；手工 finding 已添加可行的自动化回归测试，或使用 `--manual` 记录无法自动化的理由、已尝试的相邻可测路径、以及修复前后手工执行证据。
 - 修复最小、可读、符合现有契约，且新增测试锁定回归；无法自动化的手工 finding 有明确理由和修复后复测证据。验证阶段产生的相邻测试必须用 `--merged-test` 记录其正式测试路径。
-- 聚焦和回归命令的实际结果已记录；失败/跳过没有被隐藏。
+- focused 和 GREEN full 命令的实际结果已记录，full 证据包含命令、退出码、tree hash、workspace clean/run location、测试计数（total/passed/failed/skipped）和日志；失败/跳过没有被隐藏。
 - **提交只包含当前 finding（源代码 + 正式测试文件修改）**，`git diff --check` 通过，用户改动未被覆盖。
 - commit、测试、反例和 finding ID 已通过 `reviewctl` 写入 `findings.json` / `state.json`。
 - **临时文件 `tests/review/reproductions/` 保留在工作区**（不提交，供 verification 使用）。

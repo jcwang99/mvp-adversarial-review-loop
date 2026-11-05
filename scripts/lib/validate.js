@@ -20,6 +20,7 @@ const {
 } = require("./state");
 const { verifyViews } = require("./render");
 const { wasAuthorized } = require("./authorization");
+const testPolicy = require("./test-policy");
 
 const TEST_SUFFIX =
   /(?:\.test\.[a-z0-9]+|\.spec\.[a-z0-9]+|_test\.[a-z0-9]+|_spec\.[a-z0-9]+|Test\.[a-z0-9]+|\.rs)$/i;
@@ -787,6 +788,10 @@ function validateProject(project, config, state, data) {
   }
   for (const finding of data.findings) {
     validateFindingFiles(project, finding, errors, state);
+    if (finding.verification === "pass" && ["fixed", "already_fixed"].includes(finding.implementation_status)) {
+      const verificationPath = path.join(path.resolve(project, finding.evidence_dir), "verification-result.md");
+      errors.push(...testPolicy.validateVerificationEvidence(project, finding, config, verificationPath));
+    }
     if (
       finding.source === "final-audit" &&
       !state.final_audit.attempts.some((attempt) => attempt.attempt === finding.audit_attempt)
@@ -876,6 +881,14 @@ function guardCommit(project, findingId, testPaths, data, state) {
     if (!exists(path.join(evidenceDir, "implementation-result.md"))) {
       errors.push(`${findingId}: 缺少 implementation-result.md`);
     }
+    const stagedTree = testPolicy.safeIndexTree(project);
+    if (!stagedTree) errors.push(findingId + ": 无法读取暂存区 tree hash");
+    const greenEvidence = testPolicy.parseImplementationEvidence(
+      project,
+      path.join(evidenceDir, "implementation-result.md"),
+      stagedTree
+    );
+    errors.push(...greenEvidence.errors.map((error) => `${findingId}: ${error}`));
   }
   const normalizedTests = (testPaths || []).map((file) => file.replace(/\\/g, "/"));
   for (const testFile of normalizedTests) {

@@ -17,6 +17,8 @@ const { convergenceReasons } = require("./lib/state");
 const CLI = path.join(__dirname, "reviewctl.js");
 let passed = 0;
 let failed = 0;
+const testPolicyFixtures = require('./test-policy-fixtures');
+const testPolicy = require("./lib/test-policy");
 
 function makeProject() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reviewctl-"));
@@ -30,6 +32,19 @@ function makeProject() {
 }
 
 function run(project, args, { expectFail = false } = {}) {
+  if (!expectFail && args[0] === 'record-implementation' && args.includes('fixed')) {
+    const id = String(args[args.indexOf('--id') + 1]).toUpperCase();
+    const commit = args[args.indexOf('--commit') + 1];
+    const items = JSON.parse(fs.readFileSync(path.join(project, '.review-evidence/findings.json'), 'utf8')).findings;
+    const finding = items.find((item) => item.id === id);
+    testPolicyFixtures.writeGreenEvidence(project, finding.evidence_dir, testPolicyFixtures.git(project, ['rev-parse', commit + '^{tree}']));
+  }
+  if (!expectFail && args[0] === 'record-verification' && args.includes('pass')) {
+    const id = String(args[args.indexOf('--id') + 1]).toUpperCase();
+    const items = JSON.parse(fs.readFileSync(path.join(project, '.review-evidence/findings.json'), 'utf8')).findings;
+    const finding = items.find((item) => item.id === id);
+    testPolicyFixtures.writeVerificationEvidence(project, finding.evidence_dir, finding);
+  }
   let output;
   try {
     output = execFileSync(
@@ -125,6 +140,7 @@ function init(project, maxRounds = 2) {
     ".review-evidence/baseline.md",
     "# Review Baseline\n\n## MVP Scope\n- Included: test\n- Explicitly excluded: none\n\n## Verification\n- Unit: node test\n"
   );
+  testPolicyFixtures.writeBaseline(project);
 }
 
 function addRoundHandoffs(project, round) {
@@ -493,6 +509,15 @@ test("init records max_rounds and generated views", () => {
   assert.ok(fs.existsSync(path.join(project, ".review-evidence/state.json")));
   assert.ok(fs.existsSync(path.join(project, ".review-evidence/findings.json")));
   assert.ok(fs.existsSync(path.join(project, ".review-evidence/run-state.md")));
+  const baseline = fs.readFileSync(path.join(project, ".review-evidence/baseline.md"), "utf8");
+  assert.match(baseline, /Test Scope \/ Regression Policy/);
+  assert.match(baseline, /Tiering mode/);
+  assert.match(baseline, /Baseline full result/);
+  assert.match(baseline, /Expected test count/);
+  assert.match(baseline, /Full suite composition/);
+  assert.match(baseline, /Feature matrix/);
+  assert.match(baseline, /Full test command/);
+  assert.match(baseline, /High-risk paths/);
   fs.unlinkSync(path.join(project, ".review-evidence/review-config.json"));
   run(project, ["init", "--max-rounds", "2", "--user-confirmed"], { expectFail: true });
 });
@@ -817,6 +842,11 @@ test("full happy path reaches converged", () => {
   write(project, "src/app.js", "module.exports = 1;\n");
   write(project, "tests/app.test.js", "// R1-F001-SEC\n");
   execFileSync("git", ["add", "src/app.js", "tests/app.test.js"], { cwd: project });
+  testPolicyFixtures.writeGreenEvidence(
+    project,
+    evidence,
+    testPolicyFixtures.git(project, ["write-tree"])
+  );
   run(project, [
     "guard-commit",
     "--finding",
@@ -1253,6 +1283,90 @@ test("already_fixed requires a tracked test file", () => {
   ], { expectFail: true });
 });
 
+test("already_fixed requires the formal test content to be committed in HEAD", () => {
+  const project = makeProject();
+  init(project, 2);
+  const evidence = setupAcceptedFinding(project, {
+    id: "R1-F001-FUNC", role: "FUNC", original: "FUNC-001", severity: "P2",
+    slug: "r1_f001_func",
+  });
+  run(project, ["advance", "--to", "repair"]);
+  write(project, `${evidence}/implementation-result.md`, "# Implementation Result\n\n## RED Phase\nr\n\n## GREEN Phase\ng\n");
+  write(project, "tests/fix.test.js", "// R1-F001-FUNC\n");
+  execFileSync("git", ["add", "tests/fix.test.js"], { cwd: project });
+  execFileSync("git", ["commit", "-qm", "test(review): R1-F001-FUNC"], { cwd: project });
+  write(project, "tests/fix.test.js", "// R1-F001-FUNC\n// uncommitted adjacent change\n");
+  run(project, [
+    "record-implementation", "--id", "R1-F001-FUNC", "--status", "already_fixed",
+    "--test", "tests/fix.test.js",
+  ], { expectFail: true });
+});
+
+test("already_fixed baseline exception cannot bypass mandatory verification full", () => {
+  const cases = [
+    { name: "P1", severity: "P1", risk: "normal" },
+    { name: "high risk", severity: "P2", risk: "high" },
+    { name: "full-everywhere", severity: "P2", risk: "normal", tiering: "full-everywhere" },
+    { name: "ordinary default", severity: "P2", risk: "normal", expectExceptionPass: true },
+  ];
+  for (const scenario of cases) {
+    const project = makeProject();
+    init(project, 2);
+    const evidence = ".review-evidence/round-1/R1-F001-SEC";
+    const head = testPolicyFixtures.git(project, ["rev-parse", "HEAD"]);
+    const finding = {
+      id: "R1-F001-SEC",
+      severity: scenario.severity,
+      implementation_status: "already_fixed",
+      commit: head,
+      evidence_dir: evidence,
+    };
+    testPolicyFixtures.writeVerificationEvidence(project, evidence, finding, scenario.risk);
+    if (scenario.tiering) {
+      const baselinePath = path.join(project, ".review-evidence/baseline.md");
+      const baseline = fs.readFileSync(baselinePath, "utf8").replace(
+        "- Tiering mode: default",
+        "- Tiering mode: " + scenario.tiering
+      );
+      write(project, ".review-evidence/baseline.md", baseline);
+    }
+    const reportPath = path.join(project, evidence, "verification-result.md");
+    const evidenceObject = testPolicy.parseJsonSection(
+      fs.readFileSync(reportPath, "utf8"),
+      "Reviewctl Verification Evidence",
+      "Reviewctl Verification Evidence"
+    ).value;
+    delete evidenceObject.full_test_suite;
+    evidenceObject.regression.scope = "impacted";
+    evidenceObject.already_fixed_baseline_exception = {
+      baseline_head_ancestor: true,
+      baseline_full_pass: true,
+    };
+    const json = JSON.stringify(evidenceObject, null, 2);
+    const fence = String.fromCharCode(96).repeat(3);
+    write(
+      project,
+      evidence + "/verification-result.md",
+      "# Verification Result\n\n**Final Verdict**: pass\n\n## Reviewctl Verification Evidence\n" +
+        fence + "json\n" + json + "\n" + fence + "\n"
+    );
+    const errors = testPolicy.validateVerificationEvidence(
+      project,
+      finding,
+      { baseline_head: head },
+      reportPath
+    );
+    if (scenario.expectExceptionPass) {
+      assert.deepEqual(errors, [], scenario.name + ": " + errors.join("; "));
+    } else {
+      assert.ok(
+        errors.some((error) => /必须由验证阶段重跑 full/.test(error)),
+        scenario.name + ": expected mandatory full rerun error, received: " + errors.join("; ")
+      );
+    }
+  }
+});
+
 test("repair commits must be reachable from HEAD", () => {
   const project = makeProject();
   init(project, 2);
@@ -1319,6 +1433,24 @@ test("verdict parsing requires an exact final pass", () => {
     verdictIsPass("**Final Verdict**: pass\n\n**Final Verdict**: fail\n"),
     false
   );
+});
+
+test("structured evidence parser accepts both Markdown JSON fence styles", () => {
+  const fence = String.fromCharCode(96).repeat(3);
+  const backtick = testPolicy.parseJsonSection(
+    ["## Evidence", fence + "json", "{\"ok\":true}", fence].join("\n"),
+    "Evidence",
+    "Evidence"
+  );
+  const tilde = testPolicy.parseJsonSection(
+    ["## Evidence", "~~~json", "{\"ok\":true}", "~~~"].join("\n"),
+    "Evidence",
+    "Evidence"
+  );
+  assert.deepEqual(backtick.value, { ok: true });
+  assert.deepEqual(tilde.value, { ok: true });
+  assert.deepEqual(backtick.errors, []);
+  assert.deepEqual(tilde.errors, []);
 });
 
 test("record-verification requires the merged finding test to exist in HEAD", () => {
@@ -1482,8 +1614,18 @@ test("guard-commit rejects user changes that were already staged", () => {
   write(project, "src/fix.js", "module.exports = 1;\n");
   write(project, "tests/fix.test.js", "// R1-F001-SEC\n");
   execFileSync("git", ["add", "src/fix.js", "tests/fix.test.js"], { cwd: project });
+  testPolicyFixtures.writeGreenEvidence(
+    project,
+    evidence,
+    testPolicyFixtures.git(project, ["write-tree"])
+  );
   run(project, ["guard-commit", "--finding", "R1-F001-SEC", "--test", "tests/fix.test.js"], { expectFail: true });
   execFileSync("git", ["restore", "--staged", "user.txt"], { cwd: project });
+  testPolicyFixtures.writeGreenEvidence(
+    project,
+    evidence,
+    testPolicyFixtures.git(project, ["write-tree"])
+  );
   run(project, ["guard-commit", "--finding", "R1-F001-SEC", "--test", "tests/fix.test.js"]);
 });
 

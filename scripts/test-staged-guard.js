@@ -6,9 +6,11 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { captureStagedBaseline, clearStagedBaseline } = require("./lib/staged-baseline");
 const { guardCommit } = require("./lib/validate");
+const testPolicy = require("./lib/test-policy");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "reviewctl-staged-guard-"));
 let passed = 0;
+const testPolicyFixtures = require('./test-policy-fixtures');
 const id = "R1-F001-SEC";
 const evidenceDir = ".review-evidence/round-1/R1-F001-SEC";
 const data = { findings: [{ id, decision: "accepted", evidence_dir: evidenceDir }] };
@@ -53,6 +55,8 @@ function stageRepair(dir) {
   write(dir, "source.js", both);
 }
 function guard(dir, state) {
+  testPolicyFixtures.writeBaseline(dir);
+  testPolicyFixtures.writeGreenEvidence(dir, evidenceDir, testPolicyFixtures.git(dir, ['write-tree']));
   const indexBefore = fs.readFileSync(path.join(dir, ".git/index"));
   const workingBefore = fs.readFileSync(path.join(dir, "source.js"));
   const errors = guardCommit(dir, id, [], data, state);
@@ -69,6 +73,16 @@ try {
     assert.deepEqual(guard(dir, state), []);
     assert.equal(git(dir, ["show", ":source.js"]), repair);
     assert.equal(fs.readFileSync(path.join(dir, "source.js"), "utf8"), both);
+  });
+  test("staged tree read failure blocks the repair commit", (dir, state) => {
+    stageRepair(dir);
+    const originalSafeIndexTree = testPolicy.safeIndexTree;
+    testPolicy.safeIndexTree = () => null;
+    try {
+      assert.match(guard(dir, state).join("\n"), /无法读取暂存区 tree hash/);
+    } finally {
+      testPolicy.safeIndexTree = originalSafeIndexTree;
+    }
   });
   test("original user hunk still staged is rejected", (dir, state) => blocked(dir, state, /用户改动/));
   test("both user and repair hunks staged are rejected", (dir, state) => {
