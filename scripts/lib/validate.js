@@ -415,6 +415,46 @@ function validateFindingFiles(project, finding, errors, state) {
   if (finding.decision !== "needs-evidence" && !exists(path.join(evidenceDir, "replay-review.md"))) {
     errors.push(`${label}: 缺少 replay-review.md（独立复现审查）`);
   }
+  if (finding.decision !== "needs-evidence" && exists(path.join(evidenceDir, "replay-review.md"))) {
+    const replay = testPolicy.parseJsonSection(
+      fs.readFileSync(path.join(evidenceDir, "replay-review.md"), "utf8"),
+      "Reviewctl Replay Evidence",
+      "Reviewctl Replay Evidence"
+    );
+    errors.push(...replay.errors.map((error) => `${label}: ${error}`));
+    const evidence = replay.value;
+    if (evidence) {
+      if (!/^[0-9a-f]{40,64}$/i.test(String(evidence.tested_commit || ""))) {
+        errors.push(`${label}: replay tested_commit 必须是完整 commit SHA`);
+      } else {
+        try {
+          const tree = testPolicy.gitTree(project, evidence.tested_commit);
+          if (tree.toLowerCase() !== String(evidence.tested_tree_hash || "").toLowerCase()) {
+            errors.push(`${label}: replay tested_tree_hash 与 tested_commit 不一致`);
+          }
+          execFileSync("git", ["merge-base", "--is-ancestor", evidence.tested_commit, "HEAD"], { cwd: project, stdio: "ignore" });
+        } catch (error) {
+          errors.push(`${label}: replay tested_commit 无效或不在 HEAD 历史中：${error.message}`);
+        }
+      }
+      const testPath = path.resolve(project, String(evidence.test_path || ""));
+      if (!inside(project, testPath) || !exists(testPath)) {
+        errors.push(`${label}: replay test_path 不存在或越出项目目录`);
+      } else {
+        if (!/^[0-9a-f]{64}$/i.test(String(evidence.test_sha256 || ""))) {
+          errors.push(`${label}: replay test_sha256 必须是 SHA-256`);
+        } else {
+          const actualHash = testPolicy.sha256File(testPath);
+          if (actualHash.toLowerCase() !== evidence.test_sha256.toLowerCase()) {
+            errors.push(`${label}: replay 测试文件 SHA-256 不匹配`);
+          }
+        }
+      }
+      if (typeof evidence.command !== "string" || !evidence.command.trim() || evidence.exit_status !== 0) {
+        errors.push(`${label}: replay evidence 必须记录实际命令及成功退出码`);
+      }
+    }
+  }
   if (
     finding.decision === "accepted" &&
     !cleanedFinalFinding &&
@@ -495,7 +535,6 @@ function validateFindingFiles(project, finding, errors, state) {
   }
   if (finding.verification === "pass") {
     const adjacent = finding.adjacent_tests || [];
-    const merged = finding.merged_tests || [];
     if (adjacent.length < 2 && !finding.adjacent_reason) {
       errors.push(`${label}: pass 需要至少 2 个相邻测试或 adjacent_reason`);
     }
@@ -509,33 +548,8 @@ function validateFindingFiles(project, finding, errors, state) {
         errors.push(`${label}: 相邻测试命名非法或不属于该 finding：${adjacentTest}`);
       }
     }
-    if (adjacent.length > 0 && merged.length === 0) {
-      errors.push(`${label}: 相邻测试尚未合并到正式测试文件（缺少 merged_tests）`);
-    }
-    for (const mergedTest of merged) {
-      const normalized = String(mergedTest).replace(/\\/g, "/");
-      if (!inside(project, path.resolve(project, mergedTest))) {
-        errors.push(`${label}: merged_tests 越界：${mergedTest}`);
-        continue;
-      }
-      if (normalized.startsWith("tests/review/")) {
-        errors.push(`${label}: merged_tests 不能位于 tests/review/：${mergedTest}`);
-        continue;
-      }
-      if (!isFormalTestFile(normalized)) {
-        errors.push(`${label}: merged_tests 不是正式测试文件：${mergedTest}`);
-        continue;
-      }
-      const absolute = path.resolve(project, mergedTest);
-      if (!exists(absolute)) {
-        errors.push(`${label}: merged_tests 不存在：${mergedTest}`);
-      } else if (!gitTracks(project, normalized)) {
-        errors.push(`${label}: merged_tests 未提交到 git：${mergedTest}`);
-      } else if (!gitFileMatchesHead(project, normalized)) {
-        errors.push(`${label}: merged_tests 内容尚未进入 HEAD：${mergedTest}`);
-      } else if (!readHeadFile(project, normalized).toUpperCase().includes(finding.id)) {
-        errors.push(`${label}: merged_tests 内容缺少 finding ID：${mergedTest}`);
-      }
+    if (adjacent.length > 0 && finding.adjacent_status === "not_required") {
+      errors.push(`${label}: 有相邻测试但未登记轮末批测状态`);
     }
   }
   for (const testFile of finding.test_files || []) {
@@ -776,7 +790,12 @@ function validateProject(project, config, state, data) {
   validateTestDirectories(project, errors);
   validateRounds(state, errors);
   for (const round of state.rounds) {
-    if (round.status === "completed") validateRoundCandidates(project, round, data, errors);
+    if (round.status === "completed") {
+      validateRoundCandidates(project, round, data, errors);
+      if (!["verification", "round_decision"].includes(state.current_phase)) {
+        testPolicy.validateAdjacentBatch(project, round, state, data, errors);
+      }
+    }
   }
   validateAudits(project, state, errors);
 

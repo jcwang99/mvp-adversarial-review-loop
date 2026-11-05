@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 const EVIDENCE = ".review-evidence";
 
@@ -39,6 +40,7 @@ function parseBaselinePolicy(project) {
     focusedCommand: bullet(scope, "Focused test command"),
     impactedCommand: bullet(scope, "Impacted test command"),
     fullCommand: bullet(scope, "Full test command"),
+    adjacentCommand: bullet(scope, "Adjacent test command"),
   };
   const baselineTestValues = bullet(scope, "Expected test count").split(" / ").map((value) => Number.parseInt(value.trim(), 10));
   policy.baselineTestCounts = {
@@ -74,6 +76,9 @@ function parseBaselinePolicy(project) {
   }
   if (/\|\|\s*true|--passWithNoTests/i.test(policy.fullCommand)) {
     errors.push("baseline Full test command 不得吞掉失败或允许零测试通过");
+  }
+  if (policy.adjacentCommand && policy.adjacentCommand.trim() === policy.fullCommand.trim()) {
+    errors.push("Adjacent test command 必须与 Full test command 分开配置");
   }
   return { policy, errors };
 }
@@ -113,6 +118,14 @@ function hasSuccessfulExit(logPath) {
   }
 }
 
+function hasNonzeroExit(logPath) {
+  try {
+    return /(?:^|\n)\s*EXIT_CODE\s*=\s*[1-9]\d*\s*(?:\r?$|\n)/m.test(fs.readFileSync(logPath, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
 function parseJsonSection(markdown, heading, label) {
   const errors = [];
   const content = section(markdown, heading);
@@ -137,6 +150,15 @@ function parseJsonSection(markdown, heading, label) {
 
 function isTreeHash(value) {
   return typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value);
+}
+
+function sha256File(filename) {
+  return crypto.createHash("sha256").update(fs.readFileSync(filename)).digest("hex");
+}
+
+function sha256GitFile(project, commit, filename) {
+  const { execFileSync } = require("node:child_process");
+  return crypto.createHash("sha256").update(execFileSync("git", ["show", `${commit}:${filename.replace(/\\/g, "/")}`], { cwd: project })).digest("hex");
 }
 
 function validateFullRun(project, run, policy, label, expectedTreeHash = null) {
@@ -229,6 +251,104 @@ function validateTestedCommit(project, testedCommit, expectedTree, label, errors
   } catch (error) {
     errors.push(label + " tested_commit 无效或不在 HEAD 历史中：" + error.message);
   }
+}
+
+function validateAdjacentBatch(project, round, state, data, errors) {
+  const batch = round?.adjacent_batch;
+  const findings = (data.findings || []).filter((finding) =>
+    Number(String(finding.id).match(/^R(\d+)-/)?.[1]) === round.round &&
+    finding.verification === "pass" && (finding.adjacent_tests || []).length > 0
+  );
+  if (!findings.length) return;
+  if (!parseBaselinePolicy(project).policy?.adjacentCommand) {
+    errors.push(`round ${round.round}: baseline.md 缺少 Adjacent test command`);
+    return;
+  }
+  const evidencePath = path.join(project, EVIDENCE, `round-${round.round}`, "adjacent-batch.md");
+  if (!fs.existsSync(evidencePath)) {
+    errors.push(`round ${round.round}: 缺少 adjacent-batch.md`);
+    return;
+  }
+  const parsed = parseJsonSection(fs.readFileSync(evidencePath, "utf8"), "Reviewctl Adjacent Batch Evidence", "Reviewctl Adjacent Batch Evidence");
+  errors.push(...parsed.errors.map((error) => `round ${round.round}: ${error}`));
+  if (parsed.value && JSON.stringify(parsed.value) !== JSON.stringify(batch)) {
+    errors.push(`round ${round.round}: adjacent-batch.md 与 state.json 证据不一致`);
+  }
+  if (!batch || !["pass", "fail", "inconclusive"].includes(batch.status)) {
+    errors.push(`round ${round.round}: 相邻测试批测尚未记录`);
+    return;
+  }
+  const expectedPaths = [...new Set(findings.flatMap((finding) => finding.adjacent_tests))].sort();
+  if (!Array.isArray(batch.test_paths) || JSON.stringify([...batch.test_paths].sort()) !== JSON.stringify(expectedPaths)) {
+    errors.push(`round ${round.round}: adjacent_batch.test_paths 必须精确覆盖本轮所有相邻测试`);
+  }
+  if (!batch.command || batch.command !== parseBaselinePolicy(project).policy?.adjacentCommand) {
+    errors.push(`round ${round.round}: adjacent batch command 必须匹配 baseline Adjacent test command`);
+  }
+  if (!isTreeHash(batch.tree_hash)) {
+    errors.push(`round ${round.round}: adjacent batch tree hash 无效`);
+  } else {
+    try {
+      if (!batch.tested_commit || gitTree(project, batch.tested_commit).toLowerCase() !== batch.tree_hash.toLowerCase()) {
+        errors.push(`round ${round.round}: adjacent batch tree hash 与 tested_commit 不一致`);
+      }
+      require("node:child_process").execFileSync("git", ["merge-base", "--is-ancestor", batch.tested_commit, "HEAD"], { cwd: project, stdio: "ignore" });
+    } catch (error) {
+      errors.push(`round ${round.round}: adjacent batch tested_commit 无效或不在 HEAD 历史中：${error.message}`);
+    }
+  }
+  const reviewTestsCleaned = state.current_phase === "report" || ["converged", "converged_with_manual_merge", "incomplete"].includes(state.overall_status);
+  for (const filename of expectedPaths) {
+    const absolute = path.resolve(project, filename);
+    if (!fs.existsSync(absolute)) {
+      if (!reviewTestsCleaned) errors.push(`round ${round.round}: adjacent test 不存在：${filename}`);
+    } else if (testSha256(absolute).toLowerCase() !== String(batch.test_hashes?.[filename] || "").toLowerCase()) {
+      errors.push(`round ${round.round}: adjacent test hash 不匹配：${filename}`);
+    }
+  }
+  if (batch.status === "pass") {
+    if (batch.exit_status !== 0 || !isTreeHash(batch.tree_hash)) {
+      errors.push(`round ${round.round}: adjacent batch 退出码或 tree hash 无效`);
+    }
+    const batchLog = resolveEvidencePath(project, batch.log, errors, `round ${round.round} adjacent batch log`);
+    if (batchLog && !hasSuccessfulExit(batchLog)) errors.push(`round ${round.round}: adjacent batch log 缺少 EXIT_CODE=0`);
+    if (!Number.isSafeInteger(batch.test_count) || batch.test_count < 2 || !Number.isSafeInteger(batch.failed_count) || batch.failed_count !== 0) {
+      errors.push(`round ${round.round}: adjacent batch 通过时必须记录至少 2 个测试和 failed_count=0`);
+    }
+  }
+  if (batch.status === "fail" && !(batch.failures?.length)) {
+    errors.push(`round ${round.round}: 批测 fail 必须列出失败用例并登记为正式 finding`);
+  }
+  if (batch.status === "fail" && (batch.exit_status === 0 || !Array.isArray(batch.failures) || !batch.failures.length)) {
+    errors.push(`round ${round.round}: fail 状态必须有非零退出码和失败用例`);
+  }
+  if (batch.status === "fail" && (!Number.isSafeInteger(batch.test_count) || batch.test_count < 1 || !Number.isSafeInteger(batch.failed_count) || batch.failed_count < 1)) {
+    errors.push(`round ${round.round}: fail 状态必须记录有效的 test_count 和 failed_count`);
+  }
+  if (batch.status !== "inconclusive") {
+    const logPath = resolveEvidencePath(project, batch.log, errors, `round ${round.round} adjacent batch log`);
+    if (logPath && (batch.exit_status === 0 ? !hasSuccessfulExit(logPath) : !hasNonzeroExit(logPath))) {
+      errors.push(`round ${round.round}: adjacent batch log 的 EXIT_CODE 与结构化状态不一致`);
+    }
+  }
+  if (batch.status === "inconclusive" && !(typeof batch.reason === "string" && batch.reason.trim())) {
+    errors.push(`round ${round.round}: inconclusive 批测必须说明阻塞原因`);
+  }
+}
+
+function recordAdjacentBatch(project, round, data, fields) {
+  const findings = (data.findings || []).filter((finding) =>
+    Number(String(finding.id).match(/^R(\d+)-/)?.[1]) === round.round &&
+    finding.verification === "pass" && (finding.adjacent_tests || []).length > 0
+  );
+  const paths = [...new Set(findings.flatMap((finding) => finding.adjacent_tests))].sort();
+  if (!paths.length) return { status: "not_required", test_paths: [], recorded_at: new Date().toISOString() };
+  const hashes = Object.fromEntries(paths.map((filename) => [filename, sha256File(path.resolve(project, filename))]));
+  return { ...fields, test_paths: paths, test_hashes: hashes, recorded_at: new Date().toISOString() };
+}
+
+function testSha256(filename) {
+  return require("node:crypto").createHash("sha256").update(fs.readFileSync(filename)).digest("hex");
 }
 
 function parseImplementationEvidence(project, filename, expectedTreeHash = null) {
@@ -410,6 +530,10 @@ module.exports = {
   parseImplementationEvidence,
   validateFullRun,
   validateVerificationEvidence,
+  validateAdjacentBatch,
+  recordAdjacentBatch,
+  sha256File,
+  sha256GitFile,
   gitTree,
   indexTree,
   safeIndexTree,

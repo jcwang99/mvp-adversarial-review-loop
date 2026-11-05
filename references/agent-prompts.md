@@ -225,6 +225,25 @@ notes: "<简短说明，例如与原始证据的一致性>"
 [阻塞项列表]
 ~~~
 
+每份 `replay-review.md` 还必须包含以下结构化证据，供 `reviewctl` 校验：
+
+~~~markdown
+## Reviewctl Replay Evidence
+```json
+{
+  "schema_version": 1,
+  "tested_commit": "<完整 commit SHA>",
+  "tested_tree_hash": "<commit 对应 tree hash>",
+  "test_path": "<复现测试或 manual-steps.md>",
+  "test_sha256": "<文件 SHA-256>",
+  "command": "<实际命令>",
+  "exit_status": 0
+}
+```
+~~~
+
+`tested_commit` / `tested_tree_hash` 标识复现时被测代码状态；`test_path` 指向保存的正式复现文件或 `manual-steps.md`，`test_sha256` 对该证据文件的实际内容计算。验证时须核对 commit/tree 与路径内文件哈希，后续工作区修改不能替代原证据文件。
+
 ---
 
 ## 3. 挑战代理（Challenge Agent）
@@ -657,12 +676,12 @@ blockers:
 ## 任务
 
 ### 正常修复流程（implementation_status: fixed）
-1. **复现原始缺陷**（在修复前的 commit）：确认 finding 确实存在
+1. **按风险决定是否重放修复前状态**：仅 P0/P1、高风险，或复现证据的 commit/tree/测试哈希无法核对时，在修复前 commit 的独立 worktree 重放；其他证据可信且风险普通时跳过此步。复现证据须记录 tested commit、tree hash、实际测试文件路径与 SHA-256、命令和退出码
 2. **验证修复**（在修复后的 commit / HEAD）：确认 finding 已解决
-3. **生成相邻测试**（Adjacent Tests）：为相邻功能、边界情况、异常路径生成至少 2 个新测试用例
-4. **验证相邻测试**：对生成的新测试用例进行验证
-5. **合并测试**：若新测试用例通过，将新测试用例合并到项目正式测试文件，并记录正式测试路径（`merged_tests`）
-6. **提交合并改动**：提交格式：`add(adjacent): [ID] concise new test cases' description`
+3. **生成相邻测试**（Adjacent Tests）：为相邻功能、边界情况、异常路径生成至少 2 个新测试用例，写入 `tests/review/verifications/`
+4. **登记相邻测试**：通过 `record-verification --adjacent-test` 记录路径；不合并正式测试文件
+5. **轮末批量执行**：主代理在 `round_decision` 运行 baseline 中的 Adjacent test command，并用 `record-adjacent-batch` 保存一次性结果
+6. **发现缺陷时升级**：轮末批测失败后，先登记正式候选并经过 adjudication；确认是缺陷后按新 finding 的 TDD 流程修复，其回归测试进入正式测试文件。通过的相邻测试留在 review 专用目录
 7. **在提交后的 HEAD 上复核 full**：运行 impacted 回归；P0/P1、高风险变更、baseline 为 full-everywhere，或 full 证据缺失/不匹配时，自己重跑完整测试套件，并记录该 HEAD 的 tree hash
 8. **检查修复完整性**：是否遗漏相关场景
 
@@ -670,15 +689,13 @@ blockers:
 当实现代理发现测试已经通过（finding 在评审前已被修复）时：
 1. **验证测试覆盖**：读取实现代理提供的测试文件，确认测试确实覆盖了 finding 的 claim（检查 counterexample.md 和测试代码的对应关系）
 2. **重新运行测试**：在当前 HEAD 确认测试通过，验证测试确实有效
-3. **生成相邻测试**：与正常流程相同，生成至少 2 个相邻测试用例
-4. **验证相邻测试**：对生成的新测试用例进行验证
-5. **合并测试**：若新测试用例通过，将新测试用例合并到项目正式测试文件，并记录正式测试路径（`merged_tests`）
-6. **提交合并改动**：提交格式：`add(adjacent): [ID] concise new test cases' description`
+3. **生成相邻测试**：与正常流程相同，生成至少 2 个相邻测试用例，放入 `tests/review/verifications/`
+4. **登记并轮末批测**：由主代理统一运行 Adjacent test command；只有批测失败的场景才将测试升级到正式测试文件
 7. **在提交后的 HEAD 上运行 full**：`already_fixed` 默认必须在当前 HEAD 重跑 full（例外见 pass 规则）；P0/P1、高风险变更或 `full-everywhere` 同样必须重跑完整测试套件，并记录该 HEAD 的 tree hash
 
 **already_fixed 的关键区别**：
 - **不需要找历史修复 commit**：修复已经在代码库中，无需定位是哪个 commit 修掉的
-- **不需要复现修复前状态**：无需 worktree 或 checkout，因为测试通过就是证据
+- **按风险决定是否重放修复前状态**：P0/P1、高风险或复现证据无法核对时必须在独立 worktree 重放；普通风险且证据可信时可跳过
 - **重点在测试覆盖度检查**：确保测试真的覆盖了 finding，而不是偶然通过
 
 ## 全量证据复核（验证阶段）
@@ -718,14 +735,15 @@ blockers:
 **失败处理**：
 - 如果无法生成有意义的相邻测试（例如：finding 的修复已覆盖所有相关路径），说明理由，verification 仍可 pass
 - 如果生成的相邻测试失败，分析失败原因：
-  - **修复不完整**（相邻路径仍有问题）：verification 状态为 fail，不合并测试文件，回到 repair 阶段
+  - **修复不完整**（相邻路径仍有问题）：轮末登记正式候选并进入 adjudication；确认属于当前 finding 时回到 repair，独立缺陷则建立新的 finding
   - **测试本身有问题**（断言错误、fixture 问题、环境问题）：重新生成测试或标记为 inconclusive，说明原因
-  - **发现无关的新问题**（与当前 finding 不相关的独立缺陷）：标记为新 finding（在 verification-result.md 中记录并建议主代理创建新 finding），当前 verification 仍可 pass（不合并失败的测试）
+  - **发现无关的新问题**（与当前 finding 不相关的独立缺陷）：轮末登记正式候选并进入 adjudication；当前 finding 的 verification 可保持 pass，但整轮不得在该候选裁决前结束
 
 ## 运行约定
 - 从项目根目录运行，使用项目自身的测试框架和依赖
 - 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/verify-[finding-id]/
 - 相邻测试写入：tests/review/verifications/r{round}_f{num}_{slug}_adjacent{suffix}
+- **复现证据**：`replay-review.md` 记录实际运行的 commit/tree、测试文件 SHA-256、命令和退出码。测试哈希必须按 tested commit 中的文件内容计算；手工复现则对已提交的 `manual-steps.md` 计算哈希
 - **测试输出先落盘**：运行测试/回归命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；多个命令可用 `output-<step>.log`
 - **技能脚本（如需）**：`node "[skill-dir]/scripts/reviewctl.js"`；`[skill-dir]` 由主代理替换为当前 harness 的实际绝对路径，只读使用，不要修改状态或推进阶段
 - **编译缓存复用（按磁盘预算）**：在 baseline 记录的磁盘预算内复用预热缓存（Rust 如 `CARGO_TARGET_DIR`）；不要为每个 finding 新建 target/依赖目录。缓存超预算时按主代理指示在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
@@ -825,7 +843,6 @@ adjacent_tests:
   generated: true | false
   count: <数量>
   file_path: "tests/review/verifications/r{round}_f{num}_{slug}_adjacent{suffix} | none"
-  merged_tests: []
   status: "pass | fail | not_run"
   notes: "<如果未生成或失败，说明理由>"
 regression_scope: "impacted | full"  # pass 的最低范围；focused 只能作补充
@@ -935,8 +952,6 @@ git worktree remove <临时目录>/verify-[finding-id]
 ### Generated Tests
 **File Path**: [测试文件路径 | none]
 
-**Merged Tests**: [已合并到的正式测试文件路径 | none]
-
 **Test Cases**:
 1. [测试用例 1 描述]
 2. [测试用例 2 描述]
@@ -1015,18 +1030,18 @@ git worktree remove <临时目录>/verify-[finding-id]
 - **regression_scope 与 full_test_suite 一致性**：如果 `full_test_suite.status != not_run`，则 `regression_scope` 必须为 `full`，且 `regression_command` 必须等于 `full_test_suite.command`；否则 `regression_scope` 只能是 `impacted`。
 - **pass（fixed）**:
   - reproduction_before_fix = observed，reproduction_after_fix = not_observed
-  - adjacent_tests = pass 或有合理理由未生成；生成相邻测试时 `merged_tests` 必须非空
+  - 相邻测试已生成并登记，或填写了合理的 adjacent_reason；其运行结果由主代理在轮末批测，不作为单个 finding 的 verification verdict
   - `regression_scope` 为 `impacted` 或 `full`，且 `regression_status = pass`
   - 如果 severity 为 P0/P1、`risk_assessment = high` 或 baseline 为 full-everywhere：**必须**由验证代理重跑并记录 **有效的** `full_test_suite`；`implementation_full_suite` 不能替代
   - 其余 finding：**有效的** `implementation_full_suite` 且 `matches_fix_commit = true`；或验证代理自己重跑并记录 **有效的** `full_test_suite`
   - `implementation_full_suite.status = fail` 时不得判 pass；必须重新修复并重新 GREEN full，或按环境/flaky 记录后判 `inconclusive`
 - **pass（already_fixed）**:
   - 测试覆盖评估为 covers_claim，重跑测试通过
-  - adjacent_tests = pass 或有合理理由未生成；生成相邻测试时 `merged_tests` 必须非空
+  - 相邻测试已生成并登记，或填写了合理的 adjacent_reason；其运行结果由主代理在轮末批测，不作为单个 finding 的 verification verdict
   - `regression_scope` 为 `impacted` 或 `full`，且 `regression_status = pass`
   - 默认必须由验证代理在当前 HEAD 重跑并记录 **有效的** `full_test_suite`
   - 唯一例外仅适用于 severity P2/P3、`risk_assessment = normal`、tiering mode 为 default 的 finding：历史修复 commit 是 `baseline_head` 的祖先，且 baseline full result = pass；此时记录这两个事实后，impacted 才可作为 full 证据
-- **fail**: reproduction_after_fix = still_observed，或 `regression_status = fail`，或 **无效/失败** 的 `full_test_suite`，或 adjacent_tests = fail，或 `implementation_full_suite.status = fail` 且未重新修复。
+- **fail**: reproduction_after_fix = still_observed，或 `regression_status = fail`，或 **无效/失败** 的 `full_test_suite`，或 `implementation_full_suite.status = fail` 且未重新修复。轮末相邻批测失败由主代理另行登记并重新进入 adjudication。
 - **inconclusive**: reproduction_before_fix = not_observed（原始 finding 无法复现），或任一步骤环境/依赖阻塞（代理可把 `verification_status: blocked` 写成 `inconclusive`），或 full 证据缺失/无法核对且验证代理无法重跑 full，或 full 证据来自脏工作区且未使用独立 worktree；需要重新评估或登记阻塞。
 
 ---

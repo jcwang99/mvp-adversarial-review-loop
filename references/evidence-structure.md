@@ -79,7 +79,7 @@ tests/                                      # 项目测试目录
     ├── reproductions/                      # adjudication accepted 后移动到这里
     │   └── r1_f001_auth_bypass.test.js    # 保留供 verification 使用
     └── verifications/                      # verification 阶段生成的相邻测试
-        └── r1_f001_auth_bypass_adjacent.test.js   # 保留供最终合并
+        └── r1_f001_auth_bypass_adjacent.test.js   # 轮末批量执行，不进入日常全量测试
 ~~~
 
 **目录职责说明**：
@@ -108,9 +108,10 @@ tests/                                      # 项目测试目录
   - **在 TDD 阶段**：实现代理读取此文件，复制测试用例到项目正式测试文件（如 `tests/auth.test.js`）
   - **保留不删除**：供 verification 阶段使用（验证代理基于此生成相邻测试）
   - 测试框架配置中忽略此目录（或仅在 `ADVERSARIAL_REVIEW=true` 时运行）
-- **verifications/**：verification 阶段，验证代理写入相邻测试
+- **verifications/**：verification 阶段，验证代理写入相邻测试；每轮末尾统一批量执行
   - 命名规则：`r{round}_f{num}_{slug}_adjacent{suffix}`（如 `r1_f001_auth_bypass_adjacent.test.js`）
-  - 相邻测试通过后，验证代理合并到项目正式测试文件并提交；主代理用 `record-verification --merged-test` 记录正式路径
+  - 通过的相邻测试保留在此目录，仅由 baseline 的 Adjacent test command 执行，不进入常规 full suite，也不要求逐 finding 提交
+  - 若轮末批测发现真实缺陷，先登记为正式 finding；该缺陷的修复回归测试按普通 TDD 流程加入正式测试文件
   - **保留不删除**：供最终报告统计和审计
   - 测试框架配置中忽略此目录（或仅在 `ADVERSARIAL_REVIEW=true` 时运行）
 - **整个 tests/review/ 目录在评审流程结束后删除**
@@ -254,7 +255,7 @@ required-features = ["adversarial-review"]
 | `rounds` | 每轮计数和角色 |
 | `final_audit` | 审计尝试和重入状态 |
 
-`findings.json` 每个 finding 至少包含：`id`、`original_ids`、`source`（`review` / `final-audit`）、`audit_attempt`、`role`、`severity`、`decision`、`verification`、`evidence_dir`、`reproduced`、`reproduced_by`、`reproduction_status`、`challenge_required`、`challenge_result`、`change_origin`、`implementation_status`、`manual`、`commit`、`test_files`、`verification_attempts`、`verified_by`、`adjacent_tests`、`adjacent_reason`、`merged_tests`、`unresolved`。更早轮次的 deferred 被复核后还会记录 `deferred_review_action`（`include` / `continue` / `reject`）、`deferred_review_reason`、`deferred_review_round` 和 `deferred_reviewed_at`。
+`findings.json` 每个 finding 至少包含：`id`、`original_ids`、`source`（`review` / `final-audit`）、`audit_attempt`、`role`、`severity`、`decision`、`verification`、`evidence_dir`、`reproduced`、`reproduced_by`、`reproduction_status`、`challenge_required`、`challenge_result`、`change_origin`、`implementation_status`、`manual`、`commit`、`test_files`、`verification_attempts`、`verified_by`、`adjacent_tests`、`adjacent_reason`、`adjacent_status`、`unresolved`。更早轮次的 deferred 被复核后还会记录 `deferred_review_action`（`include` / `continue` / `reject`）、`deferred_review_reason`、`deferred_review_round` 和 `deferred_reviewed_at`。
 
 `authorization_receipts` 按例外操作名记录登记时适用的授权日志位置、摘要和时间。后续撤销阻止新操作；已有合法记录仍可审计。该字段由命令生成，不手工填写。
 

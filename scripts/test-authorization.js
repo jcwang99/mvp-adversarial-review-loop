@@ -7,6 +7,7 @@ const { test } = require("node:test");
 const { hasAuthorization, authorizationReceipt, wasAuthorized } = require("./lib/authorization");
 const CLI = path.join(__dirname, "reviewctl.js");
 const testPolicyFixtures = require('./test-policy-fixtures');
+const testPolicy = require('./lib/test-policy');
 const ID = "R1-F001-SEC";
 const OTHER = "R1-F002-SEC";
 const ACTIONS = ["main-agent-reproduction", "main-agent-verification", "skip-mandatory-challenge"];
@@ -27,16 +28,29 @@ function fixture(t) {
   t.after(() => fs.rmSync(project, { recursive: true, force: true }));
   for (const args of [["init", "-q"], ["config", "user.email", "test@example.com"], ["config", "user.name", "Auth Test"]]) execFileSync("git", args, { cwd: project });
   write(project, "README.md", "fixture\n");
-  execFileSync("git", ["add", "README.md"], { cwd: project });
+  write(project, "README.md", "fixture\n");
+  write(project, "replay-manual-steps.md", "# Manual test evidence\nmain-agent 高风险\n");
+  execFileSync("git", ["add", "README.md", "replay-manual-steps.md"], { cwd: project });
   execFileSync("git", ["commit", "-qm", "fixture"], { cwd: project });
   run(project, ["init", "--max-rounds", "2", "--user-confirmed"]);
   testPolicyFixtures.writeBaseline(project);
   run(project, ["advance", "--to", "review"]);
   phase(project, "adjudication");
   const evidence = `.review-evidence/round-1/${ID}`;
-  for (const file of ["counterexample.md", "adjudication.md", "manual-steps.md", "replay-review.md", "verification-result.md"]) write(project, `${evidence}/${file}`, "# Manual test evidence\nmain-agent 高风险\n");
+  write(project, `${evidence}/manual-steps.md`, "# Manual test evidence\nmain-agent 高风险\n");
+  for (const file of ["counterexample.md", "adjudication.md", "verification-result.md"]) write(project, `${evidence}/${file}`, "# Manual test evidence\nmain-agent 高风险\n");
   write(project, `${evidence}/adjudication.md`, "# Adjudication\n## Decision\n**Status**: accepted\nmain-agent 高风险\n");
   write(project, `${evidence}/verification-result.md`, "# Verification\n## Final Verdict\nfail\nmain-agent\n");
+  const testedCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: project, encoding: "utf8" }).trim();
+  const replayEvidence = {
+    tested_commit: testedCommit,
+    tested_tree_hash: testPolicyFixtures.git(project, ["rev-parse", "HEAD^{tree}"]),
+    test_path: "replay-manual-steps.md",
+    test_sha256: testPolicy.sha256GitFile(project, testedCommit, "replay-manual-steps.md"),
+    command: "manual replay steps",
+    exit_status: 0,
+  };
+  write(project, `${evidence}/replay-review.md`, `# Replay Review\n\n**Status**: reproduced\n\n## Reviewctl Replay Evidence\n\n\`\`\`json\n${JSON.stringify(replayEvidence, null, 2)}\n\`\`\`\n`);
   return project;
 }
 function phase(project, name) {

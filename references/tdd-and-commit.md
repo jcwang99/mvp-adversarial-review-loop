@@ -59,13 +59,13 @@
 | `blocked` / `cannot_fix` | 允许 `not_run` | 不 pass，登记 unresolved |
 | `blocked_by_user_changes` | 允许 `not_run` | 不 pass；报告披露无 full 证据 |
 
-## RED-GREEN 循环与测试合并
+## RED-GREEN 循环与正式回归测试
 
 1. **RED**：读取当前 `git status --short`，确认没有新的外部写入。
    - **读取临时测试文件**：检查 `tests/review/reproductions/r{round}_f{num}_{slug}{suffix}` 目录（由主代理在 adjudication 阶段从 candidates/ 移动而来）
    - 如果存在可运行的 reproduction 代码，直接运行验证问题存在；若是经批准的手工 finding，执行 `manual-steps.md` 并记录结果
    
-   - **将测试合并到项目正式测试套件**：
+   - **将复现测试合入项目正式测试套件**：
      - 读取临时 reproduction 文件的测试用例
      - 确定项目中合适的正式测试文件（如 `tests/auth.test.js`、`tests/api_test.py`、`tests/security_test.go` 等）
        - 根据被测模块路径、项目测试组织结构、命名约定临场判断
@@ -76,8 +76,8 @@
        - 合并到现有 describe/suite 块，或创建新的测试分组
      - 临时文件 `tests/review/reproductions/r{round}_f{num}_{slug}{suffix}` **保留不删除**（供 verification 阶段使用）
    
-   - **运行合并后的测试**：
-     - 运行正式测试文件中新合并的测试
+   - **运行正式回归测试**：
+     - 运行正式测试文件中的 finding 回归测试
      - 保存按预期失败的输出（RED 证据）
    
    - **手工 finding 的处理**：对经确认无法自动化的手工 finding，执行 `manual-steps.md` 并记录环境、操作、结果和证据。回归测试策略：
@@ -98,7 +98,7 @@
    - **只修改项目源代码**（不修改测试文件）
    - 沿用项目现有抽象和错误处理，避免顺手升级依赖、重排格式或重写不相关模块
    - 修复后，运行 baseline 记录的 **full** 测试命令（小项目可直接用项目测试命令）：
-     - 正式测试文件中新合并的测试应该通过
+     - 正式测试文件中的 finding 回归测试应该通过
      - 所有原有项目测试也应该通过（确认无回归）
    - 在 `implementation-result.md` 记录 full 命令、退出码、测试时的 tree hash 和日志路径；full 失败不得提交
    - 不要为了让测试通过而删除/放宽断言、吞掉错误、跳过权限检查或把真实调用改成无条件 mock
@@ -106,7 +106,7 @@
 3. **回归检查**：GREEN 的 full 已覆盖测试；这里运行类型检查、lint、构建和适用的安全扫描
    - 高风险变更在验证阶段按“测试范围分级”重跑 full
    - 记录跳过项、失败项和环境限制，不把未执行写成通过
-   - 后续 findings 的修复会自动检查之前的修复（因为测试已合并到正式套件）
+   - 后续 findings 的修复会自动检查之前的修复（因为正式回归测试属于全量测试套件）
 
 ## 工作区与暂存隔离
 
@@ -203,8 +203,8 @@ fix(review): [ID] concise behavior being corrected
 只有全部满足才进入修复验证：
 
 - RED 阶段失败证据与原始反例一致。
-- **临时测试已复制并合并到项目正式测试文件**；手工 finding 已添加可行的自动化回归测试，或使用 `--manual` 记录无法自动化的理由、已尝试的相邻可测路径、以及修复前后手工执行证据。
-- 修复最小、可读、符合现有契约，且新增测试锁定回归；无法自动化的手工 finding 有明确理由和修复后复测证据。验证阶段产生的相邻测试必须用 `--merged-test` 记录其正式测试路径。
+- **复现测试已复制到项目正式测试文件**；手工 finding 已添加可行的自动化回归测试，或使用 `--manual` 记录无法自动化的理由、已尝试的相邻可测路径、以及修复前后手工执行证据。
+- 修复最小、可读、符合现有契约，且正式测试锁定回归；无法自动化的手工 finding 有明确理由和修复后复测证据。验证阶段产生的相邻测试留在 `tests/review/verifications/`，在轮末批量执行；批测发现的缺陷转为正式 finding 后，其修复回归测试才进入正式测试套件。
 - focused 和 GREEN full 命令的实际结果已记录，full 证据包含命令、退出码、tree hash、workspace clean/run location、测试计数（total/passed/failed/skipped）和日志；失败/跳过没有被隐藏。
 - **提交只包含当前 finding（源代码 + 正式测试文件修改）**，`git diff --check` 通过，用户改动未被覆盖。
 - commit、测试、反例和 finding ID 已通过 `reviewctl` 写入 `findings.json` / `state.json`。

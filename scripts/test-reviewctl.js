@@ -4,7 +4,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { execFileSync } = require("node:child_process");
+const { execFileSync, spawnSync } = require("node:child_process");
 const {
   isCandidateTestFile,
   isReproductionTestFile,
@@ -32,6 +32,60 @@ function makeProject() {
 }
 
 function run(project, args, { expectFail = false } = {}) {
+  if (!expectFail && args[0] === "advance" && ["review", "final_audit"].includes(args[args.indexOf("--to") + 1])) {
+    const statePath = path.join(project, ".review-evidence/state.json");
+    if (fs.existsSync(statePath)) {
+      const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      if (state.current_phase === "round_decision") {
+        const findingsPath = path.join(project, ".review-evidence/findings.json");
+        const findings = JSON.parse(fs.readFileSync(findingsPath, "utf8")).findings || [];
+        const adjacent = findings.filter((finding) => finding.verification === "pass" && (finding.adjacent_tests || []).length > 0 && finding.adjacent_status !== "pass");
+        if (adjacent.length) {
+          const paths = [...new Set(adjacent.flatMap((finding) => finding.adjacent_tests))];
+          const log = `.review-evidence/round-${state.current_round}/adjacent-auto.log`;
+          write(project, log, "COMMAND=node --test tests/review/verifications\nEXIT_CODE=0\n");
+          const tree = testPolicyFixtures.git(project, ["rev-parse", "HEAD^{tree}"]);
+          const testedCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: project, encoding: "utf8" }).trim();
+          execFileSync(process.execPath, [CLI, "record-adjacent-batch", "--status", "pass", "--command", "node --test tests/review/verifications", "--exit-status", "0", "--tree-hash", tree, "--tested-commit", testedCommit, "--log", log, "--test-count", String(paths.length), "--failed-count", "0", "--project", project], { cwd: project, stdio: "ignore" });
+        }
+      }
+    }
+  }
+  if (args[0] === "record-finding" && !expectFail) {
+    const id = String(args[args.indexOf("--id") + 1]).toUpperCase();
+    const evidenceArg = args.indexOf("--evidence-dir");
+    const evidence = evidenceArg >= 0
+      ? args[evidenceArg + 1]
+      : `.review-evidence/round-${id.match(/^R(\d+)-/)?.[1]}/${id}`;
+    const replayPath = path.join(project, evidence, "replay-review.md");
+    const testCandidate = fs.existsSync(path.join(project, evidence, "reproduce.test.js"))
+      ? "reproduce.test.js"
+      : "manual-steps.md";
+    const testPath = path.join(project, evidence, testCandidate);
+    if (fs.existsSync(replayPath) && fs.existsSync(testPath)) {
+      execFileSync("git", ["add", "-f", "--", path.relative(project, testPath)], { cwd: project });
+      let stagedChanges = false;
+      try {
+        execFileSync("git", ["diff", "--cached", "--quiet"], { cwd: project, stdio: "ignore" });
+      } catch {
+        stagedChanges = true;
+      }
+      if (stagedChanges) {
+        execFileSync("git", ["commit", "-qm", `test(review): record replay fixture ${id}`], { cwd: project });
+      }
+      const commit = testPolicyFixtures.git(project, ["rev-parse", "HEAD"]);
+      const replayEvidence = {
+        schema_version: 1,
+        tested_commit: commit,
+        tested_tree_hash: testPolicyFixtures.git(project, ["rev-parse", "HEAD^{tree}"]),
+        test_path: path.relative(project, testPath).replace(/\\/g, "/"),
+        test_sha256: testPolicy.sha256GitFile(project, commit, path.relative(project, testPath).replace(/\\/g, "/")),
+        command: "node --test reproduction",
+        exit_status: 0,
+      };
+      write(project, `${evidence}/replay-review.md`, `# Replay Review\n\n**Status**: reproduced\n\n## Reviewctl Replay Evidence\n\n\`\`\`json\n${JSON.stringify(replayEvidence, null, 2)}\n\`\`\`\n`);
+    }
+  }
   if (!expectFail && args[0] === 'record-implementation' && args.includes('fixed')) {
     const id = String(args[args.indexOf('--id') + 1]).toUpperCase();
     const commit = args[args.indexOf('--commit') + 1];
@@ -257,6 +311,45 @@ function test(name, fn) {
 }
 
 // FUNC-001: every raw candidate must have exactly one accounted disposition.
+test("validate rejects replay evidence when its reproduction file hash changes", () => {
+  const project = makeProject();
+  init(project);
+  const evidence = setupAcceptedFinding(project, {
+    id: "R1-F001-SEC", role: "SEC", original: "SEC-001", severity: "P2",
+    slug: "r1_f001_replay_hash",
+  });
+  write(project, `${evidence}/reproduce.test.js`, "// altered after replay\n");
+  const result = run(project, ["validate"], { expectFail: true });
+  assert.match(String(result.stderr) + String(result.stdout), /replay 测试文件 SHA-256 不匹配/);
+});
+
+test("an inconclusive adjacent batch permits final audit but cannot converge", () => {
+  const state = {
+    current_phase: "report",
+    rounds_consumed: 2,
+    final_audit_attempt: 1,
+    final_audit: { attempts: [{ attempt: 1, status: "complete", new_issues: 0 }], reentry_pending: false },
+  };
+  const finding = {
+    id: "R1-F001-SEC", severity: "P2", decision: "accepted", verification: "pass",
+    implementation_status: "fixed", commit: "abcdef1", test_files: ["tests/app.test.js"],
+    adjacent_tests: ["tests/review/verifications/r1_f001_sec_adjacent.test.js"],
+    adjacent_status: "inconclusive", reproduced: true, reproduction_status: "reproduced",
+    change_origin: "pre-existing", original_ids: ["SEC-001"],
+    evidence_dir: ".review-evidence/round-1/R1-F001-SEC", source: "review", manual: false,
+  };
+  const { convergenceReasons } = require("./lib/state");
+  const reasons = convergenceReasons(state, { max_rounds: 2 }, { findings: [finding] }, "converged", { ackEmptyCoverage: true });
+  assert.ok(reasons.some((reason) => /相邻测试批量验证尚未通过/.test(reason)));
+});
+
+test("reviewctl no longer accepts the removed merged-test argument", () => {
+  const project = makeProject();
+  init(project);
+  const output = run(project, ["help"]);
+  assert.doesNotMatch(output, /--merged-test/);
+});
+
 test("FUNC-001 blocks omitted candidates at the regular round boundary", () => {
   const project = makeProject();
   init(project);
@@ -910,8 +1003,6 @@ test("full happy path reaches converged", () => {
     "tests/review/verifications/r1_f001_auth_adjacent.test.js",
     "--adjacent-test",
     "tests/review/verifications/r1_f001_auth_adjacent_edge.test.js",
-    "--merged-test",
-    "tests/app.test.js",
   ]);
   run(project, ["advance", "--to", "round_decision"]);
 
@@ -1453,7 +1544,7 @@ test("structured evidence parser accepts both Markdown JSON fence styles", () =>
   assert.deepEqual(tilde.errors, []);
 });
 
-test("record-verification requires the merged finding test to exist in HEAD", () => {
+test("record-verification requires the finding regression test to exist in HEAD", () => {
   const project = makeProject();
   init(project, 2);
   const evidence = setupAcceptedFinding(project, {
@@ -1484,97 +1575,9 @@ test("record-verification requires the merged finding test to exist in HEAD", ()
   const verificationArgs = [
     "record-verification", "--id", "R1-F001-SEC", "--status", "pass",
     "--adjacent-test", adjacentTests[0], "--adjacent-test", adjacentTests[1],
-    "--merged-test", "tests/app.test.js",
   ];
-  const uncommittedVerification = run(project, verificationArgs, { expectFail: true });
-  assert.match(String(uncommittedVerification.stderr), /HEAD|提交|finding ID/i);
-
-  const findingsPath = path.join(project, ".review-evidence/findings.json");
-  const findings = JSON.parse(fs.readFileSync(findingsPath, "utf8"));
-  const finding = findings.findings.find((entry) => entry.id === "R1-F001-SEC");
-  const assertValidationRejectsUnmergedTest = () => {
-    finding.verification = "pass";
-    finding.adjacent_tests = adjacentTests;
-    finding.merged_tests = ["tests/app.test.js"];
-    writeJson(project, ".review-evidence/findings.json", findings);
-    run(project, ["render"]);
-    const validation = run(project, ["validate"], { expectFail: true });
-    assert.match(String(validation.stderr), /merged_tests .*HEAD|merged_tests .*finding ID|内容不一致/);
-
-    finding.verification = "pending";
-    finding.adjacent_tests = [];
-    finding.merged_tests = [];
-    finding.verified_at = null;
-    writeJson(project, ".review-evidence/findings.json", findings);
-    run(project, ["render"]);
-  };
-  assertValidationRejectsUnmergedTest();
-
-  const headTest = "// existing formal repair test\n// R1-F001-SEC repair assertion\n";
-  write(project, "tests/app.test.js", headTest);
-  execFileSync("git", ["add", "tests/app.test.js"], { cwd: project });
-  execFileSync("git", ["commit", "-qm", "test(review): merge R1-F001-SEC adjacent tests"], { cwd: project });
-
-  write(project, "tests/app.test.js", `${headTest}// merged adjacent assertion\n`);
-  const uncommittedAssertion = run(project, verificationArgs, { expectFail: true });
-  assert.match(String(uncommittedAssertion.stderr), /HEAD|提交|内容不一致/i);
-  assertValidationRejectsUnmergedTest();
-
-  execFileSync("git", ["add", "tests/app.test.js"], { cwd: project });
-  const stagedAssertion = run(project, verificationArgs, { expectFail: true });
-  assert.match(String(stagedAssertion.stderr), /HEAD|提交|内容不一致/i);
-  assertValidationRejectsUnmergedTest();
-
-  execFileSync("git", ["commit", "-qm", "test(review): commit R1-F001-SEC adjacent assertion"], { cwd: project });
   run(project, verificationArgs);
   run(project, ["validate"]);
-});
-
-test("record-verification rejects a symlink-mode merged formal test", () => {
-  const project = makeProject();
-  init(project, 2);
-  const evidence = setupAcceptedFinding(project, {
-    id: "R1-F001-SEC", role: "SEC", original: "SEC-001", severity: "P1",
-    slug: "r1_f001_auth",
-  });
-  run(project, ["advance", "--to", "repair"]);
-  write(project, `${evidence}/implementation-result.md`, "# Implementation Result\n\n## RED Phase\nreproduced\n\n## GREEN Phase\nfixed\n");
-  write(project, "src/app.js", "module.exports = 1;\n");
-  write(project, "tests/app.test.js", "// R1-F001-SEC repair assertion\n");
-  execFileSync("git", ["add", "src/app.js", "tests/app.test.js"], { cwd: project });
-  execFileSync("git", ["commit", "-qm", "fix(review): R1-F001-SEC"], { cwd: project });
-  const repairCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: project, encoding: "utf8" }).trim();
-  run(project, [
-    "record-implementation", "--id", "R1-F001-SEC", "--status", "fixed",
-    "--commit", repairCommit, "--test", "tests/app.test.js",
-  ]);
-  run(project, ["advance", "--to", "verification"]);
-  write(project, `${evidence}/verification-result.md`, "# Verification Result\n\n**Final Verdict**: pass\n");
-  const adjacentTests = [
-    "tests/review/verifications/r1_f001_auth_adjacent.test.js",
-    "tests/review/verifications/r1_f001_auth_adjacent_edge.test.js",
-  ];
-  write(project, adjacentTests[0], "// adjacent regression\n");
-  write(project, adjacentTests[1], "// adjacent edge regression\n");
-  write(project, "tests/app.test.js", "// R1-F001-SEC repair assertion\n// R1-F001-SEC merged assertion\n");
-  execFileSync("git", ["add", "tests/app.test.js"], { cwd: project });
-  execFileSync("git", ["commit", "-qm", "test(review): merge R1-F001-SEC adjacent tests"], { cwd: project });
-
-  const blob = execFileSync("git", ["hash-object", "tests/app.test.js"], {
-    cwd: project,
-    encoding: "utf8",
-  }).trim();
-  execFileSync("git", [
-    "update-index", "--add", "--cacheinfo", `120000,${blob},tests/app.test.js`,
-  ], { cwd: project });
-  execFileSync("git", ["commit", "-qm", "test(review): represent merged test as symlink"], { cwd: project });
-
-  const verification = run(project, [
-    "record-verification", "--id", "R1-F001-SEC", "--status", "pass",
-    "--adjacent-test", adjacentTests[0], "--adjacent-test", adjacentTests[1],
-    "--merged-test", "tests/app.test.js",
-  ], { expectFail: true });
-  assert.match(String(verification.stderr), /HEAD|普通文件/i);
 });
 
 test("normalize repairs derived state fields", () => {
@@ -1595,7 +1598,7 @@ test("normalize repairs derived state fields", () => {
 test("help lists the full advanced parameter set", () => {
   const output = run(makeProject(), ["help"]);
   assert.match(output, /--change-origin/);
-  assert.match(output, /--merged-test/);
+  assert.doesNotMatch(output, /--merged-test/);
   assert.match(output, /normalize/);
   assert.match(output, /--audit-attempt/);
 });
@@ -1692,7 +1695,7 @@ test("P3 unclear_claim and rejected final-audit findings do not block convergenc
       {
         id: "R1-F001-SEC", role: "SEC", severity: "P1", decision: "accepted",
         verification: "pass", implementation_status: "fixed", commit: "abcdef1",
-        test_files: ["tests/app.test.js"], adjacent_tests: [], merged_tests: [],
+        test_files: ["tests/app.test.js"], adjacent_tests: [],
         reproduced: true, reproduction_status: "reproduced", change_origin: "pre-existing",
         original_ids: ["SEC-001"], evidence_dir: ".review-evidence/round-1/R1-F001-SEC",
         source: "final-audit", audit_attempt: 1, manual: false,
@@ -1877,7 +1880,6 @@ test("accepted final-audit finding can trigger a new round and re-audit", () => 
     "record-verification", "--id", "R2-F001-FUNC", "--status", "pass",
     "--adjacent-test", "tests/review/verifications/r2_f001_audit_adjacent.test.js",
     "--adjacent-test", "tests/review/verifications/r2_f001_audit_adjacent_edge.test.js",
-    "--merged-test", "tests/audit-fix.test.js",
   ]);
   run(project, ["advance", "--to", "round_decision"]);
   run(project, ["advance", "--to", "review"]);

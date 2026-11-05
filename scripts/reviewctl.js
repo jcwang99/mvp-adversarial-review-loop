@@ -13,6 +13,7 @@ const {
   DECISIONS,
   DEFERRED_REVIEW_ACTIONS,
   VERIFICATIONS,
+  ADJACENT_STATUSES,
   SEVERITIES,
   CHANGE_ORIGINS,
   NEEDS_CLARITY,
@@ -70,7 +71,7 @@ const {
   extractSection,
 } = require("./lib/validate");
 
-const REPEATABLE = new Set(["test", "original-id", "adjacent-test", "merged-test"]);
+const REPEATABLE = new Set(["test", "original-id", "adjacent-test", "failed-finding"]);
 
 function parseArgs(argv) {
   const flags = {};
@@ -203,6 +204,7 @@ function initTemplates(project) {
         "- Focused test command: [TODO]",
         "- Impacted test command: [TODO]",
         "- Full test command: [TODO]",
+        "- Adjacent test command: [TODO]",
         "- High-risk paths: [TODO]",
         "- Verification default: impacted; P0/P1/high-risk/full-everywhere rerun full",
         "- Notes: [TODO]",
@@ -339,6 +341,68 @@ function commandRecordRound(flags) {
   entry.status = "in_progress";
   persist(project, config, state, data);
   console.log(`recorded round ${roundNumber}: raw=${raw} duplicates=${duplicates} screened=${screened}`);
+}
+
+function commandRecordAdjacentBatch(flags) {
+  const project = projectRoot(flags);
+  const { config, state, data } = loadAll(project);
+  if (state.current_phase !== "round_decision") fail("record-adjacent-batch 只能在 round_decision 阶段使用");
+  const round = roundEntry(state, state.current_round);
+  if (!round) fail("当前轮次不存在");
+  const status = stringFlag(flags, "status", { required: true });
+  if (!["pass", "fail", "inconclusive"].includes(status)) fail("status 必须是 pass、fail 或 inconclusive");
+  const policy = testPolicy.parseBaselinePolicy(project);
+  if (policy.errors.length) fail(policy.errors.join("; "));
+  const findings = data.findings.filter((finding) =>
+    Number(String(finding.id).match(FINDING_ID)?.[1]) === state.current_round &&
+    finding.verification === "pass" && (finding.adjacent_tests || []).length > 0
+  );
+  const testPaths = [...new Set(findings.flatMap((finding) => finding.adjacent_tests))].sort();
+  if (!testPaths.length) fail("当前轮没有待执行的相邻测试");
+  const batch = {
+    status,
+    command: stringFlag(flags, "command", { required: true }),
+    exit_status: intFlag(flags["exit-status"], "exit-status"),
+    tree_hash: stringFlag(flags, "tree-hash", { required: true }),
+    tested_commit: stringFlag(flags, "tested-commit", { required: true }),
+    log: stringFlag(flags, "log", { required: true }),
+    test_count: intFlag(flags["test-count"], "test-count"),
+    failed_count: intFlag(flags["failed-count"], "failed-count"),
+    failures: flags["failed-finding"] ? (Array.isArray(flags["failed-finding"]) ? flags["failed-finding"] : [flags["failed-finding"]]) : [],
+    reason: stringFlag(flags, "reason", { fallback: null }),
+  };
+  if (batch.command !== policy.policy.adjacentCommand) fail("command 必须与 baseline Adjacent test command 完全一致");
+  if (!/^[0-9a-f]{40,64}$/i.test(batch.tree_hash) || testPolicy.gitTree(project, batch.tested_commit).toLowerCase() !== batch.tree_hash.toLowerCase()) {
+    fail("tree-hash 必须匹配 tested-commit 的 tree");
+  }
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", batch.tested_commit, "HEAD"], { cwd: project, stdio: "ignore" });
+  } catch {
+    fail("tested-commit 必须是当前 HEAD 的祖先");
+  }
+  if (status === "pass" && (batch.exit_status !== 0 || batch.failures.length)) fail("pass 必须 exit-status=0 且无 failed-finding");
+  if (status === "fail" && (batch.exit_status === 0 || batch.failures.length === 0)) fail("fail 必须非零退出且列出 --failed-finding");
+  if (status === "fail" && batch.failures.some((id) => !testPaths.some((file) => testMatchesFinding(file, String(id).toUpperCase())))) {
+    fail("failed-finding 必须对应本轮相邻测试所属 finding");
+  }
+  if (status === "inconclusive" && !batch.reason) fail("inconclusive 必须提供 --reason");
+  batch.test_paths = testPaths;
+  batch.test_hashes = Object.fromEntries(testPaths.map((file) => [file, testPolicy.sha256File(path.resolve(project, file))]));
+  if (round.adjacent_batch) {
+    const roundDir = path.join(project, EVIDENCE, `round-${state.current_round}`);
+    const attempt = 1 + fs.readdirSync(roundDir)
+      .filter((name) => /^adjacent-batch-attempt-\d+\.md$/.test(name)).length;
+    const previous = path.join(roundDir, "adjacent-batch.md");
+    if (fs.existsSync(previous)) {
+      fs.copyFileSync(previous, path.join(roundDir, `adjacent-batch-attempt-${attempt}.md`));
+    }
+  }
+  round.adjacent_batch = batch;
+  for (const finding of findings) finding.adjacent_status = status;
+  persist(project, config, state, data);
+  const evidenceDir = path.join(project, EVIDENCE, `round-${state.current_round}`);
+  writeTextAtomic(path.join(evidenceDir, "adjacent-batch.md"), `# Adjacent Test Batch\n\n## Reviewctl Adjacent Batch Evidence\n\n\`\`\`json\n${JSON.stringify(batch, null, 2)}\n\`\`\`\n`);
+  console.log(`recorded adjacent batch for round ${state.current_round}: ${status}`);
 }
 
 function findingById(data, id) {
@@ -575,6 +639,10 @@ function commandRecordFinding(flags) {
       implementation_status: "none",
       commit: null,
       test_files: [],
+      adjacent_tests: [],
+      adjacent_reason: null,
+      adjacent_status: "not_required",
+      adjacent_round: null,
       verification_attempts: 0,
       unresolved: false,
       unresolved_reason: null,
@@ -587,6 +655,22 @@ function commandRecordFinding(flags) {
     };
     data.findings.push(finding);
   } else {
+    const replayFile = path.join(evidenceDir, "replay-review.md");
+    if (decision !== "needs-evidence" && fs.existsSync(replayFile)) {
+      const replay = testPolicy.parseJsonSection(readText(replayFile), "Reviewctl Replay Evidence", "Reviewctl Replay Evidence");
+      const evidence = replay.value;
+      if (replay.errors.length || !evidence || !/^[0-9a-f]{40,64}$/i.test(String(evidence.tested_commit || ""))) {
+        fail("replay-review.md 缺少 Reviewctl Replay Evidence 的 tested_commit/tree/test hash 数据");
+      }
+      if (testPolicy.gitTree(project, evidence.tested_commit).toLowerCase() !== String(evidence.tested_tree_hash || "").toLowerCase()) {
+        fail("replay tested_tree_hash 与 tested_commit 不一致");
+      }
+      const replayTest = path.resolve(project, evidence.test_path);
+      if (!/^[0-9a-f]{64}$/i.test(String(evidence.test_sha256 || "")) ||
+          !fs.existsSync(replayTest) || testPolicy.sha256File(replayTest).toLowerCase() !== evidence.test_sha256.toLowerCase()) {
+        fail("replay test_sha256 与复现证据文件不一致");
+      }
+    }
     const existingSource = finding.source || "review";
     if (existingSource !== source) {
       fail(`${id}: 已存在 finding 的 source 不能从 ${existingSource} 改为 ${source}`);
@@ -606,7 +690,8 @@ function commandRecordFinding(flags) {
     delete finding.verified_by;
     finding.adjacent_tests = [];
     finding.adjacent_reason = null;
-    finding.merged_tests = [];
+    finding.adjacent_status = "not_required";
+    finding.adjacent_round = null;
     finding.merge_conflict = false;
   }
   Object.assign(finding, {
@@ -784,11 +869,6 @@ function commandRecordVerification(flags) {
       ? [flags["adjacent-test"]]
       : [];
   const adjacentReason = stringFlag(flags, "adjacent-reason", { fallback: null });
-  const mergedTests = Array.isArray(flags["merged-test"])
-    ? flags["merged-test"]
-    : flags["merged-test"]
-      ? [flags["merged-test"]]
-      : [];
   const verifiedBy = stringFlag(flags, "verified-by", { fallback: "agent" });
   if (!["agent", "main-agent"].includes(verifiedBy)) {
     fail("verified-by 必须是 agent 或 main-agent");
@@ -822,22 +902,6 @@ function commandRecordVerification(flags) {
       }
       if (!fs.existsSync(path.resolve(project, file))) fail(`相邻测试不存在：${file}`);
     }
-    if (adjacentTests.length > 0 && mergedTests.length === 0) {
-      fail(`${id}: 相邻测试必须合并到正式测试文件，并通过 --merged-test 记录`);
-    }
-    for (const file of mergedTests) {
-      const normalized = String(file).replace(/\\/g, "/");
-      if (!inside(project, path.resolve(project, file))) fail(`merged-test 必须在项目内：${file}`);
-      if (normalized.startsWith("tests/review/")) fail(`merged-test 不能位于 tests/review/：${file}`);
-      if (!isFormalTestFile(normalized)) fail(`merged-test 不是正式测试文件：${file}`);
-      const absolute = path.resolve(project, file);
-      if (!fs.existsSync(absolute)) fail(`merged-test 不存在：${file}`);
-      if (!gitTracks(project, normalized)) fail(`merged-test 必须已提交到 git：${file}`);
-      if (!gitFileMatchesHead(project, normalized)) fail(`merged-test 内容必须已进入 HEAD：${file}`);
-      if (!readHeadFile(project, normalized).toUpperCase().includes(id)) {
-        fail(`merged-test 内容必须包含 finding ID ${id}：${file}`);
-      }
-    }
     const verificationErrors = testPolicy.validateVerificationEvidence(
       project,
       finding,
@@ -849,6 +913,8 @@ function commandRecordVerification(flags) {
     finding.verified_at = now();
     finding.unresolved = false;
     finding.unresolved_reason = null;
+    finding.adjacent_status = adjacentTests.length > 0 ? "pending" : "not_required";
+    finding.adjacent_round = adjacentTests.length > 0 ? state.current_round : null;
   } else if (status === "blocked_by_user_changes") {
     if (!["fixed", "already_fixed", "prepared"].includes(finding.implementation_status)) {
       fail(`${id}: blocked_by_user_changes 需要先记录 prepared/fixed/already_fixed 的修复`);
@@ -880,7 +946,6 @@ function commandRecordVerification(flags) {
   }
   finding.adjacent_tests = adjacentTests.map((file) => String(file).replace(/\\/g, "/"));
   finding.adjacent_reason = adjacentReason;
-  finding.merged_tests = mergedTests.map((file) => String(file).replace(/\\/g, "/"));
   finding.updated_at = now();
   persist(project, config, state, data);
   console.log(`recorded verification for ${id}: ${status}`);
@@ -1079,6 +1144,21 @@ function commandAdvance(flags) {
   }
   const from = state.current_phase;
 
+  if (from === "round_decision" && target !== "adjudication") {
+    const round = roundEntry(state, state.current_round);
+    const pendingAdjacent = data.findings.some((finding) =>
+      Number(String(finding.id).match(FINDING_ID)?.[1]) === state.current_round &&
+      finding.verification === "pass" && (finding.adjacent_tests || []).length > 0 &&
+      finding.adjacent_status !== "pass" &&
+      !(target === "final_audit" && round?.adjacent_batch?.status === "inconclusive")
+    );
+    const unresolvedBatch = round?.adjacent_batch?.status === "fail" ||
+      (round?.adjacent_batch?.status === "inconclusive" && target !== "final_audit");
+    if (pendingAdjacent || unresolvedBatch) {
+      fail("本轮相邻测试批测未通过；必须先处理失败/阻塞项，不能开始下一轮或终审");
+    }
+  }
+
   if (from === "adjudication") {
     const deferredErrors = validateDeferredReviews(state, data);
     if (deferredErrors.length) fail(deferredErrors.join("; "));
@@ -1209,6 +1289,37 @@ function commandAdvance(flags) {
     if (!round || round.raw_candidates === null) fail("先运行 record-round 记录本轮计数");
     completeRound(project, state, data, state.current_round);
     event(state, "round_decision", "检查提前收敛/轮次上限");
+  } else if (from === "round_decision" && target === "adjudication") {
+    const round = roundEntry(state, state.current_round);
+    if (["fail", "inconclusive"].includes(round?.adjacent_batch?.status)) {
+      const batchStatus = round.adjacent_batch.status;
+      round.status = "in_progress";
+      round.completed_at = null;
+      state.rounds_consumed = Math.max(0, state.rounds_consumed - 1);
+      state.can_trigger_new_round = state.rounds_consumed < config.max_rounds;
+      const attempt = 1 + fs.readdirSync(path.join(project, EVIDENCE, `round-${state.current_round}`))
+        .filter((name) => /^adjacent-batch-attempt-\d+\.md$/.test(name)).length;
+      const archivedBatch = path.join(project, EVIDENCE, `round-${state.current_round}`, `adjacent-batch-attempt-${attempt}.md`);
+      if (fs.existsSync(path.join(project, EVIDENCE, `round-${state.current_round}`, "adjacent-batch.md"))) {
+        fs.copyFileSync(path.join(project, EVIDENCE, `round-${state.current_round}`, "adjacent-batch.md"), archivedBatch);
+      }
+      round.adjacent_batch = null;
+      for (const finding of data.findings) {
+        if (Number(String(finding.id).match(FINDING_ID)?.[1]) === state.current_round && finding.adjacent_status === "fail") {
+          finding.adjacent_status = "pending";
+        }
+      }
+      event(state, "adjudication", batchStatus === "inconclusive"
+        ? "相邻批测阻塞；重新运行批测或登记未解决阻塞"
+        : "相邻批测发现缺陷；登记正式候选并裁决");
+    } else if (state.final_audit.reentry_pending) {
+      const audit = lastAudit(state);
+      if (!audit || audit.status !== "complete") fail("最终审计未完成");
+      if (auditCountSatisfied(data, audit)) fail("终审 finding 已全部记录，不需要回到 adjudication");
+      event(state, "adjudication", "补记终审 finding 的裁决");
+    } else {
+      fail("只有相邻测试批测 fail 或待补记终审 finding 时才能进入 adjudication");
+    }
   } else if (from === "round_decision" && target === "review") {
     if (!canTriggerNewRound(state, config)) fail("已达到 max_rounds，不能再开常规评审轮");
     if (state.final_audit.reentry_pending && state.final_audit_attempt >= 3) {
@@ -1218,16 +1329,6 @@ function commandAdvance(flags) {
     const round = ensureRound(state, state.current_round);
     round.status = "in_progress";
     event(state, "review", `启动第 ${state.current_round} 轮评审角色`);
-  } else if (from === "round_decision" && target === "adjudication") {
-    if (!state.final_audit.reentry_pending) {
-      fail("只有终审新问题后的补记裁决才能从 round_decision 进入 adjudication");
-    }
-    const audit = lastAudit(state);
-    if (!audit || audit.status !== "complete") fail("最终审计未完成");
-    if (auditCountSatisfied(data, audit)) {
-      fail("终审 finding 已全部记录，不需要回到 adjudication");
-    }
-    event(state, "adjudication", "补记终审 finding 的裁决");
   } else if (from === "round_decision" && target === "final_audit") {
     if (state.rounds_consumed < 2) fail("至少完成 2 轮常规评审才能进入最终审计");
     if (state.final_audit.reentry_pending) {
@@ -1526,6 +1627,7 @@ function usage() {
   record-finding --id R1-F001-PERF ... --deferred-review-action include|continue|reject --deferred-review-reason TEXT  # 复核更早轮次的 deferred
   record-implementation --id ID --status fixed --commit SHA --test PATH
   record-verification --id ID --status pass [--adjacent-test PATH ...] [--verified-by agent|main-agent]
+  record-adjacent-batch --status pass|fail|inconclusive --command CMD --exit-status N --tree-hash HASH --tested-commit SHA --log PATH --test-count N --failed-count N [--failed-finding ID ...]
   next-finding
   mark-unresolved --id ID --reason TEXT
   record-audit --attempt N --status complete|failed --new-issues N --auditor NAME
@@ -1547,7 +1649,7 @@ record-finding 必填：--reproduction-status reproduced|not-reproduced|blocked|
   复核更早轮次的 deferred 必须提供 --deferred-review-action include|continue|reject 和 --deferred-review-reason；
   final-audit finding 需要 --source final-audit --audit-attempt K。
 record-implementation 额外支持 --status prepared|blocked|cannot_fix --reason TEXT，以及 --manual。
-record-verification 额外支持 --adjacent-reason TEXT、--merged-test PATH ...、--unresolved-reason TEXT。`);
+record-verification 额外支持 --adjacent-reason TEXT、--unresolved-reason TEXT。`);
 }
 
 async function main() {
@@ -1562,6 +1664,7 @@ async function main() {
     status: commandStatus,
     "new-inbox": commandNewInbox,
     "record-round": commandRecordRound,
+    "record-adjacent-batch": commandRecordAdjacentBatch,
     "record-finding": commandRecordFinding,
     "record-implementation": commandRecordImplementation,
     "record-verification": commandRecordVerification,

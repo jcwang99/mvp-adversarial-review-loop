@@ -13,7 +13,7 @@
 | 创建评审 inbox | `reviewctl new-inbox --round N --role SEC --temp-id SEC-001` |
 | 记录/修订轮次计数 | `reviewctl record-round --round N --raw N --duplicates N --screened N --new-p0p1p2 N`（review 或 adjudication 中仅限当前未完成轮次）|
 | 记录 finding | `reviewctl record-finding --id ... --decision ... [--source final-audit --audit-attempt K] [--deferred-review-action include|continue|reject --deferred-review-reason TEXT]` |
-| 记录实现/验证 | `reviewctl record-implementation --id ID --status fixed --commit SHA --test PATH`、`reviewctl record-implementation --id ID --status already_fixed --commit SHA --test PATH`、`reviewctl record-implementation --id ID --status prepared --reason "REASON"`、`reviewctl record-implementation --id ID --status blocked --reason "REASON"`、`reviewctl record-implementation --id ID --status cannot_fix --reason "REASON"`（手工 finding 加 `--manual`）；`reviewctl record-verification ... [--merged-test PATH ...]` |
+| 记录实现/验证 | `reviewctl record-implementation --id ID --status fixed --commit SHA --test PATH`、`reviewctl record-implementation --id ID --status already_fixed --commit SHA --test PATH`、`reviewctl record-implementation --id ID --status prepared --reason "REASON"`、`reviewctl record-implementation --id ID --status blocked --reason "REASON"`、`reviewctl record-implementation --id ID --status cannot_fix --reason "REASON"`（手工 finding 加 `--manual`）；`reviewctl record-verification ... --adjacent-test PATH ...` |
 | 下一个 finding | `reviewctl next-finding` |
 | 标记未解决 | `reviewctl mark-unresolved --id ID --reason TEXT`（repair 阶段用于 blocked/cannot_fix） |
 | 记录终审 | `reviewctl record-audit --attempt N --status complete|failed --new-issues N --auditor NAME` |
@@ -153,7 +153,7 @@
 ### 2.3 独立复现
 
 - 每个可复现 finding 由未提出该候选的独立复现审查员运行；提出者不能自己决定。
-- 独立复现审查必须写入该 finding 目录的 `replay-review.md`；`record-finding` 对 accepted/deferred/rejected 都会检查该文件。
+- 独立复现审查必须写入该 finding 目录的 `replay-review.md`；除文字结论外，必须包含 `Reviewctl Replay Evidence` JSON：`tested_commit`、`tested_tree_hash`、`test_path`、`test_sha256`、实际命令和退出码。commit/tree 标识被测代码状态；`test_sha256` 校验保存的反例文件。验证阶段按风险决定是否在修复前状态重放，详见 §4。
 - 挑战代理的独立重放可以满足复现要求；原评审员的运行结果只能作线索。
 - 一个复现审查代理一次处理 3-5 个 findings，依次执行；默认不并行，除非用户明确授权且有独立 worktree。
 - 记录精确命令/操作、环境、退出状态、观察结果和证据路径；主代理必须检查证据与 claim 相符，并在 `adjudication.md` 注明执行者和证据路径。不要求主代理重复每条常规命令，但证据必须与 claim 相符。
@@ -264,9 +264,11 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 
 - 状态机一次只有一个 `active_finding`，因此一个验证代理一次验证一个 finding；不同 finding 的验证串行进行。
 - 使用 `agent-prompts.md` 的验证代理模板，并按其 YAML 结构回收摘要；`verification-result.md` 还必须包含 `Reviewctl Verification Evidence` JSON 区块，字段见 `evidence-structure.md`。提供原始 counterexample、reproduction、修复 commit 和 changed files、当前 HEAD、正式测试路径和运行入口、baseline 的 “Test Scope / Regression Policy” 摘要、finding severity；`risk_assessment` 由验证代理根据 changed files 独立判断。
-- 验证代理写 `verification-result.md`；主代理用 `reviewctl record-verification --id [ID] --status pass|fail|inconclusive|blocked_by_user_changes` 写入状态（代理输出的 `blocked` 按 `inconclusive` 记录）。pass 时必须提供至少 2 个 `--adjacent-test`，或用 `--adjacent-reason` 说明无法生成的理由；有相邻测试时必须用 `--merged-test` 记录已合并到正式测试文件的路径。`Reviewctl Verification Evidence` JSON 必须记录 regression scope/命令/退出状态/tree hash/tested commit/测试计数/日志、风险评估、实现阶段 full 状态；验证阶段重跑 full 时还要记录完整 `full_test_suite`。`reviewctl` 会校验结构化字段、baseline 命令和计数、tree hash 与日志退出标记，但不会自行运行测试，也无法独立证明日志确由所写命令产生或风险分类准确；主代理仍须对照原始日志、HEAD 和 changed files 复核这些事实。
-- 检查 RED 证据、在修复前 commit 重放原始反例（默认独立 worktree；兜底 stash + checkout 必须经主代理批准）、在修复后验证、生成至少 2 个相邻测试（正常 + 边界）、合并到正式测试并提交 `add(adjacent)`，再在提交后的 HEAD 上运行 impacted 回归。P0/P1、`risk_assessment = high`、baseline 为 full-everywhere，或实现阶段 full 证据缺失/不匹配时，验证代理必须自己重跑完整回归；full 证据失败时先重新修复并重新 GREEN full，或按环境/flaky 记录后判 `inconclusive`。P0/P1 和高风险不能复用实现证据。不得把实现代理的结论当作验证结果。
-- 验证代理把相邻测试合并到正式测试后，按 `add(adjacent): [ID] ...` 提交。提交前运行 `git diff --cached --name-only`，确认只包含正式测试文件，不包含源代码、`.review-evidence/`、`tests/review/` 或用户暂存改动；主代理用 `--merged-test` 记录这些正式测试路径和 commit SHA，确保它们进入 git 历史。
+- 验证代理写 `verification-result.md`；主代理用 `reviewctl record-verification --id [ID] --status pass|fail|inconclusive|blocked_by_user_changes` 写入状态（代理输出的 `blocked` 按 `inconclusive` 记录）。pass 时必须提供至少 2 个 `--adjacent-test`，或用 `--adjacent-reason` 说明无法生成的理由；相邻测试只放在 `tests/review/verifications/`，不合并正式测试，也不进入常规 full。`Reviewctl Verification Evidence` JSON 必须记录 regression scope/命令/退出状态/tree hash/tested commit/测试计数/日志、风险评估、实现阶段 full 状态；验证阶段重跑 full 时还要记录完整 `full_test_suite`。`reviewctl` 会校验结构化字段、baseline 命令和计数、tree hash 与日志退出标记，但不会自行运行测试，也无法独立证明日志确由所写命令产生或风险分类准确；主代理仍须对照原始日志、HEAD 和 changed files 复核这些事实。
+- 检查 RED 证据；当 P0/P1、高风险或复现 commit/tree/测试哈希无法核对时，在修复前 commit 的独立 worktree 重放原始反例；证据可信且风险普通时可跳过修复前重放。随后在修复后验证、生成至少 2 个相邻测试（正常 + 边界），并在轮末用 `reviewctl record-adjacent-batch` 一次性执行。P0/P1、`risk_assessment = high`、baseline 为 full-everywhere，或实现阶段 full 证据缺失/不匹配时，验证代理必须自己重跑完整回归；full 证据失败时先重新修复并重新 GREEN full，或按环境/flaky 记录后判 `inconclusive`。P0/P1 和高风险不能复用实现证据。不得把实现代理的结论当作验证结果。
+- 相邻测试不进入修复提交，也不要求单独提交；它们保存在 `tests/review/verifications/`，由轮末批测统一执行。只有批测失败并被裁决为正式缺陷时，才将修复测试写入正式测试文件并按普通 finding 提交。
+- 若轮末批测为 fail：保存失败日志和失败 finding 映射，运行 `reviewctl advance --to adjudication` 重新打开本轮；将失败场景作为正式候选走独立复现和裁决。候选计数确定后，在 adjudication 中重新运行 `reviewctl record-round` 更新本轮 raw/duplicates/screened/new-p0p1p2，再进入修复或 round_decision。旧批测记录保留为编号的 `adjacent-batch-attempt-N.md`，不得覆盖为 pass。
+- 若轮末批测为 inconclusive：不得开新常规轮；重新进入 adjudication 处理环境阻塞并重新批测。若阻塞无法排除，可进入最终审计，但最终只能报告 `INCOMPLETE`。每次重跑前，旧批测证据必须另存，不得覆盖。
 - 验证代理不得强制清理或以任何方式覆盖用户改动；兜底流程必须记录原 HEAD 并验证恢复结果。
 - 无法生成有意义的相邻测试时，必须说明理由才能 pass。
 - 两次失败/无法确定的验证记录耗尽同一 finding 的修复预算；所有 repair 入口都执行此上限，重新裁决不会清零次数。耗尽后用 `mark-unresolved --id ID --reason TEXT` 登记未解决（包括重新进入 adjudication 的情况），或根据新证据改为 deferred/rejected；可继续处理其他有预算的 finding。

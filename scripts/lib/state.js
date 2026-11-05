@@ -45,6 +45,7 @@ const VERIFICATIONS = [
   "inconclusive",
   "blocked_by_user_changes",
 ];
+const ADJACENT_STATUSES = ["not_required", "pending", "pass", "fail", "inconclusive"];
 const SEVERITIES = ["P0", "P1", "P2", "P3"];
 const CHANGE_ORIGINS = ["regression", "pre-existing", "undetermined"];
 const NEEDS_CLARITY = ["clear_claim_lacking_env", "unclear_claim"];
@@ -218,6 +219,7 @@ function ensureRound(state, round) {
       screened_out: null,
       replay_eligible: null,
       new_in_scope_p0p1p2: null,
+      adjacent_batch: null,
       started_at: now(),
       completed_at: null,
     };
@@ -389,8 +391,8 @@ function validateFindings(data) {
     if (finding.manual !== undefined && typeof finding.manual !== "boolean") {
       errors.push(`${label}: manual 必须是布尔值`);
     }
-    if (finding.merged_tests !== undefined && !Array.isArray(finding.merged_tests)) {
-      errors.push(`${label}: merged_tests 必须是数组`);
+    if (finding.adjacent_status !== undefined && !ADJACENT_STATUSES.includes(finding.adjacent_status)) {
+      errors.push(`${label}: adjacent_status 非法`);
     }
     for (const key of ["reproduced_by", "verified_by"]) {
       if (finding[key] !== undefined && !["agent", "main-agent"].includes(finding[key])) {
@@ -483,8 +485,8 @@ function validateFindings(data) {
       if (finding.implementation_status === "fixed" && (!finding.commit || ["none", "unavailable"].includes(finding.commit))) {
         errors.push(`${label}: fixed 且 verification=pass 必须有 commit`);
       }
-      if ((finding.adjacent_tests || []).length > 0 && (finding.merged_tests || []).length === 0) {
-        errors.push(`${label}: 有相邻测试时必须记录已合并到正式测试的 merged_tests`);
+      if ((finding.adjacent_tests || []).length > 0 && !ADJACENT_STATUSES.includes(finding.adjacent_status || "pending")) {
+        errors.push(`${label}: 有相邻测试时 adjacent_status 非法`);
       }
     }
     if (finding.verification === "blocked_by_user_changes") {
@@ -586,8 +588,8 @@ function convergenceReasons(state, config, data, target, options = {}) {
     if (finding.implementation_status === "fixed" && (!finding.commit || ["none", "unavailable"].includes(finding.commit))) {
       reasons.push(`${finding.id} 已 verified 但修复没有进入 git 历史`);
     }
-    if ((finding.adjacent_tests || []).length > 0 && (finding.merged_tests || []).length === 0) {
-      reasons.push(`${finding.id} 的相邻测试尚未合并到正式测试文件`);
+    if ((finding.adjacent_tests || []).length > 0 && !["pass", "not_required"].includes(finding.adjacent_status || "pending")) {
+      reasons.push(`${finding.id} 的相邻测试批量验证尚未通过（${finding.adjacent_status || "pending"}）`);
     }
   }
 
@@ -636,6 +638,7 @@ module.exports = {
   DECISIONS,
   DEFERRED_REVIEW_ACTIONS,
   VERIFICATIONS,
+  ADJACENT_STATUSES,
   SEVERITIES,
   CHANGE_ORIGINS,
   NEEDS_CLARITY,
