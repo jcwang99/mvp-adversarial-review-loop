@@ -203,6 +203,7 @@ function initTemplates(project) {
         "- Feature matrix: [TODO]",
         "- Focused test command: [TODO]",
         "- Impacted test command: [TODO]",
+        "- Fast test command: [TODO; required only for progressive mode]",
         "- Full test command: [TODO]",
         "- Adjacent test command: [TODO]",
         "- High-risk paths: [TODO]",
@@ -408,6 +409,73 @@ function commandRecordAdjacentBatch(flags) {
   const evidenceDir = path.join(project, EVIDENCE, `round-${state.current_round}`);
   writeTextAtomic(path.join(evidenceDir, "adjacent-batch.md"), `# Adjacent Test Batch\n\n## Reviewctl Adjacent Batch Evidence\n\n\`\`\`json\n${JSON.stringify(batch, null, 2)}\n\`\`\`\n`);
   console.log(`recorded adjacent batch for round ${state.current_round}: ${status}`);
+}
+
+function commandRecordRoundRegression(flags) {
+  const project = projectRoot(flags);
+  const { config, state, data } = loadAll(project);
+  if (state.current_phase !== "round_decision") fail("record-round-regression 只能在 round_decision 阶段使用");
+  const policy = testPolicy.parseBaselinePolicy(project);
+  if (policy.errors.length) fail(policy.errors.join("; "));
+  if (policy.policy.tieringMode !== "progressive") fail("record-round-regression 只用于 progressive 模式");
+  const round = roundEntry(state, state.current_round);
+  if (!round) fail("当前轮次不存在");
+  const status = stringFlag(flags, "status", { required: true });
+  if (!["pass", "fail", "inconclusive"].includes(status)) fail("status 必须是 pass、fail 或 inconclusive");
+  const evidenceFlag = stringFlag(flags, "evidence", { fallback: null });
+  const inputPath = evidenceFlag ? path.resolve(project, evidenceFlag) : null;
+  let run;
+  let inputRelative = null;
+  let evidenceHash = null;
+  if (status === "inconclusive" && (!inputPath || !fs.existsSync(inputPath))) {
+    run = { status: "not_run", command: policy.policy.fullCommand };
+  } else {
+    const evidenceErrors = [];
+    inputRelative = path.relative(project, inputPath).replace(/\\/g, "/");
+    testPolicy.resolveEvidencePath(project, inputRelative, evidenceErrors, "regression evidence");
+    if (evidenceErrors.length) fail(evidenceErrors.join("; "));
+    let parsed;
+    try { parsed = JSON.parse(fs.readFileSync(inputPath, "utf8")); } catch (error) { fail(`evidence JSON 无效：${error.message}`); }
+    run = parsed?.full_suite;
+    if (!run || typeof run !== "object") fail("evidence 必须包含 full_suite 对象");
+    evidenceHash = testPolicy.sha256File(inputPath);
+    if (run.tested_commit && run.tested_commit !== gitHead(project)) fail("輪末 full 必须在当前 HEAD 上运行");
+  }
+  if (status !== "inconclusive" && typeof run.tested_commit !== "string") fail("evidence 必须包含 tested_commit");
+  if (status === "inconclusive" && !stringFlag(flags, "reason", { fallback: null })) fail("inconclusive 必须提供 --reason");
+  if (status === "inconclusive" && run.status === "not_run") {
+    run.tested_commit = null;
+    run.exit_status = null;
+    run.tree_hash_before = null;
+    run.tree_hash_after = null;
+  }
+  let logHash = null;
+  if (typeof run.log === "string") {
+    const logErrors = [];
+    const logPath = testPolicy.resolveEvidencePath(project, run.log, logErrors, "regression log");
+    if (logErrors.length) fail(logErrors.join("; "));
+    logHash = testPolicy.sha256File(logPath);
+  }
+  const gate = {
+    status,
+    command: run.command,
+    tested_commit: run.tested_commit || gitHead(project),
+    tree_hash: run.tree_hash_after,
+    evidence_file: inputRelative,
+    evidence_sha256: evidenceHash,
+    run,
+    log_sha256: logHash,
+    reason: stringFlag(flags, "reason", { fallback: null }),
+    recorded_at: now(),
+  };
+  const checkErrors = [];
+  testPolicy.validateRoundRegression(project, { ...round, regression_gate: gate }, checkErrors);
+  if (checkErrors.length) fail(checkErrors.join("; "));
+  round.regression_gate_attempts ||= [];
+  if (round.regression_gate) round.regression_gate_attempts.push(round.regression_gate);
+  round.regression_gate = gate;
+  persist(project, config, state, data);
+  console.log(`recorded progressive full regression for round ${state.current_round}: ${status}`);
 }
 
 function commandRecordFinalAdjacentBatch(flags) {
@@ -928,7 +996,8 @@ function commandRecordImplementation(flags) {
     const greenEvidence = testPolicy.parseImplementationEvidence(
       project,
       path.join(evidenceDir, "implementation-result.md"),
-      testPolicy.gitTree(project, commit)
+      testPolicy.gitTree(project, commit),
+      { finding }
     );
     if (greenEvidence.errors.length) fail(greenEvidence.errors.join("; "));
   }
@@ -1251,6 +1320,14 @@ function commandAdvance(flags) {
 
   if (from === "round_decision" && target !== "adjudication") {
     const round = roundEntry(state, state.current_round);
+    const baselinePolicy = testPolicy.parseBaselinePolicy(project);
+    if (baselinePolicy.policy?.tieringMode === "progressive") {
+      const regressionErrors = [];
+      testPolicy.validateRoundRegression(project, round, regressionErrors);
+      if (!round?.regression_gate || round.regression_gate.status !== "pass" || regressionErrors.length) {
+        fail(`必须先通过当前 HEAD 的轮末 full regression gate：${regressionErrors.join("; ") || round?.regression_gate?.status || "missing"}`);
+      }
+    }
     const pendingAdjacent = data.findings.some((finding) =>
       testPolicy.adjacentRound(finding) === state.current_round &&
       finding.verification === "pass" && (finding.adjacent_tests || []).length > 0 &&
@@ -1408,8 +1485,11 @@ function commandAdvance(flags) {
   } else if (from === "round_decision" && target === "adjudication") {
     const round = roundEntry(state, state.current_round);
     const aggregate = (state.final_audit.preflight_batches || []).find((item) => item.attempt === state.final_audit_attempt + 1);
-    if (["fail", "inconclusive"].includes(round?.adjacent_batch?.status) || ["fail", "inconclusive"].includes(aggregate?.status)) {
-      const batchStatus = ["fail", "inconclusive"].includes(aggregate?.status) ? aggregate.status : round.adjacent_batch.status;
+    const regressionStatus = round?.regression_gate?.status;
+    if (["fail", "inconclusive"].includes(round?.adjacent_batch?.status) || ["fail", "inconclusive"].includes(aggregate?.status) || ["fail", "inconclusive"].includes(regressionStatus)) {
+      const batchStatus = ["fail", "inconclusive"].includes(regressionStatus)
+        ? regressionStatus
+        : (["fail", "inconclusive"].includes(aggregate?.status) ? aggregate.status : round.adjacent_batch.status);
       round.status = "in_progress";
       round.completed_at = null;
       state.rounds_consumed = Math.max(0, state.rounds_consumed - 1);
@@ -1421,6 +1501,11 @@ function commandAdvance(flags) {
         fs.copyFileSync(path.join(project, EVIDENCE, `round-${state.current_round}`, "adjacent-batch.md"), archivedBatch);
       }
       round.adjacent_batch = null;
+      if (["fail", "inconclusive"].includes(regressionStatus)) {
+        round.regression_gate_attempts ||= [];
+        round.regression_gate_attempts.push(round.regression_gate);
+        round.regression_gate = null;
+      }
       for (const finding of data.findings) {
         if (testPolicy.adjacentRound(finding) === state.current_round && (finding.adjacent_tests || []).length) {
           finding.adjacent_status = "pending";
@@ -1748,6 +1833,8 @@ function usage() {
   record-implementation --id ID --status fixed --commit SHA --test PATH
   record-verification --id ID --status pass [--adjacent-test PATH ...] [--verified-by agent|main-agent]
   record-adjacent-batch --status pass|fail|inconclusive --command CMD --exit-status N --tree-hash HASH --tested-commit SHA --log PATH --test-count N --failed-count N [--failed-finding ID ...]
+  record-round-regression --status pass|fail --evidence .review-evidence/round-N/full-suite.json
+  record-round-regression --status inconclusive [--evidence FILE] --reason TEXT
   record-final-adjacent-batch --attempt N --status pass|fail|inconclusive --command CMD --exit-status N --tree-hash HASH --tested-commit SHA --log PATH --test-count N --failed-count N [--failed-finding ID ...] [--reason TEXT]
   adjacent-plan --scope round|all
   promote-adjacent-test --test PATH --finding ID --formal-test PATH --reason TEXT
@@ -1788,6 +1875,7 @@ async function main() {
     "new-inbox": commandNewInbox,
     "record-round": commandRecordRound,
     "record-adjacent-batch": commandRecordAdjacentBatch,
+    "record-round-regression": commandRecordRoundRegression,
     "record-final-adjacent-batch": commandRecordFinalAdjacentBatch,
     "adjacent-plan": commandAdjacentPlan,
     "promote-adjacent-test": commandPromoteAdjacentTest,

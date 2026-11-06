@@ -8,7 +8,7 @@
 
 ### 1. 读取并校验 `.review-evidence/state.json`
 
-`state.json` 和 `findings.json` 是事实来源；`run-state.md` / `findings-index.md` 是生成视图。同时读取 `baseline.md` 的 **Test Scope / Regression Policy**，确认 focused/impacted/full 命令、高风险路径和 baseline full result；委派实现/验证代理时必须一并提供。
+`state.json` 和 `findings.json` 是事实来源；`run-state.md` / `findings-index.md` 是生成视图。同时读取 `baseline.md` 的 **Test Scope / Regression Policy**，确认 tiering mode、focused/impacted/fast/full 命令、高风险路径和 baseline full result；委派实现/验证代理时必须一并提供。
 
 获取当前状态：
 
@@ -35,6 +35,7 @@ node <skill-dir>/scripts/reviewctl.js validate
 - **检查是否该进入最终审计**：按 SKILL.md 的轮次策略和收敛判定。
 - **检查更早轮次 deferred**：在 adjudication 阶段，所有更早轮次的 deferred 是否已逐条记录本轮结论（include / continue / reject）及理由；遗漏时 `advance` 会拒绝。
 - 未解决的验证阻塞（inconclusive，不含 blocked_by_user_changes）不阻止终审执行，但结论只能为 INCOMPLETE。
+- baseline 为 `progressive` 时，进入本轮决策后先对当前 HEAD 运行 full 并用 `reviewctl record-round-regression` 记录；只有通过才能进入下一轮或终审。failed/inconclusive 可进入 adjudication 处理，不能跳过门禁。
 - 有相邻测试时，终审前需运行 `reviewctl adjacent-plan --scope all` 的精确命令并记录 `record-final-adjacent-batch`；终审重入时按新 HEAD 和新 attempt 重跑。正式回归测试替代临时相邻测试须通过 `promote-adjacent-test` 显式登记。
 
 ### 3. 确认是否需要委派子代理
@@ -73,8 +74,9 @@ node <skill-dir>/scripts/reviewctl.js validate
 | 手工 finding 被测试卡住 | `record-implementation` 报缺少 `--test` | 用 `--manual` 并记录独立人工复测 |
 | 到 max_rounds 仍开新轮 | 终审发现新问题后启动第 max_rounds+1 轮 | 报告 INCOMPLETE |
 | 每个 finding 全量编译 | Rust 等长编译项目反复重建 | baseline 预热共享缓存，子代理复用；超预算时按轮次集中清理 |
-| GREEN 只跑 focused/impacted | 提交前没有全量证据 | 重新运行 baseline 的 full 命令，记录命令、退出码、tree hash、测试计数和日志 |
-| 验证阶段重复全量 | 实现和验证各跑一次 full | 验证默认 impacted + 复核 GREEN full 证据；P0/P1、高风险、full-everywhere 或证据不可信时才重跑 full |
+| default 模式 GREEN 只跑 focused/impacted | 提交前没有全量证据 | 重新运行 baseline 的 full 命令，记录命令、退出码、tree hash、测试计数和日志 |
+| progressive 轮末 full 缺失 | 直接进入下一轮或终审 | 当前 HEAD 运行 baseline full，再用 `reviewctl record-round-regression` 记录；失败或阻塞先重新裁决 |
+| 验证阶段重复全量 | 实现和验证各跑一次 full | 按 baseline mode 与风险执行：default 复核 GREEN full；progressive 普通风险可复核 GREEN fast，P0/P1、高风险仍由验证代理重跑 full |
 | 误以为结构化证据等于真实运行 | CLI 校验结构化字段，但不会执行测试或验证日志真实性/风险判断 | 主代理对照原始日志、HEAD 和 changed files 复核 |
 | baseline full 红灯 | 直接进入 review，后续每个 GREEN full 都失败 | 停止并报告 blocked；不得带红灯基线进入 review，也不得用排除项冒充 full |
 | 委派提示缺少脚本路径 | 子代理找不到 `reviewctl` | 把 `[skill-dir]` 替换为动态解析的绝对路径 |

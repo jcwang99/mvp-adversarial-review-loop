@@ -39,6 +39,7 @@ function parseBaselinePolicy(project) {
     expectedTestCount: Number((bullet(scope, "Expected test count").match(/\d+/) || [])[0]),
     focusedCommand: bullet(scope, "Focused test command"),
     impactedCommand: bullet(scope, "Impacted test command"),
+    fastCommand: bullet(scope, "Fast test command"),
     fullCommand: bullet(scope, "Full test command"),
     adjacentCommand: bullet(scope, "Adjacent test command"),
   };
@@ -50,8 +51,8 @@ function parseBaselinePolicy(project) {
     skipped: baselineTestValues[3],
   };
   policy.expectedTestCount = policy.baselineTestCounts.total;
-  if (!["default", "full-everywhere"].includes(policy.tieringMode)) {
-    errors.push("baseline.md 的 Tiering mode 必须是 default 或 full-everywhere");
+  if (!["default", "full-everywhere", "progressive"].includes(policy.tieringMode)) {
+    errors.push("baseline.md 的 Tiering mode 必须是 default、full-everywhere 或 progressive");
   }
   if (policy.baselineResult !== "pass") {
     errors.push("baseline full result 必须为 pass 才能进入 review");
@@ -76,6 +77,13 @@ function parseBaselinePolicy(project) {
   }
   if (/\|\|\s*true|--passWithNoTests/i.test(policy.fullCommand)) {
     errors.push("baseline Full test command 不得吞掉失败或允许零测试通过");
+  }
+  if (policy.tieringMode === "progressive") {
+    if (!policy.fastCommand || /\[|\]|TODO|<[^>]+>/i.test(policy.fastCommand)) {
+      errors.push("progressive 模式必须填写有效的 Fast test command");
+    } else if (policy.fastCommand.trim() === policy.fullCommand.trim() || /\|\|\s*true|--passWithNoTests/i.test(policy.fastCommand)) {
+      errors.push("Fast test command 必须与 Full test command 不同，且不得吞掉失败或允许零测试通过");
+    }
   }
   if (policy.adjacentCommand && policy.adjacentCommand.trim() === policy.fullCommand.trim()) {
     errors.push("Adjacent test command 必须与 Full test command 分开配置");
@@ -295,6 +303,29 @@ function validateFullRun(project, run, policy, label, expectedTreeHash = null) {
   return errors;
 }
 
+function validateFastRun(project, run, policy, label, expectedTreeHash = null) {
+  const errors = [];
+  if (!run || typeof run !== "object" || Array.isArray(run)) return [`${label} 缺少结构化快速测试证据`];
+  if (run.status !== "pass") errors.push(`${label} status 必须为 pass`);
+  if (typeof run.command !== "string" || run.command.trim() !== policy.fastCommand.trim()) errors.push(`${label} command 必须与 baseline Fast test command 完全一致`);
+  if (/\|\|\s*true|--passWithNoTests/i.test(String(run.command || ""))) errors.push(`${label} command 不得吞掉失败或允许零测试通过`);
+  if (run.exit_status !== 0) errors.push(`${label} exit_status 必须为数值 0`);
+  if (!isTreeHash(run.tree_hash_before) || !isTreeHash(run.tree_hash_after) || run.tree_hash_before.toLowerCase() !== run.tree_hash_after.toLowerCase()) {
+    errors.push(`${label} 必须记录一致且有效的 tree hash`);
+  } else if (expectedTreeHash && run.tree_hash_after.toLowerCase() !== String(expectedTreeHash).toLowerCase()) {
+    errors.push(`${label} tree hash 与被验证的 index/commit tree 不一致`);
+  }
+  if (!(run.run_location === "main-workspace" || (typeof run.run_location === "string" && /^worktree:.+/.test(run.run_location.trim())))) errors.push(`${label} run_location 无效`);
+  if (run.workspace_clean_before !== true || run.workspace_clean_after !== true) errors.push(`${label} 必须证明测试前后被测工作区均 clean`);
+  const counts = run.test_counts;
+  if (!counts || !["total", "passed", "failed", "skipped"].every((key) => Number.isSafeInteger(counts[key]) && counts[key] >= 0) || counts.total < 1 || counts.failed !== 0 || counts.passed + counts.failed + counts.skipped !== counts.total) {
+    errors.push(`${label} test_counts 必须有效、至少运行一个测试且零失败`);
+  }
+  const logPath = resolveEvidencePath(project, run.log, errors, `${label} log`);
+  if (logPath && (!hasSuccessfulExit(logPath) || !hasExactCommand(fs.readFileSync(logPath, "utf8"), run.command))) errors.push(`${label} log 必须记录精确命令和 EXIT_CODE=0`);
+  return errors;
+}
+
 function gitTree(project, ref) {
   const { execFileSync } = require("node:child_process");
   return execFileSync("git", ["rev-parse", `${ref}^{tree}`], { cwd: project, encoding: "utf8" }).trim();
@@ -412,6 +443,65 @@ function validateAdjacentBatch(project, round, state, data, errors) {
   }
 }
 
+function validateRoundRegression(project, round, errors, { requireCurrentHead = true } = {}) {
+  const gate = round?.regression_gate;
+  if (!gate) {
+    errors.push(`round ${round?.round}: 缺少 progressive full regression gate`);
+    return;
+  }
+  if (!gate.run || !["pass", "fail", "inconclusive"].includes(gate.status)) {
+    errors.push(`round ${round.round}: progressive regression gate 证据无效`);
+    return;
+  }
+  if (gate.status === "pass" && gate.run.status !== "pass") errors.push(`round ${round.round}: pass gate 必须对应 status=pass 的 full 运行`);
+  if (gate.status === "fail" && gate.run.status !== "fail") errors.push(`round ${round.round}: fail gate 必须对应 status=fail 的 full 运行`);
+  if (gate.status === "inconclusive" && !["inconclusive", "not_run"].includes(gate.run.status)) errors.push(`round ${round.round}: inconclusive gate 的 full status 必须是 inconclusive 或 not_run`);
+  if (gate.evidence_file) {
+    const evidenceErrors = [];
+    const evidencePath = resolveEvidencePath(project, gate.evidence_file, evidenceErrors, `round ${round.round} regression evidence`);
+    errors.push(...evidenceErrors);
+    if (evidencePath && sha256File(evidencePath).toLowerCase() !== String(gate.evidence_sha256 || "").toLowerCase()) {
+      errors.push(`round ${round.round}: regression evidence 文件哈希不匹配`);
+    }
+  } else if (gate.status !== "inconclusive" || gate.evidence_sha256 !== null) {
+    errors.push(`round ${round.round}: 只有无运行结果的 inconclusive gate 可省略证据文件`);
+  }
+  const baseline = parseBaselinePolicy(project);
+  errors.push(...baseline.errors);
+  if (!baseline.policy) return;
+  if (gate.command !== baseline.policy.fullCommand) errors.push(`round ${round.round}: regression gate 命令必须匹配 baseline full command`);
+  if (gate.run.command !== baseline.policy.fullCommand) errors.push(`round ${round.round}: regression gate run.command 必须匹配 baseline full command`);
+  if (gate.status !== "inconclusive" && (!isTreeHash(gate.tree_hash) || gate.tree_hash !== gate.run.tree_hash_after || gate.run.tree_hash_before !== gate.tree_hash)) {
+    errors.push(`round ${round.round}: regression gate tree hash 不一致`);
+  }
+  if (gate.run.tested_commit && gate.run.tested_commit !== gate.tested_commit) errors.push(`round ${round.round}: regression gate tested_commit 不一致`);
+  if (gate.status !== "inconclusive" || gate.run.tested_commit) {
+    try {
+      if (gitTree(project, gate.tested_commit).toLowerCase() !== String(gate.tree_hash || "").toLowerCase()) errors.push(`round ${round.round}: regression gate tree hash 与 tested_commit 不一致`);
+      if (requireCurrentHead) {
+        const head = require("node:child_process").execFileSync("git", ["rev-parse", "HEAD"], { cwd: project, encoding: "utf8" }).trim();
+        if (head !== gate.tested_commit) errors.push(`round ${round.round}: regression gate 已过期，必须在当前 HEAD 重跑`);
+      }
+    } catch (error) {
+      errors.push(`round ${round.round}: regression gate tested_commit 无效：${error.message}`);
+    }
+  }
+  if (gate.status === "pass") errors.push(...validateFullRun(project, gate.run, baseline.policy, `round ${round.round} full regression`, gate.tree_hash));
+  else if (gate.status === "fail") {
+    if (!Number.isSafeInteger(gate.run.exit_status) || gate.run.exit_status === 0) errors.push(`round ${round.round}: fail regression gate 必须记录非零退出码`);
+    const logPath = resolveEvidencePath(project, gate.run.log, errors, `round ${round.round} regression log`);
+    if (logPath && (!hasNonzeroExit(logPath) || !hasExactCommand(fs.readFileSync(logPath, "utf8"), gate.command))) errors.push(`round ${round.round}: fail regression log 必须记录精确命令和非零退出码`);
+    if (logPath && sha256File(logPath).toLowerCase() !== String(gate.log_sha256 || "").toLowerCase()) errors.push(`round ${round.round}: fail regression log hash 不匹配`);
+  } else {
+    if (!(typeof gate.reason === "string" && gate.reason.trim())) errors.push(`round ${round.round}: inconclusive regression gate 必须说明原因`);
+    if (gate.run.log) {
+      const logPath = resolveEvidencePath(project, gate.run.log, errors, `round ${round.round} regression log`);
+      if (logPath && !hasExactCommand(fs.readFileSync(logPath, "utf8"), gate.command)) errors.push(`round ${round.round}: inconclusive regression log 命令不匹配`);
+      if (logPath && gate.log_sha256 && sha256File(logPath).toLowerCase() !== gate.log_sha256.toLowerCase()) errors.push(`round ${round.round}: inconclusive regression log hash 不匹配`);
+    }
+  }
+}
+
 function adjacentTestPaths(data, throughRound = Infinity, promotions = [], state = {}) {
   const promoted = new Set((Array.isArray(promotions) ? promotions : []).filter(Boolean).map((item) => item.test_path));
   return adjacentRegistry(state, data).filter((entry) => entry.round <= throughRound && !promoted.has(entry.test_path)).map((entry) => entry.test_path).sort();
@@ -494,7 +584,7 @@ function testSha256(filename) {
   return require("node:crypto").createHash("sha256").update(fs.readFileSync(filename)).digest("hex");
 }
 
-function parseImplementationEvidence(project, filename, expectedTreeHash = null) {
+function parseImplementationEvidence(project, filename, expectedTreeHash = null, { finding = null } = {}) {
   const errors = [];
   if (!fs.existsSync(filename)) return { run: null, policy: null, errors: ["缺少 implementation-result.md"] };
   const baseline = parseBaselinePolicy(project);
@@ -503,10 +593,20 @@ function parseImplementationEvidence(project, filename, expectedTreeHash = null)
   const report = fs.readFileSync(filename, "utf8");
   const parsed = parseJsonSection(report, "Reviewctl GREEN Evidence", "Reviewctl GREEN Evidence");
   errors.push(...parsed.errors);
-  const run = parsed.value?.full_suite;
-  if (run) errors.push(...validateFullRun(project, run, baseline.policy, "GREEN full evidence", expectedTreeHash));
-  else errors.push("Reviewctl GREEN Evidence 缺少 full_suite 对象");
-  return { run, policy: baseline.policy, errors };
+  const evidence = parsed.value;
+  const run = evidence?.full_suite || null;
+  const fastRun = evidence?.fast_suite || null;
+  if (baseline.policy.tieringMode === "progressive") {
+    if (!["normal", "high"].includes(evidence?.risk_assessment)) errors.push("progressive GREEN evidence 必须记录 risk_assessment=normal|high");
+    const requireFull = evidence?.risk_assessment === "high" || ["P0", "P1"].includes(finding?.severity);
+    if (run) errors.push(...validateFullRun(project, run, baseline.policy, "GREEN full evidence", expectedTreeHash));
+    else if (requireFull) errors.push("P0/P1 或高风险 finding 必须提供 GREEN full_suite");
+    else errors.push(...validateFastRun(project, fastRun, baseline.policy, "GREEN fast evidence", expectedTreeHash));
+  } else {
+    if (run) errors.push(...validateFullRun(project, run, baseline.policy, "GREEN full evidence", expectedTreeHash));
+    else errors.push("Reviewctl GREEN Evidence 缺少 full_suite 对象");
+  }
+  return { run, fastRun, evidence, policy: baseline.policy, errors };
 }
 
 function validateVerificationEvidence(project, finding, config, filename, expectedHeadTree = null, { historical = false } = {}) {
@@ -624,20 +724,30 @@ function validateVerificationEvidence(project, finding, config, filename, expect
   }
 
   const implementationPath = path.join(path.dirname(filename), "implementation-result.md");
-  const impl = parseImplementationEvidence(project, implementationPath);
+  const impl = parseImplementationEvidence(project, implementationPath, null, { finding });
   const implStatus = evidence.implementation_full_suite_status;
   if (finding.implementation_status === "fixed") {
-    if (impl.run?.status === "fail") errors.push("实现阶段 GREEN full 为 fail，必须重新修复并通过 GREEN full");
     if (!finding.commit || finding.commit === "none") errors.push("fixed finding 缺少修复 commit，无法核对 GREEN tree");
     else {
       try {
         const fixTree = gitTree(project, finding.commit);
-        errors.push(...validateFullRun(project, impl.run, impl.policy || baseline.policy, "GREEN full evidence", fixTree));
+        if (baseline.policy.tieringMode === "progressive" && !impl.run) {
+          if (!["P2", "P3"].includes(finding.severity) || evidence.risk_assessment !== "normal") {
+            errors.push("progressive 模式只有普通风险 P2/P3 finding 可延後 GREEN full 至轮末");
+          }
+          if (implStatus !== "not_run" || evidence.implementation_fast_suite_status !== "pass") {
+            errors.push("延後 GREEN full 时必须记录 implementation_full_suite_status=not_run 和 implementation_fast_suite_status=pass");
+          }
+          errors.push(...validateFastRun(project, impl.fastRun, impl.policy || baseline.policy, "GREEN fast evidence", fixTree));
+        } else {
+          if (impl.run?.status === "fail") errors.push("实现阶段 GREEN full 为 fail，必须重新修复并通过 GREEN full");
+          errors.push(...validateFullRun(project, impl.run, impl.policy || baseline.policy, "GREEN full evidence", fixTree));
+          if (implStatus !== "pass") errors.push("implementation_full_suite_status 必须为 pass");
+        }
       } catch (error) {
         errors.push(`无法读取修复 commit tree：${error.message}`);
       }
     }
-    if (implStatus !== "pass") errors.push("implementation_full_suite_status 必须为 pass");
     errors.push(...impl.errors);
   }
 
@@ -680,11 +790,14 @@ function validateVerificationEvidence(project, finding, config, filename, expect
 
 module.exports = {
   parseBaselinePolicy,
+  resolveEvidencePath,
   parseJsonSection,
   parseImplementationEvidence,
   validateFullRun,
+  validateFastRun,
   validateVerificationEvidence,
   validateAdjacentBatch,
+  validateRoundRegression,
   validateFinalAdjacentBatch,
   adjacentTestPaths,
   expandAdjacentCommand,

@@ -460,8 +460,8 @@ blockers: []
 
 2. **GREEN 阶段**：
    - 实现最小修复，使测试通过
-   - 运行完整测试套件，确保无回归；**这是提交前的强制门禁**
-   - 在 `implementation-result.md` 记录 full 命令、退出码、tree hash、workspace clean、测试计数和日志路径；full 失败不得提交
+   - 按 baseline 的 tiering mode 运行门禁：default/full-everywhere 运行 full；progressive 普通风险 P2/P3 运行 Fast test command，P0/P1 或 high 风险仍运行 full
+   - progressive 延后 full 时，在结构化 GREEN evidence 写 `fast_suite` 和 `risk_assessment: normal`；full 失败或快速测试失败都不得提交
    - 不要过度工程或添加 finding 范围外的功能
 
 3. **REFACTOR 阶段**（可选）：
@@ -482,14 +482,15 @@ implementation_status: "fixed | already_fixed | prepared | blocked | cannot_fix"
 test_status:
   red: "confirmed | not_confirmed"
   green: "pass | fail"
-  full_suite: "pass | fail | not_run"
-  full_suite_command: "<full 测试命令>"
-  full_suite_exit_status: "<退出码>"
-  full_suite_tree_hash: "<测试时的 tree hash（git write-tree）>"
-  full_suite_workspace_clean: true | false
-  full_suite_run_location: "main-workspace | worktree:<path>"
-  full_suite_test_counts: { total: <数量>, passed: <数量>, failed: <数量>, skipped: <数量> }
-  full_suite_log: "<日志路径>"
+  green_suite: "fast_pass | full_pass | fail | not_run"
+  risk_assessment: "normal | high"
+  green_suite_command: "<实际 fast/full 命令>"
+  green_suite_exit_status: "<退出码>"
+  green_suite_tree_hash: "<测试时的 tree hash（git write-tree）>"
+  green_suite_workspace_clean: true | false
+  green_suite_run_location: "main-workspace | worktree:<path>"
+  green_suite_test_counts: { total: <数量>, passed: <数量>, failed: <数量>, skipped: <数量> }
+  green_suite_log: "<日志路径>"
 commit_sha: "<commit hash | none>"
 commit_message: "<first line>"
 modified_files: []
@@ -564,9 +565,9 @@ blockers: []
 
 **Result**: pass | fail
 
-### Full Test Suite (GREEN)
+### GREEN Test Gate
 ```bash
-[运行完整测试套件的命令]
+[按 baseline tiering mode 运行 fast 或 full 的命令]
 ```
 
 **Exit Status**: [退出码]
@@ -581,9 +582,9 @@ blockers: []
 
 **Test Counts**: total / passed / failed / skipped
 
-**Log**: [.review-evidence/round-[N]/[标准 ID]/output-full-suite.log]
+**Log**: [.review-evidence/round-[N]/[标准 ID]/output-green-suite.log]
 
-实现代理还必须在本报告中加入 `## Reviewctl GREEN Evidence`，其中只有一个 JSON 代码块，按 `evidence-structure.md` 的 schema 记录 `full_suite`。该结构化区块用于 `reviewctl guard-commit` 和 `record-implementation` 校验，不能用上方摘要或散文替代。
+实现代理还必须在本报告中加入 `## Reviewctl GREEN Evidence`，其中只有一个 JSON 代码块。按 baseline mode 记录 `full_suite` 或 `fast_suite`；progressive 必须同时记录 `risk_assessment`。该区块用于 `reviewctl guard-commit` 和 `record-implementation` 校验，不能用上方摘要或散文替代。
 
 ## REFACTOR Phase (if any)
 [描述重构内容，如果没有则省略此节]
@@ -710,9 +711,9 @@ blockers:
 - 实现报告中的 full 记录与日志一致
 - 高风险变更包括：构建/依赖清单、公共 API、共享核心模块、认证/权限、数据 schema/迁移、并发/全局状态、feature flag、序列化、测试基础设施，或跨多个 package；“测试基础设施”仅指影响多个测试的 harness、配置、fixture、helper 或测试运行器
 
-任一条件不满足时：如果 `implementation_full_suite.status = fail`，按下方失败规则处理（重新修复并重新 GREEN full，或按环境/flaky 记录后判 `inconclusive`）；如果 full 证据缺失/不匹配，finding 为 P0/P1、`risk_assessment = high`、变更触及“高风险触发 full”清单，或 baseline 设为 full-everywhere，验证代理必须自己重跑 full。P0/P1 和高风险不能复用实现证据。
+任一条件不满足时：如果实现门禁 status 为 fail，按下方失败规则处理（重新修复并重新跑相应 GREEN 门禁，或按环境/flaky 记录后判 `inconclusive`）；如果 required evidence 缺失/不匹配，finding 为 P0/P1、`risk_assessment = high`、变更触及“高风险触发 full”清单，或 baseline 设为 full-everywhere，验证代理必须自己重跑 full。P0/P1 和高风险不能复用实现证据。progressive 普通风险 P2/P3 可核对实现阶段 fast 证据并运行修复后反例与 impacted；其 full 由主代理在轮末当前 HEAD 统一执行，不得把 fast 证据当作 full。
 
-`implementation_full_suite.status = fail` 时不得判 pass；必须重新修复并重新 GREEN full，或按环境/flaky 记录后判 `inconclusive`。
+`implementation_full_suite.status = fail` 时不得判 pass；必须重新修复并重新 GREEN full，或按环境/flaky 记录后判 `inconclusive`。progressive 的 `implementation_fast_suite.status = fail` 同样不得判 pass。
 
 `already_fixed` 默认由验证代理在当前 HEAD 重跑 full。唯一例外仅适用于 severity 为 P2/P3、`risk_assessment = normal` 且 tiering mode 为 `default` 的 finding：历史修复 commit 必须是 `baseline_head` 的祖先，baseline full result 必须为 pass，并在结构化证据中记录这两个事实；P0/P1、高风险或 `full-everywhere` 时不得使用例外。
 
@@ -822,7 +823,7 @@ blockers:
 ## 输出约定
 - 完整验证报告写入：.review-evidence/round-[N]/[标准 ID]/verification-result.md
 - 必要的命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log
-- 返回 YAML 摘要：verification_status、reproduction_status（before/after）、adjacent_tests、regression_scope/regression_status、implementation_full_suite、full_test_suite（如重跑）、verdict
+- 返回 YAML 摘要：verification_status、reproduction_status（before/after）、adjacent_tests、regression_scope/regression_status、GREEN 门禁证据（progressive 时填写 `implementation_fast_suite`，否则填写 `implementation_full_suite`）、full_test_suite（如重跑）、verdict
 - 不要在回复中粘贴完整日志或测试源码
 ~~~
 
@@ -850,9 +851,19 @@ regression_command: "<验证代理实际运行的回归命令>"
 regression_status: "pass | fail | not_run"
 risk_assessment: "normal | high"
 risk_reason: "<命中的高风险类别或 changed files>"
-implementation_full_suite:
+implementation_full_suite:  # default/full-everywhere，或 progressive 的 P0/P1/high finding
   status: "pass | fail | not_run"
   command: "<实现阶段的 full 命令>"
+  exit_status: "<退出码>"
+  tree_hash: "<测试时的 tree hash>"
+  workspace_clean: true | false
+  run_location: "main-workspace | worktree:<path>"
+  test_counts: { total: <数量>, passed: <数量>, failed: <数量>, skipped: <数量> }
+  log: "<日志路径>"
+  matches_fix_commit: true | false
+implementation_fast_suite:  # progressive 普通风险 P2/P3；与 implementation_full_suite 二选一作为 GREEN 门禁
+  status: "pass | fail | not_run"
+  command: "<实现阶段的 fast 命令>"
   exit_status: "<退出码>"
   tree_hash: "<测试时的 tree hash>"
   workspace_clean: true | false
@@ -976,7 +987,8 @@ git worktree remove <临时目录>/verify-[finding-id]
 - **Risk Assessment**: normal | high
 - **Risk Reason**: [命中的高风险类别或 changed files]
 
-### Implementation Full Suite Evidence
+### Implementation GREEN Gate Evidence
+- **Gate**: full | fast
 - **Command**:
 - **Exit Status**:
 - **Tree Hash**:
@@ -985,6 +997,8 @@ git worktree remove <临时目录>/verify-[finding-id]
 - **Test Counts**: total / passed / failed / skipped
 - **Log**:
 - **Matches Fix Commit**: yes | no
+
+progressive 普通风险 P2/P3 使用 fast 门禁时，以上字段对应 `implementation_fast_suite`；P0/P1、高风险或 default/full-everywhere 使用 `implementation_full_suite`。不要把轮末 full regression gate 填入 finding 的实现证据；该 gate 由主代理单独记录。
 
 ### Verification Full Suite (only if rerun)
 ```bash
@@ -1033,7 +1047,8 @@ git worktree remove <临时目录>/verify-[finding-id]
   - 相邻测试已生成并登记，或填写了合理的 adjacent_reason；其运行结果由主代理在轮末批测，不作为单个 finding 的 verification verdict
   - `regression_scope` 为 `impacted` 或 `full`，且 `regression_status = pass`
   - 如果 severity 为 P0/P1、`risk_assessment = high` 或 baseline 为 full-everywhere：**必须**由验证代理重跑并记录 **有效的** `full_test_suite`；`implementation_full_suite` 不能替代
-  - 其余 finding：**有效的** `implementation_full_suite` 且 `matches_fix_commit = true`；或验证代理自己重跑并记录 **有效的** `full_test_suite`
+  - default：其余 finding 必须有有效的 `implementation_full_suite` 且 `matches_fix_commit = true`，或验证代理自己重跑并记录有效的 `full_test_suite`
+  - progressive 普通风险 P2/P3：有效的 `implementation_fast_suite` 且匹配修复 commit；轮末 full gate 由主代理在本轮关闭前执行
   - `implementation_full_suite.status = fail` 时不得判 pass；必须重新修复并重新 GREEN full，或按环境/flaky 记录后判 `inconclusive`
 - **pass（already_fixed）**:
   - 测试覆盖评估为 covers_claim，重跑测试通过

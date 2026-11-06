@@ -1311,6 +1311,94 @@ test("max_rounds cannot be changed after init", () => {
   run(project, ["validate"], { expectFail: true });
 });
 
+test("progressive mode requires a current-HEAD full regression gate before leaving round decision", () => {
+  const project = makeProject();
+  init(project, 2);
+  const baseline = path.join(project, ".review-evidence/baseline.md");
+  let baselineText = fs.readFileSync(baseline, "utf8").replace("Tiering mode: default", "Tiering mode: progressive");
+  fs.writeFileSync(baseline, baselineText);
+  run(project, ["advance", "--to", "review"]);
+  addRoundHandoffs(project, 1);
+  run(project, ["record-round", "--round", "1", "--raw", "0", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+  run(project, ["advance", "--to", "adjudication"]);
+  run(project, ["advance", "--to", "round_decision"]);
+  const missing = run(project, ["advance", "--to", "review"], { expectFail: true });
+  assert.match(String(missing.stderr), /regression gate/);
+
+  const commit = testPolicyFixtures.git(project, ["rev-parse", "HEAD"]);
+  const tree = testPolicy.gitTree(project, commit);
+  const log = ".review-evidence/round-1/full-suite.log";
+  write(project, log, "COMMAND=node --test --test-name-pattern=fast\nEXIT_CODE=0\n");
+  write(project, ".review-evidence/round-1/full-suite.json", JSON.stringify({ full_suite: {
+    status: "pass", command: "node --test", exit_status: 0,
+    tree_hash_before: tree, tree_hash_after: tree, tested_commit: commit,
+    run_location: "main-workspace", workspace_clean_before: true, workspace_clean_after: true,
+    test_counts: { total: 1, passed: 1, failed: 0, skipped: 0 },
+    expected_test_count_delta: 0, expected_skipped_count_delta: 0, log,
+  } }));
+  run(project, ["record-round-regression", "--status", "pass", "--evidence", ".review-evidence/round-1/full-suite.json"]);
+  run(project, ["advance", "--to", "review"]);
+  const state = JSON.parse(fs.readFileSync(path.join(project, ".review-evidence/state.json"), "utf8"));
+  assert.equal(state.current_phase, "review");
+  assert.equal(state.rounds[0].regression_gate.status, "pass");
+});
+
+test("progressive GREEN accepts fast evidence only for normal-risk P2/P3 findings", () => {
+  const project = makeProject();
+  testPolicyFixtures.writeBaseline(project);
+  const baseline = path.join(project, ".review-evidence/baseline.md");
+  fs.writeFileSync(baseline, fs.readFileSync(baseline, "utf8")
+    .replace("Tiering mode: default", "Tiering mode: progressive"));
+  const tree = testPolicy.gitTree(project, "HEAD");
+  const dir = ".review-evidence/round-1/R1-F001-FUNC";
+  const log = `${dir}/output-fast-suite.log`;
+  write(project, log, "COMMAND=node --test --test-name-pattern=fast\nEXIT_CODE=0\n");
+  write(project, `${dir}/implementation-result.md`, `# Implementation Result\n\n## RED Phase\nconfirmed\n\n## GREEN Phase\npass\n\n## Reviewctl GREEN Evidence\n\n\`\`\`json\n${JSON.stringify({
+    risk_assessment: "normal",
+    fast_suite: {
+      status: "pass", command: "node --test --test-name-pattern=fast", exit_status: 0,
+      tree_hash_before: tree, tree_hash_after: tree, run_location: "main-workspace",
+      workspace_clean_before: true, workspace_clean_after: true,
+      test_counts: { total: 1, passed: 1, failed: 0, skipped: 0 }, log,
+    },
+  }, null, 2)}\n\`\`\`\n`);
+  const filename = path.join(project, dir, "implementation-result.md");
+  const normal = testPolicy.parseImplementationEvidence(project, filename, tree, { finding: { severity: "P2" } });
+  assert.deepEqual(normal.errors, []);
+  const critical = testPolicy.parseImplementationEvidence(project, filename, tree, { finding: { severity: "P1" } });
+  assert.match(critical.errors.join("; "), /P0\/P1/);
+});
+
+test("a failed progressive full gate reopens adjudication and preserves its attempt", () => {
+  const project = makeProject();
+  init(project, 2);
+  const baseline = path.join(project, ".review-evidence/baseline.md");
+  fs.writeFileSync(baseline, fs.readFileSync(baseline, "utf8")
+    .replace("Tiering mode: default", "Tiering mode: progressive"));
+  run(project, ["advance", "--to", "review"]);
+  addRoundHandoffs(project, 1);
+  run(project, ["record-round", "--round", "1", "--raw", "0", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+  run(project, ["advance", "--to", "adjudication"]);
+  run(project, ["advance", "--to", "round_decision"]);
+  const commit = testPolicyFixtures.git(project, ["rev-parse", "HEAD"]);
+  const tree = testPolicy.gitTree(project, commit);
+  const log = ".review-evidence/round-1/full-suite-failed.log";
+  write(project, log, "COMMAND=node --test\nEXIT_CODE=1\n");
+  write(project, ".review-evidence/round-1/full-suite-failed.json", JSON.stringify({ full_suite: {
+    status: "fail", command: "node --test", exit_status: 1,
+    tree_hash_before: tree, tree_hash_after: tree, tested_commit: commit,
+    run_location: "main-workspace", workspace_clean_before: true, workspace_clean_after: true,
+    test_counts: { total: 1, passed: 0, failed: 1, skipped: 0 },
+    expected_test_count_delta: 0, expected_skipped_count_delta: 0, log,
+  } }));
+  run(project, ["record-round-regression", "--status", "fail", "--evidence", ".review-evidence/round-1/full-suite-failed.json"]);
+  run(project, ["advance", "--to", "adjudication"]);
+  const state = JSON.parse(fs.readFileSync(path.join(project, ".review-evidence/state.json"), "utf8"));
+  assert.equal(state.current_phase, "adjudication");
+  assert.equal(state.rounds[0].regression_gate, null);
+  assert.equal(state.rounds[0].regression_gate_attempts.length, 1);
+});
+
 test("authorize records the user decision", () => {
   const project = makeProject();
   init(project);

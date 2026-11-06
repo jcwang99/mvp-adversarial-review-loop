@@ -29,7 +29,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 1. **主代理裁决**：子代理结论只是输入；范围、契约、状态和收敛由主代理决定。任何 finding 进入修复前必须有主代理确认的失败证据。
 2. **证据持久化**：`.review-evidence/state.json` 和 `findings.json` 是事实来源；`run-state.md` / `findings-index.md` 由 `reviewctl` 生成，禁止手改。完整复现、命令输出和阶段记录写入文件；对话只留摘要和路径；敏感值先脱敏。
 3. **独立性**：评审员不能复现或裁决自己的 finding；复现审查员不能是提出者；验证代理不能是实现者；最终审计代理不能参与过本流程任何阶段。
-4. **先证明再修复**：每个 accepted finding 必须先确认 RED，再按 `references/tdd-and-commit.md` 完成 RED-GREEN-REFACTOR、回归和隔离提交；GREEN 提交前必须通过完整测试套件。
+4. **先证明再修复**：每个 accepted finding 必须先确认 RED，再按 `references/tdd-and-commit.md` 完成 RED-GREEN-REFACTOR、回归和隔离提交。默认模式的 GREEN full 提交前必须通过；`progressive` 模式只允许普通风险 P2/P3 先通过快速套件提交，full 在轮末统一验收。
 5. **失败、未知、阻塞分开**：环境不可用或证据不足不能标 rejected 或 verified；未完成核验保持未完成并记录阻塞。
 6. **默认串行**：一次一个子代理；评审角色串行，复现/挑战/补强/验证/实现按批次串行。只有用户明确授权且有独立 worktree 隔离时才并行；未经授权不得并发评审或进行真实外部写入。
 7. **不覆盖用户改动**：修复提交只含当前 finding 的代码和正式测试；`.review-evidence/` 不进修复提交；禁止强制 checkout、reset、clean。
@@ -39,7 +39,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 11. **手工与阻塞 finding**：确实无法自动化时用 `reviewctl record-implementation --id ID --status fixed --manual`，并在验证中提供独立人工复测；用户改动导致无法提交时运行 `reviewctl record-implementation --id ID --status prepared --reason "user changes conflict"`，再运行 `record-verification --status blocked_by_user_changes`；无法修复时运行 `reviewctl record-implementation --id ID --status cannot_fix --reason "REASON"`，环境或依赖阻塞时运行 `reviewctl record-implementation --id ID --status blocked --reason "REASON"`，然后登记未解决或进入 `adjudication` 重新裁决。本流程要求 Git（commit、worktree、guard-commit）；无 Git 时不得启动。
 12. **编译缓存与磁盘预算**：长编译项目应在 baseline 预热，并在 `baseline.md` 记录的磁盘预算内复用共享缓存；不要为每个 finding 重建依赖或创建独立 target。缓存超过预算或磁盘紧张时，在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建。短编译项目不强制引入缓存层。
 13. **复核更早轮次的 deferred**：每轮 adjudication 必须对更早轮次所有 `deferred` finding 逐条给出本轮结论（`include` / `continue` / `reject`）并记录理由，使用 `record-finding --deferred-review-action ... --deferred-review-reason ...`；遗漏时 `advance` 会拒绝。`continue` 保持 deferred，`include` 改为 accepted 并进入本轮修复，`reject` 改为 rejected（需反证）。
-14. **测试范围分级**：baseline full 必须为绿，否则停止并报告 blocked；实现 GREEN 必须在提交前运行 full；验证默认运行 impacted 并复核 GREEN full 证据，P0/P1、高风险、baseline 标记 full-everywhere 或证据不可信时重跑 full；最终审计运行 full。常规 full 命令排除 `tests/review/verifications/`。baseline 的 Adjacent test command 必须包含且仅包含 `{test_paths}`；每轮末尾只运行本轮登记路径，启动每次最终审计前再运行所有轮次的剩余相邻测试。不得用 focused/impacted 结果替代 GREEN 全量。
+14. **测试范围分级**：baseline full 必须为绿，否则停止并报告 blocked。`default` 保持每个修复提交前 GREEN full；`full-everywhere` 还要求验证代理运行 full；`progressive` 仅允许普通风险 P2/P3 先通过快速套件提交，并在每轮末尾对当前 HEAD 运行 full gate，通过后才能开新轮或终审。P0/P1 和实现代理判为高风险的 finding 在提交前仍跑 full；验证代理遇到 P0/P1 或高风险仍独立跑 full。最终审计始终运行 full。常规 full 命令排除 `tests/review/verifications/`。baseline 的 Adjacent test command 必须包含且仅包含 `{test_paths}`；每轮末尾只运行本轮登记路径，启动每次最终审计前再运行所有轮次的剩余相邻测试。快速/impacted 结果不得替代轮末 full 或终审 full。
 
 ## 2. 阶段状态机
 

@@ -32,6 +32,7 @@ function writeBaseline(project) {
     '- Feature matrix: default',
     '- Focused test command: node --test',
     '- Impacted test command: node --test',
+    '- Fast test command: node --test --test-name-pattern=fast',
     '- Full test command: node --test',
     '- Adjacent test command: node --test {test_paths}',
     '- High-risk paths: none',

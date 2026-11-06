@@ -793,6 +793,10 @@ function validateProject(project, config, state, data) {
   for (const round of state.rounds) {
     if (round.status === "completed") {
       validateRoundCandidates(project, round, data, errors);
+      const baselinePolicy = testPolicy.parseBaselinePolicy(project).policy;
+      if (baselinePolicy?.tieringMode === "progressive") {
+        testPolicy.validateRoundRegression(project, round, errors, { requireCurrentHead: round.round === state.current_round && state.current_phase === "round_decision" });
+      }
       if (round.round !== state.current_round || !["verification", "round_decision"].includes(state.current_phase)) {
         testPolicy.validateAdjacentBatch(project, round, state, data, errors);
       }
@@ -911,7 +915,8 @@ function guardCommit(project, findingId, testPaths, data, state) {
     const greenEvidence = testPolicy.parseImplementationEvidence(
       project,
       path.join(evidenceDir, "implementation-result.md"),
-      stagedTree
+      stagedTree,
+      { finding }
     );
     errors.push(...greenEvidence.errors.map((error) => `${findingId}: ${error}`));
   }

@@ -309,7 +309,7 @@ node <skill-dir>/scripts/reviewctl.js render
 
 ## Test Scope / Regression Policy
 本小节是 focused/impacted/full 分级的唯一权威；`## Verification` 的测试命令仅作 baseline 参考，必须与本小节的对应命令一致。
-- Tiering mode: [default | full-everywhere]
+- Tiering mode: [default | full-everywhere | progressive]
 - Full-suite duration: [实测耗时]
 - Baseline full result: [pass | fail；fail 时必须停止并报告 blocked]
 - Baseline full log: [日志路径]
@@ -318,10 +318,13 @@ node <skill-dir>/scripts/reviewctl.js render
 - Feature matrix: [default | all-features | 逐项列表]
 - Focused test command: [反例/单模块]
 - Impacted test command: [改动 package/crate + 直接依赖方]
+- Fast test command: [progressive 模式必填；其余模式可填 not_applicable]
 - Full test command: [项目/workspace 全量；Rust 包含 doctest]
 - High-risk paths: [构建/依赖清单、公共 API、认证、数据迁移、并发、feature flag 等]
 - Verification default: [impacted；P0/P1/高风险/full-everywhere 重新运行 full]
 - Notes: [小项目可直接全量，不必分级]
+
+`progressive` 的 fast command 必须与 full command 不同。该命令只供普通风险 P2/P3 finding 的逐项 GREEN 使用；P0/P1、高风险与 `already_fixed` 不适用。轮末 full 仍使用 Full test command，不得排除慢速 I/O/稳定性测试。
 
 ## Machine-validated test evidence
 
@@ -329,7 +332,7 @@ reviewctl 读取下面两个精确标题下的单个 JSON 代码块；接受三�
 
 ### implementation-result.md
 
-提交 GREEN 前在报告中加入以下精确标题。测试计数差异按 baseline 填写；新增/删除测试造成 total 变化时填写 expected_test_count_delta_reason，skip 数变化时填写 expected_skipped_count_delta_reason。
+提交 GREEN 前在报告中加入以下精确标题。默认模式填写 `full_suite`；progressive 普通风险 P2/P3 填写 `fast_suite` 和 `risk_assessment: normal`，P0/P1 或 high 必须填写 `full_suite`。测试计数差异按 baseline 填写；新增/删除测试造成 total 变化时填写 expected_test_count_delta_reason，skip 数变化时填写 expected_skipped_count_delta_reason。
 
 ~~~text
 ## Reviewctl GREEN Evidence
@@ -359,9 +362,17 @@ reviewctl 读取下面两个精确标题下的单个 JSON 代码块；接受三�
 }
 ~~~
 
+progressive 的 `fast_suite` 使用与 `full_suite` 相同的证据字段（命令必须匹配 baseline Fast test command、状态、退出码、tree hash、运行位置、clean 状态、测试计数和日志），但快速测试计数不与 baseline full 总数比较。报告还需记录 `risk_assessment` 为 `normal` 或 `high`；high 和 P0/P1 必须提供 full。
+
+### 轮末 progressive full gate
+
+轮末将下列对象写入 `.review-evidence/round-[N]/full-suite.json`，命令为 baseline Full test command，`tested_commit` 必须是当前 HEAD。随后运行 `reviewctl record-round-regression --status pass --evidence .review-evidence/round-[N]/full-suite.json`。失败用同一证据文件记录实际非零退出码和日志，再以 `--status fail` 登记；无法运行时可用 `--status inconclusive --reason ...`，不提供虚构运行结果。只有 pass 可离开本轮进入下一轮或终审。证据与日志须保留，不得覆盖；修复导致 HEAD 改变后必须重跑。
+
+该 JSON 顶层包含 `full_suite`，字段沿用上方 GREEN full 对象，并增加 `tested_commit`。CLI 会记录证据文件 SHA-256，并核对 full 命令、当前 HEAD/tree、测试计数和日志退出码。
+
 ### verification-result.md
 
-加入以下精确标题。对 impacted 回归填写完整 changed_paths、impacted_targets、impact_basis 和传递反向依赖闭包；full 回归也要提供 regression 与 full_test_suite 两个对象，且两者的命令和日志相同。fixed finding 的 implementation_full_suite_status 必须为 pass。高风险必须填写 risk_reason。
+加入以下精确标题。对 impacted 回归填写完整 changed_paths、impacted_targets、impact_basis 和传递反向依赖闭包；full 回归也要提供 regression 与 full_test_suite 两个对象，且两者的命令和日志相同。fixed finding 在 default 模式必须有 `implementation_full_suite_status: pass`；progressive 普通风险 P2/P3 可为 `not_run`，但需 `implementation_fast_suite_status: pass`。高风险必须填写 risk_reason。
 
 ~~~text
 ## Reviewctl Verification Evidence
@@ -392,7 +403,8 @@ reviewctl 读取下面两个精确标题下的单个 JSON 代码块；接受三�
     }
   },
   "risk_assessment": "normal",
-  "implementation_full_suite_status": "pass"
+  "implementation_full_suite_status": "pass",
+  "implementation_fast_suite_status": "not_run"
 }
 ~~~
 

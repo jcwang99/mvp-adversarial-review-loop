@@ -42,9 +42,10 @@
 3. 确认测试/构建/类型检查/lint/安全扫描命令，并记录测试范围分级：
    - `focused`：反例、相邻测试或单个模块/测试目标的命令
    - `impacted`：改动所在 package/crate、直接依赖方及相关测试目标的命令
+   - `fast`：仅 progressive 模式必填的快速回归命令；应覆盖微型数据集和高频逻辑测试，不能删减为无测试的成功命令
    - `full`：项目/workspace 的完整测试套件命令（Rust 需包含 doctest；`cargo test <filter>` 仍会编译当前 package/workspace 默认成员的全部测试目标，缩小编译范围要用 `-p`、`--lib`、`--test` 或 `cargo nextest`）
    - `Adjacent test command`：独立的相邻测试命令模板，以唯一的 `{test_paths}` 结尾，如 `node --test {test_paths}`。不得额外扫描目录或吞掉失败；不支持文件参数的框架使用只执行给定路径的项目适配脚本。正常 full 排除 `tests/review/verifications/`。
-   - 高风险路径清单、full 单次耗时、full suite composition、feature matrix 和 baseline full result
+   - tiering mode（`default`、`full-everywhere` 或 `progressive`）、高风险路径清单、full 单次耗时、full suite composition、feature matrix 和 baseline full result。progressive 还需记录 Fast test command 与快速测试清单/耗时
    写入 `baseline.md` 的 "Test Scope / Regression Policy"。
 4. **按实测决定是否编译预热**：只有全量测试/构建耗时明显（例如单次超过 2-3 分钟）或会生成大量临时测试的项目才做；短编译项目沿用现有命令，不要额外引入缓存层。
    - 先确定磁盘预算：记录可用空间和缓存上限，云端环境尤其要留足余量；缓存目录放在仓库外，不要放进 `.review-evidence/`，也不要提交。
@@ -249,7 +250,7 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 **必须委派实现代理**，一次一个 accepted finding，按 `tdd-and-commit.md` 执行 RED-GREEN-REFACTOR 并提交。委派时替换提示模板中的 `[skill-dir]`，并要求复用 baseline 的编译缓存。
 
 - 实现代理只处理当前 finding；RED 必须先确认，测试必须合并到项目正式测试文件。确实无法自动化时使用 `--manual`，并在 `implementation-result.md` / `verification-result.md` 记录人工复测。
-- **GREEN 提交前必须运行 full 测试**，并在 `implementation-result.md` 记录命令、退出码、tree hash、workspace clean/run location、测试计数和日志；同时写入 `Reviewctl GREEN Evidence` JSON 区块供 `reviewctl` 校验。full 失败不得提交。验证阶段默认只跑 impacted，并复核这份 full 证据。
+- GREEN 按 baseline tiering mode 执行：default/full-everywhere 每个修复提交前必须 full；progressive 仅普通风险 P2/P3 可用 fast suite 提交，P0/P1 或实现代理判定 high 仍须提交前 full。运行证据写入 `Reviewctl GREEN Evidence` JSON 并绑定提交 tree。progressive 普通风险的 full 由主代理在轮末对当前 HEAD 统一运行并用 `reviewctl record-round-regression --status pass|fail|inconclusive --evidence .review-evidence/round-N/full-suite.json` 记录；缺少通过证据时不能开始下一轮或终审。失败须回到 adjudication，重跑使用新日志和 evidence 文件，历史记录保留。
 - 进入 repair 时脚本会记录 `repair_baseline_staged`；提交只包含当前 finding 的源代码、正式测试和必要配置；不包含 `.review-evidence/` 或 `tests/review/` 临时文件。
 - 提交前运行 `reviewctl guard-commit --finding [ID] --test [PATH]`；脚本会拒绝证据目录、临时测试目录，以及在进入 repair 前就已暂存的用户改动。
 - 提交后运行 `reviewctl record-implementation --id ID --status fixed --commit SHA --test PATH` 或 `reviewctl record-implementation --id ID --status already_fixed --commit SHA --test PATH`；手工 finding 加 `--manual`；用户改动导致无法提交时运行 `reviewctl record-implementation --id ID --status prepared --reason "user changes conflict"`。
@@ -292,14 +293,15 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 
 1. 确认本轮所有 accepted findings 已终结。
 2. `reviewctl advance` 在进入 `round_decision` 时自动设置 `rounds_consumed = current_round` 并重算 `can_trigger_new_round`。
-3. 检查进入最终审计的条件：
+3. baseline 为 `progressive` 时，在当前 HEAD 运行 full；将机器证据写入 `.review-evidence/round-[N]/full-suite.json`，然后记录 `reviewctl record-round-regression`。失败或 inconclusive 时只能进入 adjudication 处理，不能跳过 gate。通过后再按下列条件运行本轮相邻测试并选择下一阶段。
+4. 检查进入最终审计的条件：
    - 提前收敛：从第 2 轮起，最近连续两轮都没有新找到的、范围内的 P0/P1/P2。
    - 达到上限：完成 `max_rounds` 轮。
-4. 分支：
+5. 分支：
    - 不满足且 `can_trigger_new_round = true`：`reviewctl advance --to review`。
    - 满足：若 `reviewctl adjacent-plan --scope all` 有路径，运行其输出命令并保存日志，再执行 `reviewctl record-final-adjacent-batch --attempt K ...`。全历史测试通过且证据验证后，执行 `reviewctl advance --to final_audit`。每次重入终审都按新的 HEAD 和 attempt 重跑；最多 3 次。
    - 终审新问题已处理，但已达到 `max_rounds` 或审计尝试已达 3 次：`reviewctl advance --to report`，再 `finalize --status incomplete`。
-5. finding 的未解决验证阻塞（inconclusive，不含 blocked_by_user_changes）不阻止最终审计执行，但使最终结论只能为 INCOMPLETE；终审前聚合批测仍必须通过。运行 `reviewctl validate` 检查。
+6. finding 的未解决验证阻塞（inconclusive，不含 blocked_by_user_changes）不阻止最终审计执行，但使最终结论只能为 INCOMPLETE；终审前聚合批测仍必须通过。运行 `reviewctl validate` 检查。
 
 提前收敛判定口径：被筛除或去重的候选、最终 rejected 的 finding 不算；P3 不算。
 
