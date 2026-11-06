@@ -789,13 +789,19 @@ function validateProject(project, config, state, data) {
   validateFindingDirectories(project, data, errors);
   validateTestDirectories(project, errors);
   validateRounds(state, errors);
+  testPolicy.validateAdjacentPromotions(project, state, data, errors);
   for (const round of state.rounds) {
     if (round.status === "completed") {
       validateRoundCandidates(project, round, data, errors);
-      if (!["verification", "round_decision"].includes(state.current_phase)) {
+      if (round.round !== state.current_round || !["verification", "round_decision"].includes(state.current_phase)) {
         testPolicy.validateAdjacentBatch(project, round, state, data, errors);
       }
     }
+  }
+  if (state.current_phase === "final_audit") {
+    testPolicy.validateFinalAdjacentBatch(project, state, data, errors, state.final_audit_attempt);
+  } else if (state.current_phase === "report" && state.final_audit_attempt > 0) {
+    testPolicy.validateFinalAdjacentBatch(project, state, data, errors, state.final_audit_attempt);
   }
   validateAudits(project, state, errors);
 
@@ -809,7 +815,7 @@ function validateProject(project, config, state, data) {
     validateFindingFiles(project, finding, errors, state);
     if (finding.verification === "pass" && ["fixed", "already_fixed"].includes(finding.implementation_status)) {
       const verificationPath = path.join(path.resolve(project, finding.evidence_dir), "verification-result.md");
-      errors.push(...testPolicy.validateVerificationEvidence(project, finding, config, verificationPath));
+      errors.push(...testPolicy.validateVerificationEvidence(project, finding, config, verificationPath, null, { historical: true }));
     }
     if (
       finding.source === "final-audit" &&

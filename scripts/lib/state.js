@@ -163,7 +163,9 @@ function defaultState(config) {
     blockers: [],
     authorizations: [],
     rounds: [],
-    final_audit: { attempts: [], reentry_pending: false },
+    adjacent_promotions: [],
+    adjacent_registry: [],
+    final_audit: { attempts: [], reentry_pending: false, preflight_batches: [] },
     created_at: at,
     updated_at: at,
     last_transition: { from: null, to: "baseline", at },
@@ -284,6 +286,16 @@ function validateState(state, config) {
   if (!Number.isInteger(state.final_audit_attempt) || state.final_audit_attempt < 0 || state.final_audit_attempt > 3) {
     errors.push("final_audit_attempt 必须是 0..3 的整数");
   }
+  if (!state.final_audit || !Array.isArray(state.final_audit.preflight_batches)) {
+    errors.push("final_audit.preflight_batches 必须是数组");
+  } else {
+    const attempts = new Set();
+    for (const batch of state.final_audit.preflight_batches) {
+      if (!batch || !Number.isInteger(batch.attempt) || batch.attempt < 1 || batch.attempt > 3 || attempts.has(batch.attempt)) {
+        errors.push("final_audit.preflight_batches 的 attempt 必须唯一且为 1..3");
+      } else attempts.add(batch.attempt);
+    }
+  }
   if (state.active_finding !== null && !FINDING_ID.test(String(state.active_finding))) {
     errors.push(`active_finding 非法：${state.active_finding}`);
   }
@@ -302,6 +314,16 @@ function validateState(state, config) {
   if (!Array.isArray(state.blockers)) errors.push("blockers 必须是数组");
   if (!Array.isArray(state.authorizations)) errors.push("authorizations 必须是数组");
   else if (!state.authorizations.every(validAuthorization)) errors.push("authorizations 包含非法记录");
+  if (state.adjacent_promotions !== undefined && !Array.isArray(state.adjacent_promotions)) errors.push("adjacent_promotions 必须是数组");
+  if (state.adjacent_registry !== undefined) {
+    if (!Array.isArray(state.adjacent_registry) || state.adjacent_registry.some((entry) =>
+      !entry || typeof entry.test_path !== "string" || !FINDING_ID.test(entry.finding_id) ||
+      !Number.isInteger(entry.round) || entry.round < 1 || entry.round > state.current_round)) {
+      errors.push("adjacent_registry 必须包含合法的测试路径、finding 和登记轮次");
+    } else if (new Set(state.adjacent_registry.map((entry) => entry.test_path)).size !== state.adjacent_registry.length) {
+      errors.push("adjacent_registry 不得重复登记路径");
+    }
+  }
   if (!Array.isArray(state.rounds)) errors.push("rounds 必须是数组");
   if (state.repair_baseline_staged !== undefined && !Array.isArray(state.repair_baseline_staged)) {
     errors.push("repair_baseline_staged 必须是数组");

@@ -84,6 +84,9 @@ function renderRunState(state, config, data) {
   }
 
   lines.push("", "## Workflow Reminder", "");
+  for (const batch of state.final_audit.preflight_batches || []) {
+    lines.push(`- 终审前相邻测试聚合批测 attempt ${batch.attempt}: ${batch.status}, HEAD=${batch.tested_commit}, files=${batch.test_paths.length}`);
+  }
   lines.push("- 所有状态变更必须通过 `reviewctl`；不要手改本文件或 `findings.json`。");
   lines.push("- 进入下一阶段前运行 `reviewctl validate`。");
   lines.push("- 最少 2 轮常规评审，最多 `max_rounds` 轮；最终审计不计入轮次。");

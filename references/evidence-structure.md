@@ -54,6 +54,7 @@
     │           └── output.log
     ├── final-audit/
     │   └── attempt-1/
+    │       ├── adjacent-batch.md           # 本次终审前全历史聚合证据；重跑保留编号历史
     │       ├── blind-scan.md
     │       ├── targeted-review.md
     │       └── inbox/
@@ -93,8 +94,8 @@ tests/                                      # 项目测试目录
   - **清理规则**：
     - **保留条件**：_testdata/ 必须保留直到该轮所有 accepted findings 验证完成
     - **清理时机与执行者**（主代理执行）：
-      - 每轮 round_decision 时，清理上一轮已验证 findings 的 _testdata/（保留 fail/inconclusive 的）
-      - 进入 final_audit 时，清理所有已验证轮次的 _testdata/
+      - 每轮 round_decision 或进入 final_audit 时，仅清理不再被历史相邻测试引用的 _testdata/（保留 fail/inconclusive 的）
+      - 历史相邻测试所需 fixture 保留至流程结束，或由测试可靠地重建；不得破坏跨轮聚合的可运行性
       - 最终报告阶段，清理所有 _testdata/（如果所有 findings 已终结）
     - **清理前检查**：
       - 确认所有证据文件（counterexample.md、output.log、*-result.md）已保存在 inbox/ 或标准 ID 目录
@@ -108,10 +109,10 @@ tests/                                      # 项目测试目录
   - **在 TDD 阶段**：实现代理读取此文件，复制测试用例到项目正式测试文件（如 `tests/auth.test.js`）
   - **保留不删除**：供 verification 阶段使用（验证代理基于此生成相邻测试）
   - 测试框架配置中忽略此目录（或仅在 `ADVERSARIAL_REVIEW=true` 时运行）
-- **verifications/**：verification 阶段，验证代理写入相邻测试；每轮末尾统一批量执行
+- **verifications/**：verification 阶段，验证代理写入相邻测试；每轮末尾执行本轮清单，每次终审前执行所有历史清单
   - 命名规则：`r{round}_f{num}_{slug}_adjacent{suffix}`（如 `r1_f001_auth_bypass_adjacent.test.js`）
-  - 通过的相邻测试保留在此目录，仅由 baseline 的 Adjacent test command 执行，不进入常规 full suite，也不要求逐 finding 提交
-  - 若轮末批测发现真实缺陷，先登记为正式 finding；该缺陷的修复回归测试按普通 TDD 流程加入正式测试文件
+  - 通过的相邻测试保留在此目录，仅由 baseline 中含 `{test_paths}` 的 Adjacent test command 执行，不进入常规 full suite，也不要求逐 finding 提交
+  - 若批测发现真实缺陷，先登记为正式 finding；修复回归测试按普通 TDD 流程加入正式测试文件并验证后，可用 `promote-adjacent-test` 显式登记替代关系。保留原临时测试和哈希用于审计，后续历史聚合不再执行它
   - **保留不删除**：供最终报告统计和审计
   - 测试框架配置中忽略此目录（或仅在 `ADVERSARIAL_REVIEW=true` 时运行）
 - **整个 tests/review/ 目录在评审流程结束后删除**
@@ -253,11 +254,15 @@ required-features = ["adversarial-review"]
 | `next_action` | 下一步动作 |
 | `blockers` / `authorizations` | 阻塞和用户授权记录 |
 | `rounds` | 每轮计数和角色 |
-| `final_audit` | 审计尝试和重入状态 |
+| `final_audit` | 审计尝试、重入状态及每次尝试的全历史相邻测试聚合证据 |
+| `adjacent_promotions` | 已由正式回归测试替代的临时相邻测试路径、提交和哈希 |
+| `adjacent_registry` | 追加保存 `{test_path, finding_id, round}`；round 是登记轮次，重裁决不删除历史 |
 
 `findings.json` 每个 finding 至少包含：`id`、`original_ids`、`source`（`review` / `final-audit`）、`audit_attempt`、`role`、`severity`、`decision`、`verification`、`evidence_dir`、`reproduced`、`reproduced_by`、`reproduction_status`、`challenge_required`、`challenge_result`、`change_origin`、`implementation_status`、`manual`、`commit`、`test_files`、`verification_attempts`、`verified_by`、`adjacent_tests`、`adjacent_reason`、`adjacent_status`、`unresolved`。更早轮次的 deferred 被复核后还会记录 `deferred_review_action`（`include` / `continue` / `reject`）、`deferred_review_reason`、`deferred_review_round` 和 `deferred_reviewed_at`。
 
 `authorization_receipts` 按例外操作名记录登记时适用的授权日志位置、摘要和时间。后续撤销阻止新操作；已有合法记录仍可审计。该字段由命令生成，不手工填写。
+
+`final_audit.preflight_batches` 保存各审计 attempt 的最近一次聚合结果；与 `round-[N]/final-audit/attempt-[K]/adjacent-batch.md` 的 `Reviewctl Final Adjacent Batch Evidence` JSON 一致。字段包括 `attempt`、`round`、`status`、`command`、`tested_commit`、`tree_hash`、`test_paths`、`test_hashes`、`test_count`、`failed_count`、`exit_status`、`log`、`log_sha256`、`failures`、`reason`。同一 attempt 重跑归档旧 JSON 和保留原日志；进入终审要求最新记录 pass 且 commit 为当前 HEAD。具体命令与失败处理见 phase-playbooks.md §5.3。
 
 **操作**：
 

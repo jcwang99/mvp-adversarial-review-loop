@@ -6,7 +6,7 @@ const { spawnSync } = require("node:child_process");
 // Run the existing CLI scenarios and the isolated authorization/Git regressions.
 for (const args of [
   ["test-reviewctl.js"],
-  ["--test", "test-authorization.js", "test-staged-guard.js"],
+  ["--test", "test-authorization.js", "test-staged-guard.js", "test-adjacent-batches.js"],
 ]) {
   const env = { ...process.env };
   delete env.REVIEWCTL_TEST_FILTER;

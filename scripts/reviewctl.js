@@ -354,10 +354,10 @@ function commandRecordAdjacentBatch(flags) {
   const policy = testPolicy.parseBaselinePolicy(project);
   if (policy.errors.length) fail(policy.errors.join("; "));
   const findings = data.findings.filter((finding) =>
-    Number(String(finding.id).match(FINDING_ID)?.[1]) === state.current_round &&
+    testPolicy.adjacentRound(finding) === state.current_round &&
     finding.verification === "pass" && (finding.adjacent_tests || []).length > 0
   );
-  const testPaths = [...new Set(findings.flatMap((finding) => finding.adjacent_tests))].sort();
+  const testPaths = testPolicy.roundAdjacentPaths(state, data, state.current_round);
   if (!testPaths.length) fail("当前轮没有待执行的相邻测试");
   const batch = {
     status,
@@ -371,7 +371,7 @@ function commandRecordAdjacentBatch(flags) {
     failures: flags["failed-finding"] ? (Array.isArray(flags["failed-finding"]) ? flags["failed-finding"] : [flags["failed-finding"]]) : [],
     reason: stringFlag(flags, "reason", { fallback: null }),
   };
-  if (batch.command !== policy.policy.adjacentCommand) fail("command 必须与 baseline Adjacent test command 完全一致");
+  if (batch.command !== testPolicy.expandAdjacentCommand(policy.policy.adjacentCommand, testPaths)) fail("command 必须精确运行当前轮登记的相邻测试路径");
   if (!/^[0-9a-f]{40,64}$/i.test(batch.tree_hash) || testPolicy.gitTree(project, batch.tested_commit).toLowerCase() !== batch.tree_hash.toLowerCase()) {
     fail("tree-hash 必须匹配 tested-commit 的 tree");
   }
@@ -386,6 +386,11 @@ function commandRecordAdjacentBatch(flags) {
     fail("failed-finding 必须对应本轮相邻测试所属 finding");
   }
   if (status === "inconclusive" && !batch.reason) fail("inconclusive 必须提供 --reason");
+  if (batch.test_count < 0 || batch.failed_count < 0 || batch.failed_count > batch.test_count) fail("测试计数非法");
+  if (status === "pass" && batch.test_count < testPaths.length) fail("pass 测试计数必须覆盖全部登记文件");
+  const logErrors = testPolicy.validateAdjacentLog(project, batch);
+  if (logErrors.length) fail(logErrors.join("; "));
+  batch.log_sha256 = testPolicy.sha256File(path.resolve(project, batch.log));
   batch.test_paths = testPaths;
   batch.test_hashes = Object.fromEntries(testPaths.map((file) => [file, testPolicy.sha256File(path.resolve(project, file))]));
   if (round.adjacent_batch) {
@@ -403,6 +408,105 @@ function commandRecordAdjacentBatch(flags) {
   const evidenceDir = path.join(project, EVIDENCE, `round-${state.current_round}`);
   writeTextAtomic(path.join(evidenceDir, "adjacent-batch.md"), `# Adjacent Test Batch\n\n## Reviewctl Adjacent Batch Evidence\n\n\`\`\`json\n${JSON.stringify(batch, null, 2)}\n\`\`\`\n`);
   console.log(`recorded adjacent batch for round ${state.current_round}: ${status}`);
+}
+
+function commandRecordFinalAdjacentBatch(flags) {
+  const project = projectRoot(flags);
+  const { config, state, data } = loadAll(project);
+  if (state.current_phase !== "round_decision") fail("record-final-adjacent-batch 只能在 round_decision 阶段使用");
+  if (state.rounds_consumed < 2) fail("至少完成 2 轮常规评审后才能登记终审前聚合批测");
+  const attempt = intFlag(flags.attempt, "attempt");
+  if (attempt !== state.final_audit_attempt + 1 || attempt > 3) fail(`attempt 必须是下一次终审编号 ${state.final_audit_attempt + 1}`);
+  const promotionErrors = [];
+  testPolicy.validateAdjacentPromotions(project, state, data, promotionErrors);
+  if (promotionErrors.length) fail(promotionErrors.join("; "));
+  const paths = testPolicy.adjacentTestPaths(data, state.current_round, state.adjacent_promotions || [], state);
+  if (!paths.length) fail("没有待执行的历史相邻测试");
+  const policy = testPolicy.parseBaselinePolicy(project);
+  if (policy.errors.length) fail(policy.errors.join("; "));
+  const status = stringFlag(flags, "status", { required: true });
+  if (!["pass", "fail", "inconclusive"].includes(status)) fail("status 必须是 pass、fail 或 inconclusive");
+  const batch = {
+    attempt,
+    round: state.current_round,
+    failures: flags["failed-finding"] ? (Array.isArray(flags["failed-finding"]) ? flags["failed-finding"] : [flags["failed-finding"]]) : [],
+    status,
+    command: stringFlag(flags, "command", { required: true }),
+    exit_status: intFlag(flags["exit-status"], "exit-status"),
+    tree_hash: stringFlag(flags, "tree-hash", { required: true }),
+    tested_commit: stringFlag(flags, "tested-commit", { required: true }),
+    log: stringFlag(flags, "log", { required: true }),
+    test_count: intFlag(flags["test-count"], "test-count"),
+    failed_count: intFlag(flags["failed-count"], "failed-count"),
+    reason: stringFlag(flags, "reason", { fallback: null }),
+    test_paths: paths,
+    test_hashes: Object.fromEntries(paths.map((file) => [file, testPolicy.sha256File(path.resolve(project, file))])),
+  };
+  if (batch.command !== testPolicy.expandAdjacentCommand(policy.policy.adjacentCommand, paths)) fail("command 必须精确运行所有历史相邻测试路径");
+  if (!/^[0-9a-f]{40,64}$/i.test(batch.tree_hash) || testPolicy.gitTree(project, batch.tested_commit).toLowerCase() !== batch.tree_hash.toLowerCase()) fail("tree-hash 必须匹配 tested-commit 的 tree");
+  if (batch.tested_commit !== gitHead(project)) fail("终审前聚合批测必须在当前 HEAD 上运行");
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", batch.tested_commit, "HEAD"], { cwd: project, stdio: "ignore" });
+  } catch {
+    fail("tested-commit 必须是当前 HEAD 的祖先");
+  }
+  if (batch.test_count < 0 || batch.failed_count < 0 || batch.failed_count > batch.test_count) fail("测试计数非法");
+  if (status === "pass" && (batch.exit_status !== 0 || batch.failed_count !== 0 || batch.test_count < paths.length || batch.failures.length)) fail("pass 必须退出码为 0、零失败且覆盖全部测试文件");
+  if (status === "fail" && (batch.exit_status === 0 || batch.failed_count < 1 || !batch.failures.length || batch.failures.some((id) => !paths.some((file) => testMatchesFinding(file, id))))) fail("fail 必须有非零退出码、失败计数和失败测试原所属 --failed-finding");
+  if (status === "inconclusive" && !batch.reason) fail("inconclusive 必须提供 --reason");
+  const logErrors = testPolicy.validateAdjacentLog(project, batch);
+  if (logErrors.length) fail(logErrors.join("; "));
+  batch.log_sha256 = testPolicy.sha256File(path.resolve(project, batch.log));
+  state.final_audit.preflight_batches ||= [];
+  const existingIndex = state.final_audit.preflight_batches.findIndex((item) => item.attempt === attempt);
+  if (existingIndex >= 0) {
+    const previous = state.final_audit.preflight_batches[existingIndex];
+    if (previous.log === batch.log || testPolicy.sha256File(path.resolve(project, previous.log)) !== previous.log_sha256) fail("重跑必须保留上次原始日志，并使用新的 --log 路径");
+    const previousDir = path.join(project, EVIDENCE, `round-${previous.round}`, "final-audit", `attempt-${attempt}`);
+    const sequence = 1 + fs.readdirSync(previousDir).filter((name) => /^adjacent-batch-attempt-\d+\.md$/.test(name)).length;
+    fs.copyFileSync(path.join(previousDir, "adjacent-batch.md"), path.join(previousDir, `adjacent-batch-attempt-${sequence}.md`));
+    state.final_audit.preflight_batches[existingIndex] = batch;
+  } else state.final_audit.preflight_batches.push(batch);
+  const evidenceDir = path.join(project, EVIDENCE, `round-${state.current_round}`, "final-audit", `attempt-${attempt}`);
+  ensureDir(evidenceDir);
+  writeTextAtomic(path.join(evidenceDir, "adjacent-batch.md"), `# Final Adjacent Test Batch\n\n## Reviewctl Final Adjacent Batch Evidence\n\n\`\`\`json\n${JSON.stringify(batch, null, 2)}\n\`\`\`\n`);
+  persist(project, config, state, data);
+  console.log(`recorded final adjacent batch for attempt ${attempt}: ${status}`);
+}
+
+function commandAdjacentPlan(flags) {
+  const project = projectRoot(flags);
+  const { state, data } = loadAll(project);
+  const scope = stringFlag(flags, "scope", { fallback: "round" });
+  if (!["round", "all"].includes(scope)) fail("scope 必须是 round 或 all");
+  const policy = testPolicy.parseBaselinePolicy(project);
+  if (policy.errors.length) fail(policy.errors.join("; "));
+  const paths = scope === "round" ? testPolicy.roundAdjacentPaths(state, data, state.current_round) : testPolicy.adjacentTestPaths(data, state.current_round, state.adjacent_promotions || [], state);
+  console.log(JSON.stringify({ scope, test_paths: paths, command: paths.length ? testPolicy.expandAdjacentCommand(policy.policy.adjacentCommand, paths) : null }, null, 2));
+}
+
+function commandPromoteAdjacentTest(flags) {
+  const project = projectRoot(flags);
+  const { config, state, data } = loadAll(project);
+  if (state.current_phase !== "round_decision") fail("promote-adjacent-test 只能在 round_decision 阶段使用");
+  const test = stringFlag(flags, "test", { required: true });
+  const target = findingById(data, stringFlag(flags, "finding", { required: true }));
+  const formal = stringFlag(flags, "formal-test", { required: true });
+  const entry = testPolicy.adjacentRegistry(state, data).find((item) => item.test_path === test);
+  if (!entry || roundEntry(state, entry.round)?.adjacent_batch?.status !== "pass") fail("只能升级已通过轮末批测的已登记相邻测试");
+  if (!fs.existsSync(path.resolve(project, test))) fail("升级前必须保留原始相邻测试文件及其哈希证据");
+  if ((state.adjacent_promotions || []).some((item) => item.test_path === test)) fail("该相邻测试已经升级");
+  if (!target || target.verification !== "pass" || !(target.test_files || []).includes(formal)) fail("目标必须是已验证 finding 的正式回归测试");
+  if (!gitFileMatchesHead(project, formal)) fail("正式回归测试必须已提交并匹配 HEAD");
+  state.adjacent_promotions ||= [];
+  state.adjacent_promotions.push({
+    test_path: test, test_sha256: testPolicy.sha256File(path.resolve(project, test)),
+    finding_id: target.id, formal_test: formal, commit: gitHead(project),
+    formal_sha256: testPolicy.sha256GitFile(project, "HEAD", formal),
+    reason: stringFlag(flags, "reason", { required: true }), at: now(),
+  });
+  persist(project, config, state, data);
+  console.log(`promoted adjacent test: ${test} -> ${formal}`);
 }
 
 function findingById(data, id) {
@@ -946,6 +1050,7 @@ function commandRecordVerification(flags) {
   }
   finding.adjacent_tests = adjacentTests.map((file) => String(file).replace(/\\/g, "/"));
   finding.adjacent_reason = adjacentReason;
+  if (status === "pass") state.adjacent_registry = testPolicy.adjacentRegistry(state, data);
   finding.updated_at = now();
   persist(project, config, state, data);
   console.log(`recorded verification for ${id}: ${status}`);
@@ -1147,7 +1252,7 @@ function commandAdvance(flags) {
   if (from === "round_decision" && target !== "adjudication") {
     const round = roundEntry(state, state.current_round);
     const pendingAdjacent = data.findings.some((finding) =>
-      Number(String(finding.id).match(FINDING_ID)?.[1]) === state.current_round &&
+      testPolicy.adjacentRound(finding) === state.current_round &&
       finding.verification === "pass" && (finding.adjacent_tests || []).length > 0 &&
       finding.adjacent_status !== "pass" &&
       !(target === "final_audit" && round?.adjacent_batch?.status === "inconclusive")
@@ -1156,6 +1261,17 @@ function commandAdvance(flags) {
       (round?.adjacent_batch?.status === "inconclusive" && target !== "final_audit");
     if (pendingAdjacent || unresolvedBatch) {
       fail("本轮相邻测试批测未通过；必须先处理失败/阻塞项，不能开始下一轮或终审");
+    }
+    const roundErrors = [];
+    testPolicy.validateAdjacentBatch(project, round, state, data, roundErrors);
+    if (roundErrors.length) fail(`本轮相邻批测证据无效：${roundErrors.join("; ")}`);
+    if (target === "final_audit" && testPolicy.adjacentTestPaths(data, state.current_round, state.adjacent_promotions || [], state).length) {
+      const aggregate = (state.final_audit?.preflight_batches || []).find((item) => item.attempt === state.final_audit_attempt + 1);
+      const evidenceErrors = [];
+      testPolicy.validateFinalAdjacentBatch(project, state, data, evidenceErrors, state.final_audit_attempt + 1);
+      if (!aggregate || aggregate.status !== "pass" || evidenceErrors.length) {
+        fail(`终审前必须通过全历史相邻测试聚合批测：${evidenceErrors.join("; ") || aggregate?.status || "missing"}`);
+      }
     }
   }
 
@@ -1291,8 +1407,9 @@ function commandAdvance(flags) {
     event(state, "round_decision", "检查提前收敛/轮次上限");
   } else if (from === "round_decision" && target === "adjudication") {
     const round = roundEntry(state, state.current_round);
-    if (["fail", "inconclusive"].includes(round?.adjacent_batch?.status)) {
-      const batchStatus = round.adjacent_batch.status;
+    const aggregate = (state.final_audit.preflight_batches || []).find((item) => item.attempt === state.final_audit_attempt + 1);
+    if (["fail", "inconclusive"].includes(round?.adjacent_batch?.status) || ["fail", "inconclusive"].includes(aggregate?.status)) {
+      const batchStatus = ["fail", "inconclusive"].includes(aggregate?.status) ? aggregate.status : round.adjacent_batch.status;
       round.status = "in_progress";
       round.completed_at = null;
       state.rounds_consumed = Math.max(0, state.rounds_consumed - 1);
@@ -1305,7 +1422,7 @@ function commandAdvance(flags) {
       }
       round.adjacent_batch = null;
       for (const finding of data.findings) {
-        if (Number(String(finding.id).match(FINDING_ID)?.[1]) === state.current_round && finding.adjacent_status === "fail") {
+        if (testPolicy.adjacentRound(finding) === state.current_round && (finding.adjacent_tests || []).length) {
           finding.adjacent_status = "pending";
         }
       }
@@ -1607,8 +1724,11 @@ function commandNormalize(flags) {
   state.can_trigger_new_round = state.rounds_consumed < config.max_rounds;
   if (!Array.isArray(state.repair_baseline_staged)) state.repair_baseline_staged = [];
   if (!state.final_audit || !Array.isArray(state.final_audit.attempts)) {
-    state.final_audit = { attempts: [], reentry_pending: false };
+    state.final_audit = { attempts: [], reentry_pending: false, preflight_batches: [] };
   }
+  if (!Array.isArray(state.final_audit.preflight_batches)) state.final_audit.preflight_batches = [];
+  if (!Array.isArray(state.adjacent_promotions)) state.adjacent_promotions = [];
+  state.adjacent_registry = testPolicy.adjacentRegistry(state, data);
   for (const round of state.rounds || []) {
     if (!Array.isArray(round.roles)) round.roles = [];
   }
@@ -1628,6 +1748,9 @@ function usage() {
   record-implementation --id ID --status fixed --commit SHA --test PATH
   record-verification --id ID --status pass [--adjacent-test PATH ...] [--verified-by agent|main-agent]
   record-adjacent-batch --status pass|fail|inconclusive --command CMD --exit-status N --tree-hash HASH --tested-commit SHA --log PATH --test-count N --failed-count N [--failed-finding ID ...]
+  record-final-adjacent-batch --attempt N --status pass|fail|inconclusive --command CMD --exit-status N --tree-hash HASH --tested-commit SHA --log PATH --test-count N --failed-count N [--failed-finding ID ...] [--reason TEXT]
+  adjacent-plan --scope round|all
+  promote-adjacent-test --test PATH --finding ID --formal-test PATH --reason TEXT
   next-finding
   mark-unresolved --id ID --reason TEXT
   record-audit --attempt N --status complete|failed --new-issues N --auditor NAME
@@ -1665,6 +1788,9 @@ async function main() {
     "new-inbox": commandNewInbox,
     "record-round": commandRecordRound,
     "record-adjacent-batch": commandRecordAdjacentBatch,
+    "record-final-adjacent-batch": commandRecordFinalAdjacentBatch,
+    "adjacent-plan": commandAdjacentPlan,
+    "promote-adjacent-test": commandPromoteAdjacentTest,
     "record-finding": commandRecordFinding,
     "record-implementation": commandRecordImplementation,
     "record-verification": commandRecordVerification,

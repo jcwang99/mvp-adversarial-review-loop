@@ -43,6 +43,7 @@
    - `focused`：反例、相邻测试或单个模块/测试目标的命令
    - `impacted`：改动所在 package/crate、直接依赖方及相关测试目标的命令
    - `full`：项目/workspace 的完整测试套件命令（Rust 需包含 doctest；`cargo test <filter>` 仍会编译当前 package/workspace 默认成员的全部测试目标，缩小编译范围要用 `-p`、`--lib`、`--test` 或 `cargo nextest`）
+   - `Adjacent test command`：独立的相邻测试命令模板，以唯一的 `{test_paths}` 结尾，如 `node --test {test_paths}`。不得额外扫描目录或吞掉失败；不支持文件参数的框架使用只执行给定路径的项目适配脚本。正常 full 排除 `tests/review/verifications/`。
    - 高风险路径清单、full 单次耗时、full suite composition、feature matrix 和 baseline full result
    写入 `baseline.md` 的 "Test Scope / Regression Policy"。
 4. **按实测决定是否编译预热**：只有全量测试/构建耗时明显（例如单次超过 2-3 分钟）或会生成大量临时测试的项目才做；短编译项目沿用现有命令，不要额外引入缓存层。
@@ -265,10 +266,10 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 - 状态机一次只有一个 `active_finding`，因此一个验证代理一次验证一个 finding；不同 finding 的验证串行进行。
 - 使用 `agent-prompts.md` 的验证代理模板，并按其 YAML 结构回收摘要；`verification-result.md` 还必须包含 `Reviewctl Verification Evidence` JSON 区块，字段见 `evidence-structure.md`。提供原始 counterexample、reproduction、修复 commit 和 changed files、当前 HEAD、正式测试路径和运行入口、baseline 的 “Test Scope / Regression Policy” 摘要、finding severity；`risk_assessment` 由验证代理根据 changed files 独立判断。
 - 验证代理写 `verification-result.md`；主代理用 `reviewctl record-verification --id [ID] --status pass|fail|inconclusive|blocked_by_user_changes` 写入状态（代理输出的 `blocked` 按 `inconclusive` 记录）。pass 时必须提供至少 2 个 `--adjacent-test`，或用 `--adjacent-reason` 说明无法生成的理由；相邻测试只放在 `tests/review/verifications/`，不合并正式测试，也不进入常规 full。`Reviewctl Verification Evidence` JSON 必须记录 regression scope/命令/退出状态/tree hash/tested commit/测试计数/日志、风险评估、实现阶段 full 状态；验证阶段重跑 full 时还要记录完整 `full_test_suite`。`reviewctl` 会校验结构化字段、baseline 命令和计数、tree hash 与日志退出标记，但不会自行运行测试，也无法独立证明日志确由所写命令产生或风险分类准确；主代理仍须对照原始日志、HEAD 和 changed files 复核这些事实。
-- 检查 RED 证据；当 P0/P1、高风险或复现 commit/tree/测试哈希无法核对时，在修复前 commit 的独立 worktree 重放原始反例；证据可信且风险普通时可跳过修复前重放。随后在修复后验证、生成至少 2 个相邻测试（正常 + 边界），并在轮末用 `reviewctl record-adjacent-batch` 一次性执行。P0/P1、`risk_assessment = high`、baseline 为 full-everywhere，或实现阶段 full 证据缺失/不匹配时，验证代理必须自己重跑完整回归；full 证据失败时先重新修复并重新 GREEN full，或按环境/flaky 记录后判 `inconclusive`。P0/P1 和高风险不能复用实现证据。不得把实现代理的结论当作验证结果。
-- 相邻测试不进入修复提交，也不要求单独提交；它们保存在 `tests/review/verifications/`，由轮末批测统一执行。只有批测失败并被裁决为正式缺陷时，才将修复测试写入正式测试文件并按普通 finding 提交。
+- 检查 RED 证据；当 P0/P1、高风险或复现 commit/tree/测试哈希无法核对时，在修复前 commit 的独立 worktree 重放原始反例；证据可信且风险普通时可跳过修复前重放。随后在修复后验证、生成至少 2 个相邻测试（正常 + 边界），并在轮末用 `reviewctl adjacent-plan --scope round` 获取精确文件命令，运行后用 `reviewctl record-adjacent-batch` 记录。P0/P1、`risk_assessment = high`、baseline 为 full-everywhere，或实现阶段 full 证据缺失/不匹配时，验证代理必须自己重跑完整回归；full 证据失败时先重新修复并重新 GREEN full，或按环境/flaky 记录后判 `inconclusive`。P0/P1 和高风险不能复用实现证据。不得把实现代理的结论当作验证结果。
+- 相邻测试不进入修复提交，也不要求单独提交；它们保存在 `tests/review/verifications/`。轮末批测只运行本轮登记文件；每次 final audit 前还要对所有轮次的相邻测试运行聚合批测。只有失败被裁决为正式缺陷并通过正式测试验证后，才可用 `reviewctl promote-adjacent-test` 记录替代关系；保留原相邻文件与哈希以供审计，后续历史聚合不再运行它。
 - 若轮末批测为 fail：保存失败日志和失败 finding 映射，运行 `reviewctl advance --to adjudication` 重新打开本轮；将失败场景作为正式候选走独立复现和裁决。候选计数确定后，在 adjudication 中重新运行 `reviewctl record-round` 更新本轮 raw/duplicates/screened/new-p0p1p2，再进入修复或 round_decision。旧批测记录保留为编号的 `adjacent-batch-attempt-N.md`，不得覆盖为 pass。
-- 若轮末批测为 inconclusive：不得开新常规轮；重新进入 adjudication 处理环境阻塞并重新批测。若阻塞无法排除，可进入最终审计，但最终只能报告 `INCOMPLETE`。每次重跑前，旧批测证据必须另存，不得覆盖。
+- 若轮末批测为 inconclusive：不得开新常规轮；重新进入 adjudication 处理环境阻塞并重新批测。有遗留阻塞时，终审前聚合仍须通过才能进入最终审计，最终只能报告 `INCOMPLETE`。每次重跑前，旧批测证据必须另存，不得覆盖。
 - 验证代理不得强制清理或以任何方式覆盖用户改动；兜底流程必须记录原 HEAD 并验证恢复结果。
 - 无法生成有意义的相邻测试时，必须说明理由才能 pass。
 - 两次失败/无法确定的验证记录耗尽同一 finding 的修复预算；所有 repair 入口都执行此上限，重新裁决不会清零次数。耗尽后用 `mark-unresolved --id ID --reason TEXT` 登记未解决（包括重新进入 adjudication 的情况），或根据新证据改为 deferred/rejected；可继续处理其他有预算的 finding。
@@ -296,13 +297,24 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
    - 达到上限：完成 `max_rounds` 轮。
 4. 分支：
    - 不满足且 `can_trigger_new_round = true`：`reviewctl advance --to review`。
-   - 满足：`reviewctl advance --to final_audit`。首次进入设置 `final_audit_attempt: 1`；终审发现新问题并完成新的常规评审轮后重新进入时递增，最多 3 次。
+   - 满足：若 `reviewctl adjacent-plan --scope all` 有路径，运行其输出命令并保存日志，再执行 `reviewctl record-final-adjacent-batch --attempt K ...`。全历史测试通过且证据验证后，执行 `reviewctl advance --to final_audit`。每次重入终审都按新的 HEAD 和 attempt 重跑；最多 3 次。
    - 终审新问题已处理，但已达到 `max_rounds` 或审计尝试已达 3 次：`reviewctl advance --to report`，再 `finalize --status incomplete`。
-5. 未解决的验证阻塞（inconclusive，不含 blocked_by_user_changes）不阻止最终审计执行，但使最终结论只能为 INCOMPLETE。运行 `reviewctl validate` 检查。
+5. finding 的未解决验证阻塞（inconclusive，不含 blocked_by_user_changes）不阻止最终审计执行，但使最终结论只能为 INCOMPLETE；终审前聚合批测仍必须通过。运行 `reviewctl validate` 检查。
 
 提前收敛判定口径：被筛除或去重的候选、最终 rejected 的 finding 不算；P3 不算。
 
-### 5.3 轮次上限与扫描范围
+### 5.3 相邻批测与终审前聚合
+
+`adjacent-plan` 只输出清单和命令，`record-*` 只登记证据，不执行测试。主代理运行输出的精确命令，核对框架实际执行的文件与用例、没有跳过或漏跑，再登记真实计数。路径使用 `tests/review/verifications/` 内的规范相对路径，字符限字母、数字、点、下划线、连字符和目录分隔符；每个登记文件必须含实际测试。命令模板和项目适配脚本必须将清单视为完整执行范围。
+
+1. **每轮末尾**：`reviewctl adjacent-plan --scope round` 仅选择在本轮 verification 登记的测试。按输出运行后，用 `record-adjacent-batch --status ... --command ... --exit-status ... --tree-hash ... --tested-commit ... --log ... --test-count ... --failed-count ...` 登记。本轮没有测试则跳过。finding 源自更早轮次但本轮才完成验证时，测试计入本轮。
+2. **每次终审前**：`reviewctl adjacent-plan --scope all` 合并历史登记清单，排除已显式升级的测试；无剩余路径时不要求聚合批测。否则在当前 HEAD 对应的代码状态上执行，并用 `record-final-adjacent-batch --attempt K` 加同样的证据参数登记，`K = final_audit_attempt + 1`。日志单独记录完整一行 `COMMAND=<展开后的命令>` 和 `EXIT_CODE=N`。记录后 HEAD、路径或测试内容改变时，须重新运行；已有轮末通过记录不能替代本次聚合。代码状态、测试内容和日志真实性由主代理对照原始运行核实。
+3. **失败或阻塞**：失败附 `--failed-finding ID`（失败用例原所属 finding，可跨轮），阻塞附 `--reason`。聚合未通过不能进入终审；`advance --to adjudication` 可重开当前轮，失败场景写入当前轮候选，按独立复现、裁决、TDD、验证处理并更新 `record-round` 计数。重跑沿用尚未启动的审计 attempt，但用新的日志路径；脚本将旧记录归档为 `adjacent-batch-attempt-N.md`，原始日志不得覆盖。重新判断轮次条件；批测本身不消耗新常规轮或终审次数。
+4. **升级正式测试**：缺陷处理完成、本轮批测通过后，运行 `promote-adjacent-test --test <原相邻路径> --finding <已验证缺陷 ID> --formal-test <已提交正式测试> --reason <覆盖对应关系>`。主代理核对正式用例保留了原断言；登记保存源测试哈希、正式测试路径、提交和哈希。原文件仍保留以核验历史证据，后续聚合交由正式 full 覆盖该用例。
+
+相邻测试登记历史不会随 finding 重裁决清空。已完成轮次的测试文件及其依赖 fixture 必须保留到流程结束；重验新增用例使用新的文件名，不覆盖历史测试。不得通过删除文件或取消登记缩小聚合范围。旧状态使用 `normalize` 补齐派生字段后，把 baseline 的目录式命令改为模板；已有目录式批测记录不能自动证明精确范围，需要在升级前完成当前运行，或归档旧运行后按新命令重新开始。
+
+### 5.4 轮次上限与扫描范围
 
 - 最多 `max_rounds` 轮常规评审，每轮最多 6 个角色。
 - 轮次范围、角色选择和冲突优先级以 `SKILL.md` 的轮次策略表为准。
@@ -310,7 +322,7 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 - 终审触发的新轮次不受"倒数第 N 轮"限制，按问题性质决定扫描范围，但仍计入 `max_rounds`。
 - 已证实的 P2/P3 deferred 风险应披露，但不阻止收敛；范围内 P0/P1 deferred 按未解决范围内 P0/P1 处理并阻止收敛。达到上限仍有未解决范围内 P0/P1、未解决 inconclusive 或覆盖率不足时，标记 INCOMPLETE。不要为了达到轮数而继续提交低优先级改动。
 
-### 5.4 反例覆盖率
+### 5.5 反例覆盖率
 
 - 分母：所有获得标准 ID 的独立 finding（screened_out 和 duplicate 不算）。
 - 分子：accepted（必须有 reproduced 证据）、rejected（必须有 not-reproduced 反证）、deferred（已复现）算分子；needs-evidence 缺少证据不算。
@@ -375,7 +387,7 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 按 `SKILL.md` §5 的收敛判定表逐项核对，确定 `CONVERGED`、`CONVERGED_WITH_MANUAL_MERGE` 或 `INCOMPLETE`。
 
 - 范围内 P0/P1 不得停留在 `needs-evidence`：必须升级 accepted 并验证，或有反证后 rejected。
-- 覆盖率按 §5.4 计算，并在报告中同时披露原始值、豁免项数量和调整后值。
+- 覆盖率按 §5.5 计算，并在报告中同时披露原始值、豁免项数量和调整后值。
 
 ### 7.2 报告内容
 

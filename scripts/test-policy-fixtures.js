@@ -33,7 +33,7 @@ function writeBaseline(project) {
     '- Focused test command: node --test',
     '- Impacted test command: node --test',
     '- Full test command: node --test',
-    '- Adjacent test command: node --test tests/review/verifications',
+    '- Adjacent test command: node --test {test_paths}',
     '- High-risk paths: none',
     '- Verification default: impacted; P0/P1/high-risk rerun full',
     '- Notes: synthetic fixture',

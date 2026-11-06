@@ -39,7 +39,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 11. **手工与阻塞 finding**：确实无法自动化时用 `reviewctl record-implementation --id ID --status fixed --manual`，并在验证中提供独立人工复测；用户改动导致无法提交时运行 `reviewctl record-implementation --id ID --status prepared --reason "user changes conflict"`，再运行 `record-verification --status blocked_by_user_changes`；无法修复时运行 `reviewctl record-implementation --id ID --status cannot_fix --reason "REASON"`，环境或依赖阻塞时运行 `reviewctl record-implementation --id ID --status blocked --reason "REASON"`，然后登记未解决或进入 `adjudication` 重新裁决。本流程要求 Git（commit、worktree、guard-commit）；无 Git 时不得启动。
 12. **编译缓存与磁盘预算**：长编译项目应在 baseline 预热，并在 `baseline.md` 记录的磁盘预算内复用共享缓存；不要为每个 finding 重建依赖或创建独立 target。缓存超过预算或磁盘紧张时，在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建。短编译项目不强制引入缓存层。
 13. **复核更早轮次的 deferred**：每轮 adjudication 必须对更早轮次所有 `deferred` finding 逐条给出本轮结论（`include` / `continue` / `reject`）并记录理由，使用 `record-finding --deferred-review-action ... --deferred-review-reason ...`；遗漏时 `advance` 会拒绝。`continue` 保持 deferred，`include` 改为 accepted 并进入本轮修复，`reject` 改为 rejected（需反证）。
-14. **测试范围分级**：baseline full 必须为绿，否则停止并报告 blocked；实现 GREEN 必须在提交前运行 full；验证默认运行 impacted 并复核 GREEN full 证据，P0/P1、高风险、baseline 标记 full-everywhere 或证据不可信时重跑 full；最终审计运行 full。常规 full 命令排除 `tests/review/verifications/`，相邻测试由独立的 baseline Adjacent test command 在轮末集中运行。不得用 focused/impacted 结果替代 GREEN 全量。
+14. **测试范围分级**：baseline full 必须为绿，否则停止并报告 blocked；实现 GREEN 必须在提交前运行 full；验证默认运行 impacted 并复核 GREEN full 证据，P0/P1、高风险、baseline 标记 full-everywhere 或证据不可信时重跑 full；最终审计运行 full。常规 full 命令排除 `tests/review/verifications/`。baseline 的 Adjacent test command 必须包含且仅包含 `{test_paths}`；每轮末尾只运行本轮登记路径，启动每次最终审计前再运行所有轮次的剩余相邻测试。不得用 focused/impacted 结果替代 GREEN 全量。
 
 ## 2. 阶段状态机
 
@@ -81,8 +81,8 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 - **adjudication**：复现必须由未提出该候选的独立代理执行，并写入 `replay-review.md`；提出者不能单独决定自己的 finding；P0/P1、权限/数据完整性/公开 API 或证据异常项，主代理必须检查证据，必要时再委派第二个独立审查。
 - **必须挑战**：所有拟 accepted 的 P0/P1，以及复现结果矛盾或不寻常的证据。无法挑战必须范围项时，必须获得用户明确授权并留痕。
 - **repair**：一个实现代理只处理一个 finding；必须按 TDD 先 RED 后 GREEN；一个 finding 一个提交；blocked/unresolved 后用 `reviewctl next-finding` 切换。
-- **verification**：验证代理不能是实现者；复现证据必须包含 tested commit、tree hash 和测试文件 SHA-256。P0/P1、高风险或复现哈希无法核对时，验证代理必须在修复前 commit 的独立 worktree 重放原始反例；其余可信证据可跳过修复前重放，但仍需运行修复后的反例和 impacted 回归。至少生成 2 个相邻测试（正常 + 边界）放入 `tests/review/verifications/`，只在轮末批量运行；发现缺陷时转为正式测试并登记 finding。无法生成时用 `--adjacent-reason` 说明；验证代理的 `blocked` 结论按 `inconclusive` 记录；同一 finding 最多 2 次修复-验证循环。
-- **final_audit**：审计代理不得参与过评审、复现、挑战、补强、实现或验证；第一阶段盲扫不得读取 `.review-evidence/` 历史内容；第一阶段保存后才发第二阶段材料；最多 3 次尝试。
+- **verification**：验证代理不能是实现者；复现证据必须包含 tested commit、tree hash 和测试文件 SHA-256。P0/P1、高风险或复现哈希无法核对时，验证代理必须在修复前 commit 的独立 worktree 重放原始反例；其余可信证据可跳过修复前重放，但仍需运行修复后的反例和 impacted 回归。至少生成 2 个相邻测试（正常 + 边界）放入 `tests/review/verifications/`，由主代理在轮末及终审前批测；发现缺陷时转为正式测试并登记 finding。无法生成时用 `--adjacent-reason` 说明；验证代理的 `blocked` 结论按 `inconclusive` 记录；同一 finding 最多 2 次修复-验证循环。
+- **final_audit**：启动每次终审前，在当前 HEAD 对全部历史相邻测试做通过的聚合批测并记录 attempt、路径、哈希、精确命令、提交、tree、日志及计数；失败须按 finding 流程处理后重跑，终审后有新修复轮则重新聚合。已转为正式回归测试的相邻测试仅可通过 `promote-adjacent-test` 记录对应关系后从聚合中排除，原始测试保留。审计代理不得参与过评审、复现、挑战、补强、实现或验证；第一阶段盲扫不得读取 `.review-evidence/` 历史内容；第一阶段保存后才发第二阶段材料；最多 3 次尝试。
 - **主代理兜底**：只有没有未参与该 finding 的独立代理可用（所有可用代理都提交过相关候选，或没有代理可用）且用户明确授权时，主代理才能亲自复现或验证；必须在 `adjudication.md` 标为高风险，并在最终报告单独披露。
 
 ## 4. 轮次策略
@@ -122,7 +122,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 | 状态 | 条件（全部满足） |
 |------|------------------|
-| `CONVERGED` | 所有 accepted 且范围内 P0/P1 verified；所有 accepted verified；所有修复已进入 git 历史；每轮相邻测试批测均通过，批测发现的问题均已登记和处置；无 `blocked_by_user_changes`；调整后覆盖率 ≥80%；最终审计两阶段完成且该次审计没有新的 accepted（盲扫重复报告的 rejected 候选不算）；无 `unclear_claim` 的 P2 needs-evidence；P3 可作残余风险 |
+| `CONVERGED` | 所有 accepted 且范围内 P0/P1 verified；所有 accepted verified；所有修复已进入 git 历史；每轮相邻测试批测及最后一次终审前全历史聚合批测均通过，批测发现的问题均已登记和处置；无 `blocked_by_user_changes`；调整后覆盖率 ≥80%；最终审计两阶段完成且该次审计没有新的 accepted（盲扫重复报告的 rejected 候选不算）；无 `unclear_claim` 的 P2 needs-evidence；P3 可作残余风险 |
 | `CONVERGED_WITH_MANUAL_MERGE` | 所有 accepted 且范围内 P0/P1 verified 或 `blocked_by_user_changes`（有手工合并建议）；所有 accepted verified 或 `blocked_by_user_changes`；至少一个 `blocked_by_user_changes`；调整后覆盖率 ≥80%；最终审计两阶段完成且该次审计没有新的 accepted；无 `unclear_claim` 的 P2 needs-evidence；P3 可作残余风险 |
 | `INCOMPLETE` | 有未解决范围内 P0/P1；有未解决 `inconclusive`；调整后覆盖率 <80%；达到 `max_rounds` 但最终审计未完成或仍有新 accepted |
 

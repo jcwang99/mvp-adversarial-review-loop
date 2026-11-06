@@ -680,7 +680,7 @@ blockers:
 2. **验证修复**（在修复后的 commit / HEAD）：确认 finding 已解决
 3. **生成相邻测试**（Adjacent Tests）：为相邻功能、边界情况、异常路径生成至少 2 个新测试用例，写入 `tests/review/verifications/`
 4. **登记相邻测试**：通过 `record-verification --adjacent-test` 记录路径；不合并正式测试文件
-5. **轮末批量执行**：主代理在 `round_decision` 运行 baseline 中的 Adjacent test command，并用 `record-adjacent-batch` 保存一次性结果
+5. **轮末批量执行**：主代理在 `round_decision` 运行 `reviewctl adjacent-plan --scope round` 输出的精确命令，并用 `record-adjacent-batch` 保存结果；每次终审前由主代理运行 `adjacent-plan --scope all` 的输出命令并记录 `record-final-adjacent-batch --attempt K`
 6. **发现缺陷时升级**：轮末批测失败后，先登记正式候选并经过 adjudication；确认是缺陷后按新 finding 的 TDD 流程修复，其回归测试进入正式测试文件。通过的相邻测试留在 review 专用目录
 7. **在提交后的 HEAD 上复核 full**：运行 impacted 回归；P0/P1、高风险变更、baseline 为 full-everywhere，或 full 证据缺失/不匹配时，自己重跑完整测试套件，并记录该 HEAD 的 tree hash
 8. **检查修复完整性**：是否遗漏相关场景

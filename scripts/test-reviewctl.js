@@ -39,14 +39,22 @@ function run(project, args, { expectFail = false } = {}) {
       if (state.current_phase === "round_decision") {
         const findingsPath = path.join(project, ".review-evidence/findings.json");
         const findings = JSON.parse(fs.readFileSync(findingsPath, "utf8")).findings || [];
-        const adjacent = findings.filter((finding) => finding.verification === "pass" && (finding.adjacent_tests || []).length > 0 && finding.adjacent_status !== "pass");
+        const adjacent = findings.filter((finding) => testPolicy.adjacentRound(finding) === state.current_round && finding.verification === "pass" && (finding.adjacent_tests || []).length > 0);
         if (adjacent.length) {
-          const paths = [...new Set(adjacent.flatMap((finding) => finding.adjacent_tests))];
+          const paths = [...new Set(adjacent.flatMap((finding) => finding.adjacent_tests))].sort();
+          const command = testPolicy.expandAdjacentCommand("node --test {test_paths}", paths);
           const log = `.review-evidence/round-${state.current_round}/adjacent-auto.log`;
-          write(project, log, "COMMAND=node --test tests/review/verifications\nEXIT_CODE=0\n");
+          write(project, log, `COMMAND=${command}\nEXIT_CODE=0\n`);
           const tree = testPolicyFixtures.git(project, ["rev-parse", "HEAD^{tree}"]);
           const testedCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: project, encoding: "utf8" }).trim();
-          execFileSync(process.execPath, [CLI, "record-adjacent-batch", "--status", "pass", "--command", "node --test tests/review/verifications", "--exit-status", "0", "--tree-hash", tree, "--tested-commit", testedCommit, "--log", log, "--test-count", String(paths.length), "--failed-count", "0", "--project", project], { cwd: project, stdio: "ignore" });
+          execFileSync(process.execPath, [CLI, "record-adjacent-batch", "--status", "pass", "--command", command, "--exit-status", "0", "--tree-hash", tree, "--tested-commit", testedCommit, "--log", log, "--test-count", String(paths.length), "--failed-count", "0", "--project", project], { cwd: project, stdio: "ignore" });
+        }
+        const allPaths = testPolicy.adjacentTestPaths({ findings }, state.current_round, state.adjacent_promotions || [], state);
+        if (args[args.indexOf("--to") + 1] === "final_audit" && allPaths.length) {
+          const command = testPolicy.expandAdjacentCommand("node --test {test_paths}", allPaths);
+          const log = `.review-evidence/final-adjacent-${state.final_audit_attempt + 1}-${Date.now()}.log`;
+          write(project, log, `COMMAND=${command}\nEXIT_CODE=0\n`);
+          execFileSync(process.execPath, [CLI, "record-final-adjacent-batch", "--attempt", String(state.final_audit_attempt + 1), "--status", "pass", "--command", command, "--exit-status", "0", "--tree-hash", testPolicy.gitTree(project, "HEAD"), "--tested-commit", testPolicyFixtures.git(project, ["rev-parse", "HEAD"]), "--log", log, "--test-count", String(allPaths.length), "--failed-count", "0", "--project", project], { cwd: project, stdio: "ignore" });
         }
       }
     }
@@ -1024,7 +1032,32 @@ test("full happy path reaches converged", () => {
   run(project, ["advance", "--to", "adjudication"]);
   run(project, ["advance", "--to", "round_decision"]);
   run(project, ["advance", "--to", "review"], { expectFail: true });
+  const missingAggregate = run(project, ["advance", "--to", "final_audit"], { expectFail: true });
+  assert.match(String(missingAggregate.stderr), /全历史相邻测试/);
+  assert.equal(JSON.parse(run(project, ["adjacent-plan", "--scope", "round"])).test_paths.length, 0);
+  assert.equal(JSON.parse(run(project, ["adjacent-plan", "--scope", "all"])).test_paths.length, 2);
+  // Isolated synthetic lifecycle evidence: a failed aggregate reopens this round.
+  const aggregatePlan = JSON.parse(run(project, ["adjacent-plan", "--scope", "all"]));
+  const aggregateLog = ".review-evidence/aggregate-failed.log";
+  write(project, aggregateLog, `COMMAND=${aggregatePlan.command}\nEXIT_CODE=1\n`);
+  run(project, ["record-final-adjacent-batch", "--attempt", "1", "--status", "fail",
+    "--command", aggregatePlan.command, "--exit-status", "1", "--tree-hash", testPolicy.gitTree(project, "HEAD"),
+    "--tested-commit", testPolicyFixtures.git(project, ["rev-parse", "HEAD"]), "--log", aggregateLog,
+    "--test-count", "2", "--failed-count", "1", "--failed-finding", "R1-F001-SEC"]);
+  const failedAggregate = run(project, ["advance", "--to", "final_audit"], { expectFail: true });
+  assert.match(String(failedAggregate.stderr), /全历史相邻测试/);
+  run(project, ["advance", "--to", "adjudication"]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(project, ".review-evidence/state.json"))).final_audit_attempt, 0);
+  run(project, ["record-round", "--round", "2", "--raw", "0", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+  run(project, ["advance", "--to", "round_decision"]);
+  // Later rounds may change HEAD without invalidating historical verification.
+  write(project, "README.md", "later round documentation\n");
+  execFileSync("git", ["add", "README.md"], { cwd: project });
+  execFileSync("git", ["commit", "-qm", "later round change"], { cwd: project });
+  run(project, ["validate"]);
   run(project, ["advance", "--to", "final_audit"]);
+
+  assert.match(fs.readFileSync(path.join(project, ".review-evidence/round-2/final-audit/attempt-1/adjacent-batch-attempt-1.md"), "utf8"), /"status": "fail"/);
 
   const audit = ".review-evidence/round-2/final-audit/attempt-1";
   write(project, `${audit}/blind-scan.md`, "# Blind Scan\n");
@@ -1888,6 +1921,8 @@ test("accepted final-audit finding can trigger a new round and re-audit", () => 
   run(project, ["record-round", "--round", "3", "--raw", "0", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
   run(project, ["advance", "--to", "adjudication"]);
   run(project, ["advance", "--to", "round_decision"]);
+  const missingReentryBatch = run(project, ["advance", "--to", "final_audit"], { expectFail: true });
+  assert.match(String(missingReentryBatch.stderr), /全历史相邻测试/);
   run(project, ["advance", "--to", "final_audit"]);
 
   const audit2 = ".review-evidence/round-3/final-audit/attempt-2";

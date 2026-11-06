@@ -35,6 +35,7 @@ node <skill-dir>/scripts/reviewctl.js validate
 - **检查是否该进入最终审计**：按 SKILL.md 的轮次策略和收敛判定。
 - **检查更早轮次 deferred**：在 adjudication 阶段，所有更早轮次的 deferred 是否已逐条记录本轮结论（include / continue / reject）及理由；遗漏时 `advance` 会拒绝。
 - 未解决的验证阻塞（inconclusive，不含 blocked_by_user_changes）不阻止终审执行，但结论只能为 INCOMPLETE。
+- 有相邻测试时，终审前需运行 `reviewctl adjacent-plan --scope all` 的精确命令并记录 `record-final-adjacent-batch`；终审重入时按新 HEAD 和新 attempt 重跑。正式回归测试替代临时相邻测试须通过 `promote-adjacent-test` 显式登记。
 
 ### 3. 确认是否需要委派子代理
 
