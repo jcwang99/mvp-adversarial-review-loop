@@ -40,6 +40,12 @@ function parseBaselinePolicy(project) {
     focusedCommand: bullet(scope, "Focused test command"),
     impactedCommand: bullet(scope, "Impacted test command"),
     fastCommand: bullet(scope, "Fast test command"),
+    fastProfile: bullet(scope, "Fast test profile").toLowerCase(),
+    longRunningPolicy: bullet(scope, "Long-running test policy"),
+    longRunningTests: bullet(scope, "Long-running test inventory"),
+    fullScale: bullet(scope, "Full runtime scale"),
+    fastProfileSemantics: bullet(scope, "Fast profile semantics"),
+    scalingEvidence: bullet(scope, "Time/volume scaling evidence"),
     fullCommand: bullet(scope, "Full test command"),
     adjacentCommand: bullet(scope, "Adjacent test command"),
   };
@@ -57,6 +63,20 @@ function parseBaselinePolicy(project) {
   if (policy.baselineResult !== "pass") {
     errors.push("baseline full result 必须为 pass 才能进入 review");
   }
+  if (!policy.longRunningTests || /\[|\]|TODO/i.test(policy.longRunningTests)) {
+    errors.push("baseline.md 必须登记 Long-running test inventory；无长测时填写 none");
+  }
+  const hasLongRunningTests = policy.longRunningTests && policy.longRunningTests.toLowerCase() !== "none";
+  if (hasLongRunningTests) {
+    const ids = policy.longRunningTests.split(",").map((value) => value.trim());
+    if (ids.some((id) => !id) || new Set(ids).size !== ids.length) errors.push("Long-running test inventory 必须是无空项、无重复项的稳定测试 ID 清单");
+  }
+  if (hasLongRunningTests && (!policy.fullScale || /\[|\]|TODO|not_applicable/i.test(policy.fullScale))) {
+    errors.push("存在长时测试时必须填写 Full runtime scale 的原始时间、数据量和关键资源条件");
+  }
+  if (!hasLongRunningTests && (!policy.fullScale || /\[|\]|TODO/i.test(policy.fullScale))) {
+    errors.push("无长时测试时 Full runtime scale 必须填写 not_applicable 或说明完整套件尺度");
+  }
   if (baselineTestValues.length < 4 || !Object.values(policy.baselineTestCounts).every((value) => Number.isSafeInteger(value) && value >= 0) || policy.expectedTestCount < 1) {
     errors.push("baseline.md 的 Expected test count 必须依次记录 total / passed / failed / skipped");
   } else if (policy.baselineTestCounts.failed !== 0 || policy.baselineTestCounts.passed + policy.baselineTestCounts.failed + policy.baselineTestCounts.skipped !== policy.expectedTestCount) {
@@ -72,6 +92,13 @@ function parseBaselinePolicy(project) {
   if (policy.baselineLog) {
     const logPath = resolveEvidencePath(project, policy.baselineLog, errors, "Baseline full log");
     if (logPath && !hasSuccessfulExit(logPath)) errors.push("baseline full log 缺少 EXIT_CODE=0");
+    if (logPath && hasLongRunningTests) {
+      const log = fs.readFileSync(logPath, "utf8");
+      const ids = policy.longRunningTests.split(",").map((value) => value.trim()).filter(Boolean).sort().join(",");
+      if (!log.replace(/\r/g, "").split("\n").includes("RUNTIME_PROFILE=original")) errors.push("baseline full log 必须记录 RUNTIME_PROFILE=original");
+      if (!log.replace(/\r/g, "").split("\n").includes(`LONG_RUNNING_TESTS=${ids}`)) errors.push("baseline full log 必须记录完整的 LONG_RUNNING_TESTS 清单");
+      if (!log.replace(/\r/g, "").split("\n").includes(`FULL_RUNTIME_SCALE=${policy.fullScale}`)) errors.push("baseline full log 必须记录与 baseline 一致的 FULL_RUNTIME_SCALE");
+    }
   } else {
     errors.push("baseline.md 缺少 Baseline full log");
   }
@@ -83,6 +110,18 @@ function parseBaselinePolicy(project) {
       errors.push("progressive 模式必须填写有效的 Fast test command");
     } else if (policy.fastCommand.trim() === policy.fullCommand.trim() || /\|\|\s*true|--passWithNoTests/i.test(policy.fastCommand)) {
       errors.push("Fast test command 必须与 Full test command 不同，且不得吞掉失败或允许零测试通过");
+    }
+    if (!["none", "reduced-data", "accelerated-time", "virtual-clock", "tmpfs", "mixed"].includes(policy.fastProfile)) {
+      errors.push("progressive 模式必须填写有效的 Fast test profile");
+    }
+    if (!policy.longRunningPolicy || /\[|\]|TODO/i.test(policy.longRunningPolicy)) {
+      errors.push("progressive 模式必须填写 Long-running test policy");
+    }
+    if (!policy.scalingEvidence || /\[|\]|TODO/i.test(policy.scalingEvidence)) {
+      errors.push("progressive 模式必须填写 Time/volume scaling evidence");
+    }
+    if (policy.fastProfile !== "none" && (!policy.fastProfileSemantics || /\[|\]|TODO|not_applicable/i.test(policy.fastProfileSemantics))) {
+      errors.push("缩放 fast profile 必须填写 Fast profile semantics，说明保留契约和未覆盖语义");
     }
   }
   if (policy.adjacentCommand && policy.adjacentCommand.trim() === policy.fullCommand.trim()) {
@@ -256,6 +295,15 @@ function validateFullRun(project, run, policy, label, expectedTreeHash = null) {
   }
   if (run.exit_status !== 0) errors.push(`${label} exit_status 必须为数值 0`);
 
+  if (policy.longRunningTests && policy.longRunningTests.toLowerCase() !== "none") {
+    const expectedIds = policy.longRunningTests.split(",").map((value) => value.trim()).filter(Boolean).sort();
+    const actualIds = Array.isArray(run.long_running_test_ids) ? run.long_running_test_ids.slice().sort() : [];
+    if (JSON.stringify(actualIds) !== JSON.stringify(expectedIds)) errors.push(`${label} long_running_test_ids 必须与 baseline inventory 完全一致`);
+    if (run.runtime_profile !== "original") errors.push(`${label} runtime_profile 必须为 original`);
+    if (run.runtime_scale !== policy.fullScale) errors.push(`${label} runtime_scale 必须与 baseline Full runtime scale 完全一致`);
+    if (!(typeof run.runtime_scale_evidence === "string" && run.runtime_scale_evidence.trim())) errors.push(`${label} 必须提供 runtime_scale_evidence`);
+  }
+
   if (!isTreeHash(run.tree_hash_before) || !isTreeHash(run.tree_hash_after)) {
     errors.push(`${label} 必须记录有效的 tree_hash_before 和 tree_hash_after`);
   } else {
@@ -300,6 +348,13 @@ function validateFullRun(project, run, policy, label, expectedTreeHash = null) {
 
   const logPath = resolveEvidencePath(project, run.log, errors, `${label} log`);
   if (logPath && !hasSuccessfulExit(logPath)) errors.push(`${label} log 缺少 EXIT_CODE=0`);
+  if (logPath && policy.longRunningTests && policy.longRunningTests.toLowerCase() !== "none") {
+    const log = fs.readFileSync(logPath, "utf8").replace(/\r/g, "").split("\n");
+    const ids = policy.longRunningTests.split(",").map((value) => value.trim()).filter(Boolean).sort().join(",");
+    if (!log.includes("RUNTIME_PROFILE=original")) errors.push(`${label} log 必须记录 RUNTIME_PROFILE=original`);
+    if (!log.includes(`LONG_RUNNING_TESTS=${ids}`)) errors.push(`${label} log 必须记录完整的 LONG_RUNNING_TESTS 清单`);
+    if (!log.includes(`FULL_RUNTIME_SCALE=${policy.fullScale}`)) errors.push(`${label} log 必须记录与 baseline 一致的 FULL_RUNTIME_SCALE`);
+  }
   return errors;
 }
 
@@ -308,6 +363,12 @@ function validateFastRun(project, run, policy, label, expectedTreeHash = null) {
   if (!run || typeof run !== "object" || Array.isArray(run)) return [`${label} 缺少结构化快速测试证据`];
   if (run.status !== "pass") errors.push(`${label} status 必须为 pass`);
   if (typeof run.command !== "string" || run.command.trim() !== policy.fastCommand.trim()) errors.push(`${label} command 必须与 baseline Fast test command 完全一致`);
+  if (run.fast_profile !== policy.fastProfile) errors.push(`${label} fast_profile 必须与 baseline Fast test profile 一致`);
+  if (policy.fastProfile !== "none") {
+    if (!(typeof run.scaling_notes === "string" && run.scaling_notes.trim())) errors.push(`${label} 使用缩放 profile 时必须记录 scaling_notes`);
+    if (!(typeof run.retained_contracts === "string" && run.retained_contracts.trim())) errors.push(`${label} 必须记录 retained_contracts`);
+    if (!(typeof run.uncovered_semantics === "string" && run.uncovered_semantics.trim())) errors.push(`${label} 必须记录 uncovered_semantics`);
+  }
   if (/\|\|\s*true|--passWithNoTests/i.test(String(run.command || ""))) errors.push(`${label} command 不得吞掉失败或允许零测试通过`);
   if (run.exit_status !== 0) errors.push(`${label} exit_status 必须为数值 0`);
   if (!isTreeHash(run.tree_hash_before) || !isTreeHash(run.tree_hash_after) || run.tree_hash_before.toLowerCase() !== run.tree_hash_after.toLowerCase()) {

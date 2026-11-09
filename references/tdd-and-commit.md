@@ -41,11 +41,11 @@ GREEN 门禁由 baseline 的 tiering mode 决定；任何模式下，快速结�
 |------|------|----------|
 | focused | 反例、相邻测试或单个模块/测试目标 | RED、快速反馈 |
 | impacted | 改动所在 package/crate、直接依赖方及相关测试目标 | 验证阶段的默认回归 |
-| full | 项目/workspace 的完整测试套件 | default GREEN 提交前、progressive 轮末门禁、P0/P1/高风险/full-everywhere 验证、already_fixed 默认验证、最终审计 |
+| full | 项目/workspace 的完整测试套件，包含原始长时 I/O/稳定性测试 | default GREEN 提交前、progressive 轮末门禁、P0/P1/高风险/full-everywhere 验证、already_fixed 默认验证、最终审计 |
 
-- **GREEN 证据按 baseline mode 执行**：`default` 与 `full-everywhere` 保持提交前运行 full。`progressive` 对普通风险 P2/P3 运行 baseline `Fast test command`，在 `Reviewctl GREEN Evidence` 记录 `fast_suite` 并在修复报告标 `risk_assessment: normal`；P0/P1 或实现代理判断为 high 时仍须提交前运行 full。fast/full 都必须在被测 index tree 上验证，记录命令、退出码、tree hash、clean 状态、运行位置、测试计数和日志；提交后 tree 必须与修复 commit 一致。progressive 的 full 集中在轮末，必须在当前 HEAD 运行并通过 `reviewctl record-round-regression`，否则不能开下一轮或终审。轮末失败须保留证据并回到 adjudication；不能把 fast/impacted 结果当作 full。
+- **GREEN 证据按 baseline mode 执行**：`default` 与 `full-everywhere` 保持提交前运行 full。`progressive` 对普通风险 P2/P3 运行 baseline `Fast test command`，在 `Reviewctl GREEN Evidence` 记录 `fast_suite`、`fast_profile`、缩放方式、保留契约和未覆盖语义，并在修复报告标 `risk_assessment: normal`；P0/P1 或实现代理判断为 high 时仍须提交前运行 full。fast/full 都必须在被测 index tree 上验证，记录命令、退出码、tree hash、clean 状态、运行位置、测试计数和日志；有长测时，full 证据及日志还必须绑定 baseline 登记的测试 ID 清单和原始 runtime scale。提交后 tree 必须与修复 commit 一致。progressive 的 full 集中在轮末，必须在当前 HEAD 运行并通过 `reviewctl record-round-regression`，且不得使用 fast 的缩短参数，否则不能开下一轮或终审。轮末失败须保留证据并回到 adjudication；不能把 fast/impacted 结果当作 full。
 - **验证默认 impacted**：验证代理按风险决定是否重放修复前反例，运行修复后反例和 impacted 回归，生成相邻测试交主代理轮末批测，并核对实现阶段的 full 证据（命令、退出码、tree hash 与修复 commit 一致、测试计数）。pass 的最低回归范围是 **impacted**；focused 只能作为补充。P0/P1、高风险变更、baseline 设为 full-everywhere，或 full 证据失败/缺失/不匹配时，验证代理必须自己重跑 full；P0/P1 和高风险变更不能用实现证据替代验证重跑。每次终审前还必须聚合全部历史相邻测试，见 phase-playbooks.md §5.3。
-- **高风险触发 full**：构建/依赖清单（`Cargo.toml`、`Cargo.lock`、`build.rs`、workspace 配置）、公共 API、共享核心模块、认证/权限、数据 schema/迁移、并发/全局状态、feature flag、序列化、测试基础设施，或改动跨多个 package、无法有把握判断影响范围。“测试基础设施”仅指影响多个测试的 harness、配置、fixture、helper 或测试运行器；在普通正式测试文件中新增一个用例不算。
+- **高风险触发 full**：构建/依赖清单（`Cargo.toml`、`Cargo.lock`、`build.rs`、workspace 配置）、公共 API、共享核心模块、认证/权限、数据 schema/迁移、并发/全局状态、feature flag、序列化、测试基础设施、调度/超时/重试、资源泄漏/长期稳定性，或改动跨多个 package、无法有把握判断影响范围。“测试基础设施”仅指影响多个测试的 harness、配置、fixture、helper 或测试运行器；在普通正式测试文件中新增一个用例不算。
 - 小项目如果 full 只需 1-2 分钟，可以直接在所有阶段使用 full，不必引入分级。
 - Rust：focused 示例 `cargo nextest run -p <crate> -E 'test(<module_or_name>)'` 或 `cargo test -p <crate> --lib <filter>`；impacted = 改动所在 crate + 反向依赖 crate，示例 `cargo nextest run -p <crate> -p <dependent>`（反向依赖可用 `cargo tree -i <crate>` 或 `cargo metadata` 计算）；full 示例 `cargo nextest run --workspace --all-targets` 加 `cargo test --workspace --doc`。`cargo test <filter>` 仍会编译当前 package/workspace 默认成员的所有测试目标，缩小编译范围要用 `-p`、`--lib`、`--test` 或 `cargo nextest` 的 package/target 选择。
 

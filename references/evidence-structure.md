@@ -319,12 +319,20 @@ node <skill-dir>/scripts/reviewctl.js render
 - Focused test command: [反例/单模块]
 - Impacted test command: [改动 package/crate + 直接依赖方]
 - Fast test command: [progressive 模式必填；其余模式可填 not_applicable]
+- Fast test profile: [none | reduced-data | accelerated-time | virtual-clock | tmpfs | mixed；progressive 必填]
+- Fast profile semantics: [缩放时填写；明确保留的契约、未覆盖的语义和对应 full 测试]
+- Long-running test policy: [长测何时执行，以及 fast 是否缩放；无长测填 none]
+- Long-running test inventory: [none 或稳定测试 ID 的逗号分隔清单；所有 tier 必填]
+- Full runtime scale: [长测的原始时间间隔、数据量、运行时长和关键资源条件；无长测填 not_applicable]
+- Time/volume scaling evidence: [缩放配置、fixture、虚拟时钟或命令证据路径；无缩放填 not_applicable]
 - Full test command: [项目/workspace 全量；Rust 包含 doctest]
 - High-risk paths: [构建/依赖清单、公共 API、认证、数据迁移、并发、feature flag 等]
 - Verification default: [impacted；P0/P1/高风险/full-everywhere 重新运行 full]
 - Notes: [小项目可直接全量，不必分级]
 
-`progressive` 的 fast command 必须与 full command 不同。该命令只供普通风险 P2/P3 finding 的逐项 GREEN 使用；P0/P1、高风险与 `already_fixed` 不适用。轮末 full 仍使用 Full test command，不得排除慢速 I/O/稳定性测试。
+所有 tier 都要登记长测清单；若非 `none`，必须写明 `Full runtime scale`。baseline full 日志及之后每次 full 日志都必须包含三行：`RUNTIME_PROFILE=original`、按字母排序且逗号连接的 `LONG_RUNNING_TESTS=<ID,...>`、`FULL_RUNTIME_SCALE=<与 baseline 完全相同的尺度描述>`。结构化 full 证据也必须记录 `runtime_profile: original`、匹配的 `long_running_test_ids` / `runtime_scale` 和 `runtime_scale_evidence`（指向配置或日志中的可复核证据）。这些标记不能替代主代理对原始配置和运行日志的人工核对。
+
+`progressive` 的 fast command 必须与 full command 不同，并声明 `Fast test profile`。该命令只供普通风险 P2/P3 finding 的逐项 GREEN 使用；P0/P1、高风险与 `already_fixed` 不适用。fast 可以缩放时间或数据量，但不能删除关键断言、修改生产默认值或把缩短命令作为 full 证据。缩放时必须记录 `retained_contracts` 与 `uncovered_semantics`：优先使用虚拟时钟验证定时逻辑；加速真实时间不能证明未受调度竞争影响；tmpfs 只能代表文件 API 行为，不能证明真实磁盘的持久性、崩溃或介质故障语义。轮末 full 仍使用 Full test command，不得排除慢速 I/O/稳定性测试。
 
 ## Machine-validated test evidence
 
@@ -355,6 +363,10 @@ reviewctl 读取下面两个精确标题下的单个 JSON 代码块；接受三�
       "failed": 0,
       "skipped": 0
     },
+    "runtime_profile": "original",
+    "long_running_test_ids": ["巡查周期稳定性"],
+    "runtime_scale": "巡查间隔10分钟；持续运行2小时；本地真实文件系统",
+    "runtime_scale_evidence": "配置文件 src/config.rs 的 poll_interval 默认值及本次运行日志",
     "expected_test_count_delta": 0,
     "expected_skipped_count_delta": 0,
     "log": ".review-evidence/round-1/R1-F001-SEC/output-full-suite.log"
@@ -362,7 +374,7 @@ reviewctl 读取下面两个精确标题下的单个 JSON 代码块；接受三�
 }
 ~~~
 
-progressive 的 `fast_suite` 使用与 `full_suite` 相同的证据字段（命令必须匹配 baseline Fast test command、状态、退出码、tree hash、运行位置、clean 状态、测试计数和日志），但快速测试计数不与 baseline full 总数比较。报告还需记录 `risk_assessment` 为 `normal` 或 `high`；high 和 P0/P1 必须提供 full。
+progressive 的 `fast_suite` 使用与 `full_suite` 相同的基础证据字段（命令必须匹配 baseline Fast test command、状态、退出码、tree hash、运行位置、clean 状态、测试计数和日志），但快速测试计数不与 baseline full 总数比较。`fast_suite` 还必须记录与 baseline 一致的 `fast_profile`；缩放 profile 需填写 `scaling_notes`、`retained_contracts` 和 `uncovered_semantics`。报告还需记录 `risk_assessment` 为 `normal` 或 `high`；high 和 P0/P1 必须提供 full。
 
 ### 轮末 progressive full gate
 

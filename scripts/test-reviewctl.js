@@ -1328,7 +1328,7 @@ test("progressive mode requires a current-HEAD full regression gate before leavi
   const commit = testPolicyFixtures.git(project, ["rev-parse", "HEAD"]);
   const tree = testPolicy.gitTree(project, commit);
   const log = ".review-evidence/round-1/full-suite.log";
-  write(project, log, "COMMAND=node --test --test-name-pattern=fast\nEXIT_CODE=0\n");
+  write(project, log, "COMMAND=node --test\nEXIT_CODE=0\n");
   write(project, ".review-evidence/round-1/full-suite.json", JSON.stringify({ full_suite: {
     status: "pass", command: "node --test", exit_status: 0,
     tree_hash_before: tree, tree_hash_after: tree, tested_commit: commit,
@@ -1357,6 +1357,7 @@ test("progressive GREEN accepts fast evidence only for normal-risk P2/P3 finding
     risk_assessment: "normal",
     fast_suite: {
       status: "pass", command: "node --test --test-name-pattern=fast", exit_status: 0,
+      fast_profile: "none",
       tree_hash_before: tree, tree_hash_after: tree, run_location: "main-workspace",
       workspace_clean_before: true, workspace_clean_after: true,
       test_counts: { total: 1, passed: 1, failed: 0, skipped: 0 }, log,
@@ -1367,6 +1368,104 @@ test("progressive GREEN accepts fast evidence only for normal-risk P2/P3 finding
   assert.deepEqual(normal.errors, []);
   const critical = testPolicy.parseImplementationEvidence(project, filename, tree, { finding: { severity: "P1" } });
   assert.match(critical.errors.join("; "), /P0\/P1/);
+});
+
+test("scaled fast profiles require retained and uncovered semantics", () => {
+  const project = makeProject();
+  testPolicyFixtures.writeBaseline(project);
+  const baseline = path.join(project, ".review-evidence/baseline.md");
+  fs.writeFileSync(baseline, fs.readFileSync(baseline, "utf8")
+    .replace("Tiering mode: default", "Tiering mode: progressive")
+    .replace("Fast test profile: none", "Fast test profile: accelerated-time"));
+  const tree = testPolicy.gitTree(project, "HEAD");
+  const dir = ".review-evidence/round-1/R1-F001-FUNC";
+  const log = `${dir}/output-fast-suite.log`;
+  write(project, log, "COMMAND=node --test --test-name-pattern=fast\nEXIT_CODE=0\n");
+  const evidence = {
+    risk_assessment: "normal",
+    fast_suite: {
+      status: "pass", command: "node --test --test-name-pattern=fast", exit_status: 0,
+      fast_profile: "accelerated-time", tree_hash_before: tree, tree_hash_after: tree,
+      run_location: "main-workspace", workspace_clean_before: true, workspace_clean_after: true,
+      test_counts: { total: 1, passed: 1, failed: 0, skipped: 0 }, log,
+    },
+  };
+  const report = `${dir}/implementation-result.md`;
+  const reportPath = path.join(project, report);
+  write(project, report, `## Reviewctl GREEN Evidence\n\n\`\`\`json\n${JSON.stringify(evidence, null, 2)}\n\`\`\`\n`);
+  let parsed = testPolicy.parseImplementationEvidence(project, reportPath, tree, { finding: { severity: "P2" } });
+  assert.match(parsed.errors.join("; "), /scaling_notes/);
+  evidence.fast_suite.scaling_notes = "600s logical interval driven by injected clock; full retains 10-minute wall-clock soak";
+  parsed = testPolicy.parseImplementationEvidence(project, reportPath, tree, { finding: { severity: "P2" } });
+  assert.match(parsed.errors.join("; "), /Fast profile semantics/);
+  fs.writeFileSync(baseline, fs.readFileSync(baseline, "utf8")
+    .replace("Fast profile semantics: not_applicable", "Fast profile semantics: 10-minute schedule asserted; real-time scheduler jitter not represented"));
+  parsed = testPolicy.parseImplementationEvidence(project, reportPath, tree, { finding: { severity: "P2" } });
+  assert.match(parsed.errors.join("; "), /retained_contracts/);
+  evidence.fast_suite.retained_contracts = "poll interval and retry limit";
+  evidence.fast_suite.uncovered_semantics = "wall-clock scheduler jitter and two-hour resource accumulation";
+  write(project, report, `## Reviewctl GREEN Evidence\n\n\`\`\`json\n${JSON.stringify(evidence, null, 2)}\n\`\`\`\n`);
+  parsed = testPolicy.parseImplementationEvidence(project, reportPath, tree, { finding: { severity: "P2" } });
+  assert.deepEqual(parsed.errors, []);
+});
+
+test("all tiers require long-test inventory and full runs bind original runtime scale", () => {
+  const project = makeProject();
+  testPolicyFixtures.writeBaseline(project);
+  const baseline = path.join(project, ".review-evidence/baseline.md");
+  let baselineText = fs.readFileSync(baseline, "utf8");
+  fs.writeFileSync(baseline, baselineText.replace("- Long-running test inventory: none\n", ""));
+  assert.match(testPolicy.parseBaselinePolicy(project).errors.join("; "), /Long-running test inventory/);
+  baselineText = baselineText
+    .replace("Long-running test inventory: none", "Long-running test inventory:巡查周期稳定性")
+    .replace("Full runtime scale: not_applicable", "Full runtime scale:巡查间隔10分钟；持续运行2小时；本地真实文件系统");
+  fs.writeFileSync(baseline, baselineText);
+  write(project, ".review-evidence/baseline-full.log", [
+    "COMMAND=node --test", "RUNTIME_PROFILE=original",
+    "LONG_RUNNING_TESTS=巡查周期稳定性",
+    "FULL_RUNTIME_SCALE=巡查间隔10分钟；持续运行2小时；本地真实文件系统", "EXIT_CODE=0", "",
+  ].join("\n"));
+  let parsedPolicy = testPolicy.parseBaselinePolicy(project);
+  assert.equal(parsedPolicy.errors.length, 0, parsedPolicy.errors.join("; "));
+
+  const tree = testPolicy.gitTree(project, "HEAD");
+  const log = ".review-evidence/round-1/R1-F001-FUNC/full.log";
+  write(project, log, "COMMAND=node --test\nEXIT_CODE=0\n");
+  const run = {
+    status: "pass", command: "node --test", exit_status: 0,
+    tree_hash_before: tree, tree_hash_after: tree,
+    run_location: "main-workspace", workspace_clean_before: true, workspace_clean_after: true,
+    test_counts: { total: 1, passed: 1, failed: 0, skipped: 0 },
+    expected_test_count_delta: 0, expected_skipped_count_delta: 0,
+    long_running_test_ids: ["巡查周期稳定性"], runtime_profile: "original",
+    runtime_scale: parsedPolicy.policy.fullScale,
+    runtime_scale_evidence: "src/config.js default and captured run log", log,
+  };
+  let errors = testPolicy.validateFullRun(project, run, parsedPolicy.policy);
+  assert.match(errors.join("; "), /RUNTIME_PROFILE=original/);
+
+  fs.writeFileSync(path.join(project, run.log), [
+    "COMMAND=node --test", "RUNTIME_PROFILE=original",
+    "LONG_RUNNING_TESTS=巡查周期稳定性",
+    `FULL_RUNTIME_SCALE=${parsedPolicy.policy.fullScale}`, "EXIT_CODE=0", "",
+  ].join("\n"));
+  errors = testPolicy.validateFullRun(project, run, parsedPolicy.policy);
+  assert.deepEqual(errors, []);
+  run.runtime_scale = "30-second巡查";
+  errors = testPolicy.validateFullRun(project, run, parsedPolicy.policy);
+  assert.match(errors.join("; "), /runtime_scale 必须与 baseline/);
+  run.runtime_scale = parsedPolicy.policy.fullScale;
+
+  fs.writeFileSync(path.join(project, ".review-evidence/baseline-full.log"), [
+    "COMMAND=node --test", "RUNTIME_PROFILE=original",
+    "LONG_RUNNING_TESTS=巡查周期稳定性",
+    `FULL_RUNTIME_SCALE=${parsedPolicy.policy.fullScale}`, "EXIT_CODE=0", "",
+  ].join("\n"));
+  assert.deepEqual(testPolicy.parseBaselinePolicy(project).errors, []);
+
+  fs.writeFileSync(baseline, baselineText.replace("Long-running test inventory:巡查周期稳定性", "Long-running test inventory: [TODO]"));
+  parsedPolicy = testPolicy.parseBaselinePolicy(project);
+  assert.match(parsedPolicy.errors.join("; "), /Long-running test inventory/);
 });
 
 test("a failed progressive full gate reopens adjudication and preserves its attempt", () => {

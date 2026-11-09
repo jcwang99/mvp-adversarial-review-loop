@@ -460,8 +460,8 @@ blockers: []
 
 2. **GREEN 阶段**：
    - 实现最小修复，使测试通过
-   - 按 baseline 的 tiering mode 运行门禁：default/full-everywhere 运行 full；progressive 普通风险 P2/P3 运行 Fast test command，P0/P1 或 high 风险仍运行 full
-   - progressive 延后 full 时，在结构化 GREEN evidence 写 `fast_suite` 和 `risk_assessment: normal`；full 失败或快速测试失败都不得提交
+   - 按 baseline 的 tiering mode 运行门禁：default/full-everywhere 运行 full；progressive 普通风险 P2/P3 运行 Fast test command，P0/P1 或 high 风险仍运行 full。fast 缩放必须使用 baseline profile，并记录缩放方式、保留契约、未覆盖语义和 full 兜底；虚拟时钟不等于真实调度时间，加速真实时间不能证明无调度竞争，tmpfs 不覆盖真实磁盘持久性或故障
+   - progressive 延后 full 时，在结构化 GREEN evidence 写 `fast_suite`、`fast_profile`、`scaling_notes`、`retained_contracts`、`uncovered_semantics` 和 `risk_assessment: normal`；full 失败或快速测试失败都不得提交。fast 不能修改生产默认时间、删除断言或冒充 full
    - 不要过度工程或添加 finding 范围外的功能
 
 3. **REFACTOR 阶段**（可选）：
@@ -859,11 +859,19 @@ implementation_full_suite:  # default/full-everywhere，或 progressive 的 P0/P
   workspace_clean: true | false
   run_location: "main-workspace | worktree:<path>"
   test_counts: { total: <数量>, passed: <数量>, failed: <数量>, skipped: <数量> }
+  runtime_profile: "original"  # baseline 有长时测试时必填
+  long_running_test_ids: ["<baseline 中登记的稳定测试 ID>"]
+  runtime_scale: "<必须逐字匹配 baseline Full runtime scale>"
+  runtime_scale_evidence: "<实际配置/运行日志中的尺度证据>"
   log: "<日志路径>"
   matches_fix_commit: true | false
 implementation_fast_suite:  # progressive 普通风险 P2/P3；与 implementation_full_suite 二选一作为 GREEN 门禁
   status: "pass | fail | not_run"
   command: "<实现阶段的 fast 命令>"
+  fast_profile: "none | reduced-data | accelerated-time | virtual-clock | tmpfs | mixed"
+  scaling_notes: "<具体时间/数据缩放比例与方式>"
+  retained_contracts: "<仍由 fast 直接验证的行为契约>"
+  uncovered_semantics: "<fast 不能覆盖的语义，以及由哪项 full 测试兜底>"
   exit_status: "<退出码>"
   tree_hash: "<测试时的 tree hash>"
   workspace_clean: true | false
@@ -1080,6 +1088,7 @@ progressive 普通风险 P2/P3 使用 fast 门禁时，以上字段对应 `imple
 ]
 
 可运行的验证命令：[测试/构建/静态检查命令]
+长时测试 full 约定：[仅提供稳定测试 ID、原始时间/数据规模、关键资源条件和 full 日志必须输出的 runtime 标记；不得提供历史 finding]
 第一阶段可用 focused/impacted 探索；完整 full 测试在第二阶段运行，第一阶段结果不能替代第二阶段 full。
 不要读取 .review-evidence/ 中任何已有内容（包括 baseline.md）、历史 finding、修复清单或以前的裁决；不要编辑项目文件或提交。
 
@@ -1148,7 +1157,7 @@ uncovered_paths: []
 2. 检查修复是否引入新问题或回归
 3. 检查测试覆盖是否充分
 4. 检查是否有遗留风险或边界情况未处理
-5. 运行完整测试套件和适用的静态检查
+5. 运行完整测试套件和适用的静态检查；有长测时必须按提供的原始尺度运行，并在完整日志中记录 `RUNTIME_PROFILE=original`、`LONG_RUNNING_TESTS=<ID,...>`、`FULL_RUNTIME_SCALE=<baseline 原始尺度>`
 
 ## 运行约定
 - 从项目根目录运行，使用项目自身的测试框架和依赖

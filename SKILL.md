@@ -17,7 +17,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 
 **压缩上下文后恢复**：
 
-1. 立即读取 `.review-evidence/run-state.md`、`.review-evidence/state.json` 和 `baseline.md` 的 “Test Scope / Regression Policy”（focused/impacted/full 命令、高风险路径、baseline full result）。
+1. 立即读取 `.review-evidence/run-state.md`、`.review-evidence/state.json` 和 `baseline.md` 的 “Test Scope / Regression Policy”（focused/impacted/fast/full 命令、长测 ID 清单及原始尺度、高风险路径、baseline full result）。
 2. 运行 `node <skill-dir>/scripts/reviewctl.js status` 和 `node <skill-dir>/scripts/reviewctl.js validate`；校验失败先运行 `reviewctl normalize` 重算派生字段（`rounds_consumed`、`current_round`、`can_trigger_new_round` 等），仍失败则按错误逐项修复，不要继续委派。
 3. 按 `current_phase` 和 `next_action` 继续；不要跳阶段，不要在第 1 轮后就结束。
 4. 若项目级指令文件既无标记 `mvp-adversarial-review-loop-recovery-guide` 也无标题 `Main Agent Recovery Guide - MVP Adversarial Review Loop`，先按 `references/phase-playbooks.md` §0 重新部署。
@@ -40,6 +40,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 12. **编译缓存与磁盘预算**：长编译项目应在 baseline 预热，并在 `baseline.md` 记录的磁盘预算内复用共享缓存；不要为每个 finding 重建依赖或创建独立 target。缓存超过预算或磁盘紧张时，在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建。短编译项目不强制引入缓存层。
 13. **复核更早轮次的 deferred**：每轮 adjudication 必须对更早轮次所有 `deferred` finding 逐条给出本轮结论（`include` / `continue` / `reject`）并记录理由，使用 `record-finding --deferred-review-action ... --deferred-review-reason ...`；遗漏时 `advance` 会拒绝。`continue` 保持 deferred，`include` 改为 accepted 并进入本轮修复，`reject` 改为 rejected（需反证）。
 14. **测试范围分级**：baseline full 必须为绿，否则停止并报告 blocked。`default` 保持每个修复提交前 GREEN full；`full-everywhere` 还要求验证代理运行 full；`progressive` 仅允许普通风险 P2/P3 先通过快速套件提交，并在每轮末尾对当前 HEAD 运行 full gate，通过后才能开新轮或终审。P0/P1 和实现代理判为高风险的 finding 在提交前仍跑 full；验证代理遇到 P0/P1 或高风险仍独立跑 full。最终审计始终运行 full。常规 full 命令排除 `tests/review/verifications/`。baseline 的 Adjacent test command 必须包含且仅包含 `{test_paths}`；每轮末尾只运行本轮登记路径，启动每次最终审计前再运行所有轮次的剩余相邻测试。快速/impacted 结果不得替代轮末 full 或终审 full。
+15. **长时测试与加速变体**：所有 tier 的 baseline 都登记稳定的长测 ID 清单和原始 full 尺度；有长测时 baseline 与之后每次 full 的日志及结构化证据都须记录同一用例清单和原始尺度。长测不要求在每个普通 finding 的高频闭环中重复运行；`progressive` fast 可缩小数据、加速时间、使用虚拟时钟或 tmpfs，但须记录保留的契约、未覆盖语义及 full 兜底。虚拟时钟适合定时逻辑；真实时间加速不能证明没有调度竞争；tmpfs 不能证明真实磁盘持久性或介质故障行为。fast 不能改写生产默认值、删除关键断言或冒充 full。full 保留原始时间尺度和关键资源条件；涉及调度/超时、重试、资源泄漏、长期状态漂移或稳定性契约的 finding，须由规定的 full 门禁覆盖，不能仅凭 fast 标记为已验证。
 
 ## 2. 阶段状态机
 

@@ -30,7 +30,7 @@
 ## 委派通用要求
 
 - 委派任何子代理时，把提示模板中的 `[skill-dir]` 替换为当前 harness 的技能安装目录绝对路径（各 harness 不同，动态解析；路径含空格时给命令加引号），并提供 `node [skill-dir]/scripts/reviewctl.js` 的可执行形式。子代理只读使用脚本，不得修改状态或推进阶段。
-- 委派实现或验证代理时，同时提供 `baseline.md` 的 “Test Scope / Regression Policy” 摘要（focused/impacted/full 命令、高风险路径、baseline full result）和 finding 的 severity；验证代理无法判断高风险时按高风险处理。
+- 委派实现或验证代理时，同时提供 `baseline.md` 的 “Test Scope / Regression Policy” 摘要（focused/impacted/fast/full 命令、长测 ID 清单及原始尺度、高风险路径、baseline full result）和 finding 的 severity；验证代理无法判断高风险时按高风险处理。
 - 长编译项目（Rust、C++、大型 TypeScript 等）在 baseline 完成编译预热，并把共享缓存路径、环境变量和磁盘预算写入 `baseline.md`；委派时要求子代理在预算内复用同一缓存，不要每个 finding 重建依赖或创建独立 target。超预算时在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理。
 
 ## 0. baseline
@@ -42,10 +42,11 @@
 3. 确认测试/构建/类型检查/lint/安全扫描命令，并记录测试范围分级：
    - `focused`：反例、相邻测试或单个模块/测试目标的命令
    - `impacted`：改动所在 package/crate、直接依赖方及相关测试目标的命令
-   - `fast`：仅 progressive 模式必填的快速回归命令；应覆盖微型数据集和高频逻辑测试，不能删减为无测试的成功命令
+   - `fast`：仅 progressive 模式必填的快速回归命令；应覆盖微型数据集和高频逻辑测试，不能删减为无测试的成功命令。允许使用 `reduced-data`、`accelerated-time`、`virtual-clock`、`tmpfs` 或 `mixed` profile；必须保留关键断言，并说明保留契约、未覆盖语义和对应 full 兜底。虚拟时钟适合定时逻辑；加速真实时间不覆盖调度竞争；tmpfs 不覆盖真实磁盘持久性、崩溃和介质故障
    - `full`：项目/workspace 的完整测试套件命令（Rust 需包含 doctest；`cargo test <filter>` 仍会编译当前 package/workspace 默认成员的全部测试目标，缩小编译范围要用 `-p`、`--lib`、`--test` 或 `cargo nextest`）
    - `Adjacent test command`：独立的相邻测试命令模板，以唯一的 `{test_paths}` 结尾，如 `node --test {test_paths}`。不得额外扫描目录或吞掉失败；不支持文件参数的框架使用只执行给定路径的项目适配脚本。正常 full 排除 `tests/review/verifications/`。
-   - tiering mode（`default`、`full-everywhere` 或 `progressive`）、高风险路径清单、full 单次耗时、full suite composition、feature matrix 和 baseline full result。progressive 还需记录 Fast test command 与快速测试清单/耗时
+   - tiering mode（`default`、`full-everywhere` 或 `progressive`）、高风险路径清单、full 单次耗时、full suite composition、feature matrix 和 baseline full result。所有 tier 都须登记稳定的长测 ID 清单及 Full runtime scale；无长测填写 `none` / `not_applicable`。progressive 还需记录 Fast test command、Fast test profile、快速测试清单/耗时、长时测试策略、profile 的保留/缺失语义和时间/数据缩放证据
+   - 长测清单和原始尺度要在基线 full 开始前确定，并让测试 runner 将对应 runtime 标记写入原始日志；运行后再把同一记录填入 baseline，避免事后补写运行信息
    写入 `baseline.md` 的 "Test Scope / Regression Policy"。
 4. **按实测决定是否编译预热**：只有全量测试/构建耗时明显（例如单次超过 2-3 分钟）或会生成大量临时测试的项目才做；短编译项目沿用现有命令，不要额外引入缓存层。
    - 先确定磁盘预算：记录可用空间和缓存上限，云端环境尤其要留足余量；缓存目录放在仓库外，不要放进 `.review-evidence/`，也不要提交。
@@ -55,7 +56,7 @@
    - 可选：项目已有 `sccache`/构建缓存配置时沿用，不要覆盖；没有且实测收益明显时再考虑安装。
    - 其他长编译栈：仅在实测确实拖慢流程时启用依赖预编译/缓存，并设置同样的磁盘预算和轮次边界清理策略；短编译栈不要过度优化。
    - 把预热命令、缓存路径、环境变量、磁盘预算、清理时机和单次测试耗时写入 `baseline.md` 的 "Build Cache / Compile Prewarm"；无法安全预热时记录耗时和阻塞，不要跳过。
-5. 运行基线 full（使用预热后的缓存）；记录结果（pass/fail）、完整日志路径、耗时、测试计数和已知环境限制。full 失败时停止并报告 blocked，不得带红灯基线进入 review；不得用排除项或过滤命令冒充 full。
+5. 运行基线 full（使用预热后的缓存）；记录结果（pass/fail）、完整日志路径、耗时、测试计数和已知环境限制。full 必须包含原始长时 I/O/稳定性测试；存在长测时，日志必须记录 `RUNTIME_PROFILE=original`、排序后的 `LONG_RUNNING_TESTS=<ID,...>`、`FULL_RUNTIME_SCALE=<baseline 中的原始尺度>`，结构化证据也须绑定同一清单和尺度。若环境无法运行，记录为 blocked，不得用缩短参数、排除项或过滤命令冒充 full。full 失败时停止并报告 blocked，不得带红灯基线进入 review。
 6. 与用户确认 `max_rounds`：默认 5，用户可指定，最小 2；小于 2 时 `reviewctl init` 会拒绝。然后运行 `reviewctl init --max-rounds N --user-confirmed`（终端场景可用 `--interactive`），由脚本创建 `review-config.json`、`state.json`、`findings.json` 和生成视图。`init` 拒绝覆盖任何已有状态文件；需要重跑时先归档或手动清理 `.review-evidence/`。
 7. 填写 `init` 创建的 `baseline.md` 和 `screening-log.md` 模板。
 8. 确保项目测试配置忽略 `tests/review/`（或使用 `ADVERSARIAL_REVIEW` 等开关），把方式和结束时如何还原写入 `baseline.md`；无法确保时记录阻塞。
@@ -250,7 +251,7 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 **必须委派实现代理**，一次一个 accepted finding，按 `tdd-and-commit.md` 执行 RED-GREEN-REFACTOR 并提交。委派时替换提示模板中的 `[skill-dir]`，并要求复用 baseline 的编译缓存。
 
 - 实现代理只处理当前 finding；RED 必须先确认，测试必须合并到项目正式测试文件。确实无法自动化时使用 `--manual`，并在 `implementation-result.md` / `verification-result.md` 记录人工复测。
-- GREEN 按 baseline tiering mode 执行：default/full-everywhere 每个修复提交前必须 full；progressive 仅普通风险 P2/P3 可用 fast suite 提交，P0/P1 或实现代理判定 high 仍须提交前 full。运行证据写入 `Reviewctl GREEN Evidence` JSON 并绑定提交 tree。progressive 普通风险的 full 由主代理在轮末对当前 HEAD 统一运行并用 `reviewctl record-round-regression --status pass|fail|inconclusive --evidence .review-evidence/round-N/full-suite.json` 记录；缺少通过证据时不能开始下一轮或终审。失败须回到 adjudication，重跑使用新日志和 evidence 文件，历史记录保留。
+- GREEN 按 baseline tiering mode 执行：default/full-everywhere 每个修复提交前必须 full；progressive 仅普通风险 P2/P3 可用 fast suite 提交，P0/P1 或实现代理判定 high 仍须提交前 full。fast suite 若缩短长测，必须使用 baseline 声明的 profile，并记录缩放方式、保留的断言和未覆盖的长期风险；它不能改变生产默认配置或替代 full。运行证据写入 `Reviewctl GREEN Evidence` JSON 并绑定提交 tree。progressive 普通风险的 full 由主代理在轮末对当前 HEAD 统一运行并用 `reviewctl record-round-regression --status pass|fail|inconclusive --evidence .review-evidence/round-N/full-suite.json` 记录；缺少通过证据时不能开始下一轮或终审。失败须回到 adjudication，重跑使用新日志和 evidence 文件，历史记录保留。
 - 进入 repair 时脚本会记录 `repair_baseline_staged`；提交只包含当前 finding 的源代码、正式测试和必要配置；不包含 `.review-evidence/` 或 `tests/review/` 临时文件。
 - 提交前运行 `reviewctl guard-commit --finding [ID] --test [PATH]`；脚本会拒绝证据目录、临时测试目录，以及在进入 repair 前就已暂存的用户改动。
 - 提交后运行 `reviewctl record-implementation --id ID --status fixed --commit SHA --test PATH` 或 `reviewctl record-implementation --id ID --status already_fixed --commit SHA --test PATH`；手工 finding 加 `--manual`；用户改动导致无法提交时运行 `reviewctl record-implementation --id ID --status prepared --reason "user changes conflict"`。
@@ -363,7 +364,7 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 ### 6.2 第二阶段：定向复核
 
 - 第一阶段保存后，提供所有 accepted finding、未结的范围内 needs-evidence P0/P1、原始证据路径、修复测试路径和提交。
-- 第一阶段盲扫可用 focused/impacted 探索；**第二阶段必须运行 full 测试、构建和适用静态检查**，并记录 HEAD、tree hash、workspace clean、run location、测试计数和日志；第一阶段结果不能替代第二阶段 full。
+- 第一阶段盲扫可用 focused/impacted 探索；**第二阶段必须运行 full 测试、构建和适用静态检查**，并记录 HEAD、tree hash、workspace clean、run location、测试计数和日志。有长测时，full 日志还须记录原始 runtime profile、baseline 长测 ID 清单和完整原始尺度；主代理复核实际配置与日志。第一阶段结果不能替代第二阶段 full。
 - 要求逐项复核修复有效性、回归、测试覆盖、遗留风险。
 - 结果写入 `targeted-review.md`；不得改写第一阶段结论。
 - 运行 `reviewctl record-audit --attempt K --status complete --new-issues N --auditor NAME` 记录结果；审计代理身份写入 state 和 `blind-scan.md`。审计无法完成时可用 `--status failed` 记录（不要求两份报告），随后从 `final_audit` 进入 `report` 并 `finalize --status incomplete`；已记录的 attempt 不能覆盖。
