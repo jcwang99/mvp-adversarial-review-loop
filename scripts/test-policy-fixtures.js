@@ -39,6 +39,10 @@ function writeBaseline(project) {
     '- Long-running test inventory: none',
     '- Full runtime scale: not_applicable',
     '- Time/volume scaling evidence: not_applicable',
+    '- Code quality command: not_applicable: no formatter or linter applies to synthetic fixture',
+    '- Code quality policy: run the declared formatter/linter before each repair commit; no tool applies to this fixture',
+    '- Baseline code quality result: not_applicable',
+    '- Baseline code quality log: not_applicable',
     '- Full test command: node --test',
     '- Adjacent test command: node --test {test_paths}',
     '- High-risk paths: none',
@@ -86,6 +90,11 @@ function appendReport(project, filename, heading, object) {
 function writeGreenEvidence(project, evidenceDir, treeHash) {
   appendReport(project, evidenceDir + '/implementation-result.md', 'Reviewctl GREEN Evidence', {
     full_suite: fullSuite(project, evidenceDir, treeHash),
+    quality_checks: {
+      status: 'not_applicable',
+      command: 'not_applicable: no formatter or linter applies to synthetic fixture',
+      reason: 'no formatter or linter applies to synthetic fixture',
+    },
   });
 }
 

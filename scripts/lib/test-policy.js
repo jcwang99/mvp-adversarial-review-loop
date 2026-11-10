@@ -46,6 +46,10 @@ function parseBaselinePolicy(project) {
     fullScale: bullet(scope, "Full runtime scale"),
     fastProfileSemantics: bullet(scope, "Fast profile semantics"),
     scalingEvidence: bullet(scope, "Time/volume scaling evidence"),
+    qualityCommand: bullet(scope, "Code quality command"),
+    qualityPolicy: bullet(scope, "Code quality policy"),
+    qualityResult: bullet(scope, "Baseline code quality result").toLowerCase(),
+    qualityLog: bullet(scope, "Baseline code quality log"),
     fullCommand: bullet(scope, "Full test command"),
     adjacentCommand: bullet(scope, "Adjacent test command"),
   };
@@ -101,6 +105,35 @@ function parseBaselinePolicy(project) {
     }
   } else {
     errors.push("baseline.md 缺少 Baseline full log");
+  }
+  if (!policy.qualityCommand || /\[|\]|TODO|<[^>]+>/i.test(policy.qualityCommand)) {
+    errors.push("baseline.md 必须填写 Code quality command；无适用工具时填写 not_applicable: 原因");
+  }
+  if (!policy.qualityPolicy || /\[|\]|TODO|<[^>]+>/i.test(policy.qualityPolicy)) {
+    errors.push("baseline.md 必须填写 Code quality policy");
+  }
+  const qualityNotApplicable = /^not_applicable\s*:/i.test(policy.qualityCommand);
+  if (!["pass", "not_applicable"].includes(policy.qualityResult)) {
+    errors.push("Baseline code quality result 必须是 pass 或 not_applicable");
+  } else if (qualityNotApplicable && policy.qualityResult !== "not_applicable") {
+    errors.push("Code quality command 为 not_applicable 时，Baseline code quality result 必须为 not_applicable");
+  } else if (!qualityNotApplicable && policy.qualityResult !== "pass") {
+    errors.push("存在 Code quality command 时，Baseline code quality result 必须为 pass");
+  }
+  if (policy.qualityResult === "not_applicable" && !qualityNotApplicable) {
+    errors.push("not_applicable 必须在 Code quality command 中写明原因");
+  }
+  if (policy.qualityResult === "pass") {
+    if (!policy.qualityLog || /\[|\]|TODO|<[^>]+>/i.test(policy.qualityLog)) {
+      errors.push("Baseline code quality result=pass 时必须填写 Baseline code quality log");
+    } else {
+      const qualityLogPath = resolveEvidencePath(project, policy.qualityLog, errors, "Baseline code quality log");
+      if (qualityLogPath) {
+        const qualityLog = fs.readFileSync(qualityLogPath, "utf8");
+        if (!hasSuccessfulExit(qualityLogPath)) errors.push("baseline code quality log 缺少 EXIT_CODE=0");
+        if (!qualityLog.replace(/\r/g, "").split("\n").includes(`QUALITY_COMMAND=${policy.qualityCommand}`)) errors.push("baseline code quality log QUALITY_COMMAND 必须与 baseline Code quality command 完全一致");
+      }
+    }
   }
   if (/\|\|\s*true|--passWithNoTests/i.test(policy.fullCommand)) {
     errors.push("baseline Full test command 不得吞掉失败或允许零测试通过");
@@ -354,6 +387,40 @@ function validateFullRun(project, run, policy, label, expectedTreeHash = null) {
     if (!log.includes("RUNTIME_PROFILE=original")) errors.push(`${label} log 必须记录 RUNTIME_PROFILE=original`);
     if (!log.includes(`LONG_RUNNING_TESTS=${ids}`)) errors.push(`${label} log 必须记录完整的 LONG_RUNNING_TESTS 清单`);
     if (!log.includes(`FULL_RUNTIME_SCALE=${policy.fullScale}`)) errors.push(`${label} log 必须记录与 baseline 一致的 FULL_RUNTIME_SCALE`);
+  }
+  return errors;
+}
+
+function validateQualityRun(project, run, policy, label, expectedTreeHash = null) {
+  const errors = [];
+  if (!run || typeof run !== "object" || Array.isArray(run)) return [`${label} 缺少结构化代码质量证据`];
+  if (policy.qualityResult === "not_applicable") {
+    if (run.status !== "not_applicable") errors.push(`${label} status 必须为 not_applicable`);
+    if (run.command !== policy.qualityCommand) errors.push(`${label} command 必须与 baseline Code quality command 完全一致`);
+    if (!(typeof run.reason === "string" && run.reason.trim())) errors.push(`${label} not_applicable 必须说明原因`);
+    return errors;
+  }
+  if (run.status !== "pass") errors.push(`${label} status 必须为 pass`);
+  if (typeof run.command !== "string" || run.command.trim() !== policy.qualityCommand.trim()) {
+    errors.push(`${label} command 必须与 baseline Code quality command 完全一致`);
+  }
+  if (run.exit_status !== 0) errors.push(`${label} exit_status 必须为数值 0`);
+  if (!isTreeHash(run.tree_hash_before) || !isTreeHash(run.tree_hash_after) || run.tree_hash_before.toLowerCase() !== run.tree_hash_after.toLowerCase()) {
+    errors.push(`${label} tree hash 必须在检查前后稳定`);
+  } else if (expectedTreeHash !== null && run.tree_hash_after.toLowerCase() !== String(expectedTreeHash).toLowerCase()) {
+    errors.push(`${label} tree hash 必须匹配被验证的 index/commit tree`);
+  }
+  if (!(run.run_location === "main-workspace" || (typeof run.run_location === "string" && /^worktree:.+/.test(run.run_location.trim())))) {
+    errors.push(`${label} run_location 必须是 main-workspace 或 worktree:<path>`);
+  }
+  if (run.workspace_clean_before !== true || run.workspace_clean_after !== true) {
+    errors.push(`${label} 必须证明检查前后工作区均 clean`);
+  }
+  const logPath = resolveEvidencePath(project, run.log, errors, `${label} log`);
+  if (logPath) {
+    const log = fs.readFileSync(logPath, "utf8");
+    if (!hasSuccessfulExit(logPath)) errors.push(`${label} log 缺少 EXIT_CODE=0`);
+    if (!log.replace(/\r/g, "").split("\n").includes(`QUALITY_COMMAND=${policy.qualityCommand}`)) errors.push(`${label} log QUALITY_COMMAND 必须与 baseline Code quality command 完全一致`);
   }
   return errors;
 }
@@ -657,6 +724,8 @@ function parseImplementationEvidence(project, filename, expectedTreeHash = null,
   const evidence = parsed.value;
   const run = evidence?.full_suite || null;
   const fastRun = evidence?.fast_suite || null;
+  const qualityRun = evidence?.quality_checks || null;
+  errors.push(...validateQualityRun(project, qualityRun, baseline.policy, "GREEN quality evidence", expectedTreeHash));
   if (baseline.policy.tieringMode === "progressive") {
     if (!["normal", "high"].includes(evidence?.risk_assessment)) errors.push("progressive GREEN evidence 必须记录 risk_assessment=normal|high");
     const requireFull = evidence?.risk_assessment === "high" || ["P0", "P1"].includes(finding?.severity);
@@ -667,7 +736,7 @@ function parseImplementationEvidence(project, filename, expectedTreeHash = null,
     if (run) errors.push(...validateFullRun(project, run, baseline.policy, "GREEN full evidence", expectedTreeHash));
     else errors.push("Reviewctl GREEN Evidence 缺少 full_suite 对象");
   }
-  return { run, fastRun, evidence, policy: baseline.policy, errors };
+  return { run, fastRun, qualityRun, evidence, policy: baseline.policy, errors };
 }
 
 function validateVerificationEvidence(project, finding, config, filename, expectedHeadTree = null, { historical = false } = {}) {
@@ -855,6 +924,7 @@ module.exports = {
   parseJsonSection,
   parseImplementationEvidence,
   validateFullRun,
+  validateQualityRun,
   validateFastRun,
   validateVerificationEvidence,
   validateAdjacentBatch,

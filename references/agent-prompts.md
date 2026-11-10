@@ -460,8 +460,8 @@ blockers: []
 
 2. **GREEN 阶段**：
    - 实现最小修复，使测试通过
-   - 按 baseline 的 tiering mode 运行门禁：default/full-everywhere 运行 full；progressive 普通风险 P2/P3 运行 Fast test command，P0/P1 或 high 风险仍运行 full。fast 缩放必须使用 baseline profile，并记录缩放方式、保留契约、未覆盖语义和 full 兜底；虚拟时钟不等于真实调度时间，加速真实时间不能证明无调度竞争，tmpfs 不覆盖真实磁盘持久性或故障
-   - progressive 延后 full 时，在结构化 GREEN evidence 写 `fast_suite`、`fast_profile`、`scaling_notes`、`retained_contracts`、`uncovered_semantics` 和 `risk_assessment: normal`；full 失败或快速测试失败都不得提交。fast 不能修改生产默认时间、删除断言或冒充 full
+   - 按 baseline 的 tiering mode 运行门禁：default/full-everywhere 运行 full；progressive 普通风险 P2/P3 运行 Fast test command，P0/P1 或 high 风险仍运行 full。无论使用 fast 还是 full，都必须先运行 baseline 的 Code quality command；Rust 默认是 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets --all-features -- -D warnings`，其它语言按 baseline 声明的 formatter/linter/type-check 命令执行。fast 缩放必须使用 baseline profile，并记录缩放方式、保留契约、未覆盖语义和 full 兜底；虚拟时钟不等于真实调度时间，加速真实时间不能证明无调度竞争，tmpfs 不覆盖真实磁盘持久性或故障
+   - progressive 延后 full 时，在结构化 GREEN evidence 写 `quality_checks`、`fast_suite`、`fast_profile`、`scaling_notes`、`retained_contracts`、`uncovered_semantics` 和 `risk_assessment: normal`；full、质量检查或快速测试失败都不得提交。fast 不能修改生产默认时间、删除断言或冒充 full
    - 不要过度工程或添加 finding 范围外的功能
 
 3. **REFACTOR 阶段**（可选）：
@@ -851,6 +851,17 @@ regression_command: "<验证代理实际运行的回归命令>"
 regression_status: "pass | fail | not_run"
 risk_assessment: "normal | high"
 risk_reason: "<命中的高风险类别或 changed files>"
+quality_checks:  # 每个 repair 提交前必须运行；无适用工具时记录 not_applicable 与原因
+  status: "pass | not_applicable | fail"
+  command: "<baseline Code quality command>"
+  exit_status: "<退出码；not_applicable 可省略>"
+  tree_hash_before: "<检查前 tree hash>"
+  tree_hash_after: "<检查后 tree hash>"
+  workspace_clean_before: true | false
+  workspace_clean_after: true | false
+  run_location: "main-workspace | worktree:<path>"
+  log: "<质量检查日志路径>"
+  reason: "<仅 not_applicable 必填>"
 implementation_full_suite:  # default/full-everywhere，或 progressive 的 P0/P1/high finding
   status: "pass | fail | not_run"
   command: "<实现阶段的 full 命令>"
@@ -1157,7 +1168,7 @@ uncovered_paths: []
 2. 检查修复是否引入新问题或回归
 3. 检查测试覆盖是否充分
 4. 检查是否有遗留风险或边界情况未处理
-5. 运行完整测试套件和适用的静态检查；有长测时必须按提供的原始尺度运行，并在完整日志中记录 `RUNTIME_PROFILE=original`、`LONG_RUNNING_TESTS=<ID,...>`、`FULL_RUNTIME_SCALE=<baseline 原始尺度>`
+5. 运行完整测试套件和适用的静态检查；提交前声明的代码质量命令必须在最终 HEAD 上运行并记录日志。Rust 至少执行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets --all-features -- -D warnings`，其它语言执行 baseline 中声明的 formatter/linter/type-check 命令。有长测时必须按提供的原始尺度运行，并在完整日志中记录 `RUNTIME_PROFILE=original`、`LONG_RUNNING_TESTS=<ID,...>`、`FULL_RUNTIME_SCALE=<baseline 原始尺度>`
 
 ## 运行约定
 - 从项目根目录运行，使用项目自身的测试框架和依赖

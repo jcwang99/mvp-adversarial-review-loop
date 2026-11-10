@@ -47,6 +47,7 @@
    - `Adjacent test command`：独立的相邻测试命令模板，以唯一的 `{test_paths}` 结尾，如 `node --test {test_paths}`。不得额外扫描目录或吞掉失败；不支持文件参数的框架使用只执行给定路径的项目适配脚本。正常 full 排除 `tests/review/verifications/`。
    - tiering mode（`default`、`full-everywhere` 或 `progressive`）、高风险路径清单、full 单次耗时、full suite composition、feature matrix 和 baseline full result。所有 tier 都须登记稳定的长测 ID 清单及 Full runtime scale；无长测填写 `none` / `not_applicable`。progressive 还需记录 Fast test command、Fast test profile、快速测试清单/耗时、长时测试策略、profile 的保留/缺失语义和时间/数据缩放证据
    - 长测清单和原始尺度要在基线 full 开始前确定，并让测试 runner 将对应 runtime 标记写入原始日志；运行后再把同一记录填入 baseline，避免事后补写运行信息
+   - 代码质量门禁：记录 `Code quality command`、`Code quality policy`、`Baseline code quality result` 和日志。Rust 默认包含 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets --all-features -- -D warnings`；其它语言填写仓库已有的 formatter/linter/type-check 命令。无适用工具时写 `not_applicable: 原因`，不得把未运行写成 pass
    写入 `baseline.md` 的 "Test Scope / Regression Policy"。
 4. **按实测决定是否编译预热**：只有全量测试/构建耗时明显（例如单次超过 2-3 分钟）或会生成大量临时测试的项目才做；短编译项目沿用现有命令，不要额外引入缓存层。
    - 先确定磁盘预算：记录可用空间和缓存上限，云端环境尤其要留足余量；缓存目录放在仓库外，不要放进 `.review-evidence/`，也不要提交。
@@ -56,7 +57,7 @@
    - 可选：项目已有 `sccache`/构建缓存配置时沿用，不要覆盖；没有且实测收益明显时再考虑安装。
    - 其他长编译栈：仅在实测确实拖慢流程时启用依赖预编译/缓存，并设置同样的磁盘预算和轮次边界清理策略；短编译栈不要过度优化。
    - 把预热命令、缓存路径、环境变量、磁盘预算、清理时机和单次测试耗时写入 `baseline.md` 的 "Build Cache / Compile Prewarm"；无法安全预热时记录耗时和阻塞，不要跳过。
-5. 运行基线 full（使用预热后的缓存）；记录结果（pass/fail）、完整日志路径、耗时、测试计数和已知环境限制。full 必须包含原始长时 I/O/稳定性测试；存在长测时，日志必须记录 `RUNTIME_PROFILE=original`、排序后的 `LONG_RUNNING_TESTS=<ID,...>`、`FULL_RUNTIME_SCALE=<baseline 中的原始尺度>`，结构化证据也须绑定同一清单和尺度。若环境无法运行，记录为 blocked，不得用缩短参数、排除项或过滤命令冒充 full。full 失败时停止并报告 blocked，不得带红灯基线进入 review。
+5. 运行基线 full（使用预热后的缓存）；记录结果（pass/fail）、完整日志路径、耗时、测试计数和已知环境限制。full 必须包含原始长时 I/O/稳定性测试；存在长测时，日志必须记录 `RUNTIME_PROFILE=original`、排序后的 `LONG_RUNNING_TESTS=<ID,...>`、`FULL_RUNTIME_SCALE=<baseline 中的原始尺度>`，结构化证据也须绑定同一清单和尺度。运行 baseline 声明的代码质量命令并保存独立日志；formatter/linter/type checker 失败时停止并报告 blocked。若环境无法运行，记录为 blocked，不得用缩短参数、排除项或过滤命令冒充 full。full 失败时停止并报告 blocked，不得带红灯基线进入 review。
 6. 与用户确认 `max_rounds`：默认 5，用户可指定，最小 2；小于 2 时 `reviewctl init` 会拒绝。然后运行 `reviewctl init --max-rounds N --user-confirmed`（终端场景可用 `--interactive`），由脚本创建 `review-config.json`、`state.json`、`findings.json` 和生成视图。`init` 拒绝覆盖任何已有状态文件；需要重跑时先归档或手动清理 `.review-evidence/`。
 7. 填写 `init` 创建的 `baseline.md` 和 `screening-log.md` 模板。
 8. 确保项目测试配置忽略 `tests/review/`（或使用 `ADVERSARIAL_REVIEW` 等开关），把方式和结束时如何还原写入 `baseline.md`；无法确保时记录阻塞。
@@ -251,7 +252,7 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 **必须委派实现代理**，一次一个 accepted finding，按 `tdd-and-commit.md` 执行 RED-GREEN-REFACTOR 并提交。委派时替换提示模板中的 `[skill-dir]`，并要求复用 baseline 的编译缓存。
 
 - 实现代理只处理当前 finding；RED 必须先确认，测试必须合并到项目正式测试文件。确实无法自动化时使用 `--manual`，并在 `implementation-result.md` / `verification-result.md` 记录人工复测。
-- GREEN 按 baseline tiering mode 执行：default/full-everywhere 每个修复提交前必须 full；progressive 仅普通风险 P2/P3 可用 fast suite 提交，P0/P1 或实现代理判定 high 仍须提交前 full。fast suite 若缩短长测，必须使用 baseline 声明的 profile，并记录缩放方式、保留的断言和未覆盖的长期风险；它不能改变生产默认配置或替代 full。运行证据写入 `Reviewctl GREEN Evidence` JSON 并绑定提交 tree。progressive 普通风险的 full 由主代理在轮末对当前 HEAD 统一运行并用 `reviewctl record-round-regression --status pass|fail|inconclusive --evidence .review-evidence/round-N/full-suite.json` 记录；缺少通过证据时不能开始下一轮或终审。失败须回到 adjudication，重跑使用新日志和 evidence 文件，历史记录保留。
+- GREEN 按 baseline tiering mode 执行：default/full-everywhere 每个修复提交前必须 full；progressive 仅普通风险 P2/P3 可用 fast suite 提交，P0/P1 或实现代理判定 high 仍须提交前 full。无论采用 fast 还是 full，提交前都必须运行 baseline 声明的代码质量命令并在 `quality_checks` 中记录；质量检查失败不得提交。fast suite 若缩短长测，必须使用 baseline 声明的 profile，并记录缩放方式、保留的断言和未覆盖的长期风险；它不能改变生产默认配置或替代 full。运行证据写入 `Reviewctl GREEN Evidence` JSON 并绑定提交 tree。progressive 普通风险的 full 由主代理在轮末对当前 HEAD 统一运行并用 `reviewctl record-round-regression --status pass|fail|inconclusive --evidence .review-evidence/round-N/full-suite.json` 记录；缺少通过证据时不能开始下一轮或终审。失败须回到 adjudication，重跑使用新日志和 evidence 文件，历史记录保留。
 - 进入 repair 时脚本会记录 `repair_baseline_staged`；提交只包含当前 finding 的源代码、正式测试和必要配置；不包含 `.review-evidence/` 或 `tests/review/` 临时文件。
 - 提交前运行 `reviewctl guard-commit --finding [ID] --test [PATH]`；脚本会拒绝证据目录、临时测试目录，以及在进入 repair 前就已暂存的用户改动。
 - 提交后运行 `reviewctl record-implementation --id ID --status fixed --commit SHA --test PATH` 或 `reviewctl record-implementation --id ID --status already_fixed --commit SHA --test PATH`；手工 finding 加 `--manual`；用户改动导致无法提交时运行 `reviewctl record-implementation --id ID --status prepared --reason "user changes conflict"`。

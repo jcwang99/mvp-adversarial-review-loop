@@ -325,6 +325,10 @@ node <skill-dir>/scripts/reviewctl.js render
 - Long-running test inventory: [none 或稳定测试 ID 的逗号分隔清单；所有 tier 必填]
 - Full runtime scale: [长测的原始时间间隔、数据量、运行时长和关键资源条件；无长测填 not_applicable]
 - Time/volume scaling evidence: [缩放配置、fixture、虚拟时钟或命令证据路径；无缩放填 not_applicable]
+- Code quality command: [formatter/linter/type-check 命令；Rust 默认 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets --all-features -- -D warnings`；无适用工具写 not_applicable: 原因]
+- Code quality policy: [每个 repair 提交前必须运行；记录适用范围和例外]
+- Baseline code quality result: [pass | not_applicable]
+- Baseline code quality log: [日志路径；not_applicable 时可填 not_applicable]
 - Full test command: [项目/workspace 全量；Rust 包含 doctest]
 - High-risk paths: [构建/依赖清单、公共 API、认证、数据迁移、并发、feature flag 等]
 - Verification default: [impacted；P0/P1/高风险/full-everywhere 重新运行 full]
@@ -333,6 +337,8 @@ node <skill-dir>/scripts/reviewctl.js render
 所有 tier 都要登记长测清单；若非 `none`，必须写明 `Full runtime scale`。baseline full 日志及之后每次 full 日志都必须包含三行：`RUNTIME_PROFILE=original`、按字母排序且逗号连接的 `LONG_RUNNING_TESTS=<ID,...>`、`FULL_RUNTIME_SCALE=<与 baseline 完全相同的尺度描述>`。结构化 full 证据也必须记录 `runtime_profile: original`、匹配的 `long_running_test_ids` / `runtime_scale` 和 `runtime_scale_evidence`（指向配置或日志中的可复核证据）。这些标记不能替代主代理对原始配置和运行日志的人工核对。
 
 `progressive` 的 fast command 必须与 full command 不同，并声明 `Fast test profile`。该命令只供普通风险 P2/P3 finding 的逐项 GREEN 使用；P0/P1、高风险与 `already_fixed` 不适用。fast 可以缩放时间或数据量，但不能删除关键断言、修改生产默认值或把缩短命令作为 full 证据。缩放时必须记录 `retained_contracts` 与 `uncovered_semantics`：优先使用虚拟时钟验证定时逻辑；加速真实时间不能证明未受调度竞争影响；tmpfs 只能代表文件 API 行为，不能证明真实磁盘的持久性、崩溃或介质故障语义。轮末 full 仍使用 Full test command，不得排除慢速 I/O/稳定性测试。
+
+代码质量命令独立于测试范围分级，所有 tier 的每个修复提交都必须运行。Rust 至少执行 formatter 和 Clippy；其它语言执行仓库已有的 formatter、linter、type checker 或等价静态检查。质量检查不能因为 progressive 使用 fast 而跳过，也不能用只检查单个文件的命令替代 baseline 声明的范围，除非 baseline 明确记录了该范围。没有适用工具时才使用 `not_applicable: 原因`。
 
 ## Machine-validated test evidence
 
@@ -370,6 +376,17 @@ reviewctl 读取下面两个精确标题下的单个 JSON 代码块；接受三�
     "expected_test_count_delta": 0,
     "expected_skipped_count_delta": 0,
     "log": ".review-evidence/round-1/R1-F001-SEC/output-full-suite.log"
+  },
+  "quality_checks": {
+    "status": "pass",
+    "command": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets --all-features -- -D warnings",
+    "exit_status": 0,
+    "tree_hash_before": "0123456789abcdef0123456789abcdef01234567",
+    "tree_hash_after": "0123456789abcdef0123456789abcdef01234567",
+    "run_location": "main-workspace",
+    "workspace_clean_before": true,
+    "workspace_clean_after": true,
+    "log": ".review-evidence/round-1/R1-F001-SEC/output-quality.log"
   }
 }
 ~~~

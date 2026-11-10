@@ -8,7 +8,7 @@
 
 ### 1. 读取并校验 `.review-evidence/state.json`
 
-`state.json` 和 `findings.json` 是事实来源；`run-state.md` / `findings-index.md` 是生成视图。同时读取 `baseline.md` 的 **Test Scope / Regression Policy**，确认 tiering mode、focused/impacted/fast/full 命令、高风险路径和 baseline full result；委派实现/验证代理时必须一并提供。
+`state.json` 和 `findings.json` 是事实来源；`run-state.md` / `findings-index.md` 是生成视图。同时读取 `baseline.md` 的 **Test Scope / Regression Policy**，确认 tiering mode、focused/impacted/fast/full 命令、Code quality command/policy、长测清单和原始尺度、高风险路径及 baseline 结果；委派实现/验证代理时必须一并提供。
 
 获取当前状态：
 
@@ -56,7 +56,7 @@ node <skill-dir>/scripts/reviewctl.js validate
 
 - 当前技能目录的绝对路径：把模板中的 `[skill-dir]` 替换为当前 harness 的实际安装路径（各 harness 不同，动态解析），并给出 `node "[skill-dir]/scripts/reviewctl.js"` 的可执行形式；子代理只读使用，不得修改状态或推进阶段。
 - 编译缓存信息：长编译项目（Rust、C++、大型 TypeScript 等）已在 baseline 完成编译预热，委派时附上共享缓存路径/环境变量和磁盘预算，要求子代理在预算内复用；不要每个 finding 重建依赖或创建独立 target。超预算时在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理。
-- 测试范围信息：`baseline.md` 的 “Test Scope / Regression Policy” 摘要（focused/impacted/full 命令、高风险路径、baseline full result），以及当前 finding 的 severity；验证代理无法判断高风险时按高风险处理。
+- 测试范围信息：`baseline.md` 的 “Test Scope / Regression Policy” 摘要（focused/impacted/fast/full 命令、Code quality command/policy、长测清单和原始尺度、高风险路径、baseline 结果），以及当前 finding 的 severity；验证代理无法判断高风险时按高风险处理。
 
 ## 常见压缩后错误
 
