@@ -2011,6 +2011,9 @@ function commandRender(flags) {
 function commandNormalize(flags) {
   const project = projectRoot(flags);
   const { config, state, data } = loadAll(project);
+  if (!Array.isArray(state.rounds)) {
+    fail("无法 normalize：state.json 的 rounds 必须是数组；为避免丢失轮次历史，未修改文件");
+  }
   const completed = completedRounds(state);
   const lastRound = completed.length ? completed[completed.length - 1].round : 0;
   state.rounds_consumed = completed.length;

@@ -1863,6 +1863,24 @@ test("normalize repairs derived state fields", () => {
   run(project, ["validate"]);
 });
 
+test("invalid rounds fail validation and normalize without changing state", () => {
+  const project = makeProject();
+  init(project, 2);
+  const statePath = path.join(project, ".review-evidence/state.json");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  state.rounds = null;
+  fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
+  const originalState = fs.readFileSync(statePath, "utf8");
+
+  const validation = run(project, ["validate"], { expectFail: true });
+  assert.match(String(validation.stderr), /rounds 必须是数组/);
+  assert.doesNotMatch(String(validation.stderr), /TypeError/);
+
+  const normalization = run(project, ["normalize"], { expectFail: true });
+  assert.match(String(normalization.stderr), /为避免丢失轮次历史，未修改文件/);
+  assert.equal(fs.readFileSync(statePath, "utf8"), originalState);
+});
+
 test("help lists the full advanced parameter set", () => {
   const output = run(makeProject(), ["help"]);
   assert.match(output, /--change-origin/);

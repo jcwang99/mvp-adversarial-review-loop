@@ -784,6 +784,9 @@ function validateProject(project, config, state, data) {
   errors.push(...validateConfig(config));
   errors.push(...validateState(state, config));
   errors.push(...validateFindings(data));
+  if (!Array.isArray(state.rounds)) {
+    return { errors, warnings, coverage: coverage(data) };
+  }
   errors.push(...verifyViews(project, state, config, data));
   validateInbox(project, errors, data);
   validateFindingDirectories(project, data, errors);
