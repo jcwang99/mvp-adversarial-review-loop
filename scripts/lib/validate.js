@@ -78,6 +78,7 @@ function readHeadFile(project, file) {
   return execFileSync("git", ["show", `HEAD:${normalized}`], {
     cwd: project,
     encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
   });
 }
 
