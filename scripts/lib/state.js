@@ -158,6 +158,7 @@ function defaultState(config) {
     current_head: config.baseline_head,
     repair_baseline_staged: [],
     repair_baseline_index: null,
+    optimistic_repairs: [],
     last_completed_event: "initialized",
     next_action: "建立 baseline 并进入 review",
     blockers: [],
@@ -327,6 +328,36 @@ function validateState(state, config) {
   if (!Array.isArray(state.rounds)) errors.push("rounds 必须是数组");
   if (state.repair_baseline_staged !== undefined && !Array.isArray(state.repair_baseline_staged)) {
     errors.push("repair_baseline_staged 必须是数组");
+  }
+  if (state.optimistic_repairs !== undefined && !Array.isArray(state.optimistic_repairs)) {
+    errors.push("optimistic_repairs 必须是数组");
+  } else if (Array.isArray(state.optimistic_repairs)) {
+    const optimisticIds = new Set();
+    const activeStatuses = new Set(["started", "candidate_green", "promote_pending_commit"]);
+    for (const entry of state.optimistic_repairs) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        errors.push("optimistic_repairs 包含非法记录");
+        continue;
+      }
+      if (!FINDING_ID.test(String(entry.finding_id || ""))) errors.push("optimistic repair finding_id 非法");
+      if (optimisticIds.has(entry.finding_id)) errors.push(`optimistic repair 重复：${entry.finding_id}`);
+      optimisticIds.add(entry.finding_id);
+      if (!["started", "candidate_green", "promote_pending_commit", "promoted", "discarded", "stale", "conflict"].includes(entry.status)) {
+        errors.push(`${entry.finding_id}: optimistic repair status 非法`);
+      }
+      for (const key of ["base_commit", "base_tree"]) {
+        if (!/^[0-9a-f]{40,64}$/i.test(String(entry[key] || ""))) errors.push(`${entry.finding_id}: ${key} 必须是完整 SHA`);
+      }
+      if (entry.candidate_commit !== null && entry.candidate_commit !== undefined &&
+          !/^[0-9a-f]{40,64}$/i.test(String(entry.candidate_commit))) {
+        errors.push(`${entry.finding_id}: candidate_commit 必须是完整 SHA 或 null`);
+      }
+      if (entry.worktree && typeof entry.worktree !== "string") errors.push(`${entry.finding_id}: worktree 必须是字符串`);
+      if (!Array.isArray(entry.touched_files)) errors.push(`${entry.finding_id}: touched_files 必须是数组`);
+      if (activeStatuses.has(entry.status) && (!entry.worktree || !entry.branch)) {
+        errors.push(`${entry.finding_id}: 活动 optimistic repair 必须记录 worktree 和 branch`);
+      }
+    }
   }
   const indexBaseline = state.repair_baseline_index;
   if (indexBaseline !== undefined && indexBaseline !== null) {

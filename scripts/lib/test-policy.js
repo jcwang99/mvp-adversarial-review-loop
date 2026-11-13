@@ -50,6 +50,10 @@ function parseBaselinePolicy(project) {
     qualityPolicy: bullet(scope, "Code quality policy"),
     qualityResult: bullet(scope, "Baseline code quality result").toLowerCase(),
     qualityLog: bullet(scope, "Baseline code quality log"),
+    optimisticRepairPolicy: (/^\[/.test(bullet(scope, "Optimistic repair policy")) ? "off" : (bullet(scope, "Optimistic repair policy") || "off")).toLowerCase(),
+    optimisticMaxWorktrees: Number.parseInt(/^\[/.test(bullet(scope, "Optimistic max active worktrees")) ? "1" : (bullet(scope, "Optimistic max active worktrees") || "1"), 10),
+    optimisticEligibleSeverities: (/^\[/.test(bullet(scope, "Optimistic eligible severities")) ? "P2,P3" : (bullet(scope, "Optimistic eligible severities") || "P2,P3"))
+      .split(",").map((value) => value.trim()).filter(Boolean),
     fullCommand: bullet(scope, "Full test command"),
     adjacentCommand: bullet(scope, "Adjacent test command"),
   };
@@ -134,6 +138,15 @@ function parseBaselinePolicy(project) {
         if (!qualityLog.replace(/\r/g, "").split("\n").includes(`QUALITY_COMMAND=${policy.qualityCommand}`)) errors.push("baseline code quality log QUALITY_COMMAND 必须与 baseline Code quality command 完全一致");
       }
     }
+  }
+  if (!["off", "bounded"].includes(policy.optimisticRepairPolicy)) {
+    errors.push("Optimistic repair policy 必须是 off 或 bounded");
+  }
+  if (!Number.isSafeInteger(policy.optimisticMaxWorktrees) || policy.optimisticMaxWorktrees < 1 || policy.optimisticMaxWorktrees > 2) {
+    errors.push("Optimistic max active worktrees 必须是 1 或 2");
+  }
+  if (!policy.optimisticEligibleSeverities.length || policy.optimisticEligibleSeverities.some((value) => !["P2", "P3"].includes(value))) {
+    errors.push("Optimistic eligible severities 只能包含 P2、P3");
   }
   if (/\|\|\s*true|--passWithNoTests/i.test(policy.fullCommand)) {
     errors.push("baseline Full test command 不得吞掉失败或允许零测试通过");

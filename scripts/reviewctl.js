@@ -71,7 +71,7 @@ const {
   extractSection,
 } = require("./lib/validate");
 
-const REPEATABLE = new Set(["test", "original-id", "adjacent-test", "failed-finding"]);
+const REPEATABLE = new Set(["test", "original-id", "adjacent-test", "failed-finding", "touched-file"]);
 
 function parseArgs(argv) {
   const flags = {};
@@ -214,6 +214,9 @@ function initTemplates(project) {
         "- Code quality policy: [required before each repair commit; scope and any documented waiver]",
         "- Baseline code quality result: [pass | not_applicable]",
         "- Baseline code quality log: [path under .review-evidence/ or not_applicable]",
+        "- Optimistic repair policy: [off | bounded; default off]",
+        "- Optimistic max active worktrees: [1]",
+        "- Optimistic eligible severities: [P2,P3]",
         "- Full test command: [TODO]",
         "- Adjacent test command: [TODO]",
         "- High-risk paths: [TODO]",
@@ -922,6 +925,194 @@ function commitExists(project, commit) {
   }
 }
 
+function gitOutput(project, args) {
+  return execFileSync("git", args, { cwd: project, encoding: "utf8" }).trim();
+}
+
+function gitStatusClean(project) {
+  return gitOutput(project, ["status", "--porcelain"]) === "";
+}
+
+function optimisticMainClean(project) {
+  const lines = gitOutput(project, ["status", "--porcelain", "--untracked-files=all"]).split(/\r?\n/).filter(Boolean);
+  return lines.every((line) => {
+    const file = line.slice(3).replace(/^"|"$/g, "").replace(/\\/g, "/");
+    return file.startsWith(`${EVIDENCE}/`) || file.startsWith("tests/review/");
+  });
+}
+
+function optimisticEntry(state, id) {
+  return (state.optimistic_repairs || []).find((entry) => entry.finding_id === id) || null;
+}
+
+function optimisticPolicy(project) {
+  const parsed = testPolicy.parseBaselinePolicy(project);
+  if (parsed.errors.length) fail(parsed.errors.join("; "));
+  if (parsed.policy.optimisticRepairPolicy !== "bounded") fail("baseline 未启用 bounded 乐观修复策略");
+  return parsed.policy;
+}
+
+function normalizeWorktreePath(project, value) {
+  if (!value) fail("缺少 --worktree");
+  const resolved = path.resolve(value);
+  const projectResolved = path.resolve(project);
+  if (resolved === projectResolved || resolved.startsWith(`${projectResolved}${path.sep}`)) {
+    fail("乐观修复 worktree 必须位于项目目录之外");
+  }
+  return resolved;
+}
+
+function activeOptimisticRepairs(state) {
+  return (state.optimistic_repairs || []).filter((entry) =>
+    ["started", "candidate_green", "promote_pending_commit"].includes(entry.status)
+  );
+}
+
+function commandOptimisticStart(flags) {
+  const project = projectRoot(flags);
+  const { config, state, data } = loadAll(project);
+  const policy = optimisticPolicy(project);
+  const id = String(stringFlag(flags, "id", { required: true })).toUpperCase();
+  const finding = findingById(data, id);
+  if (!finding || finding.decision !== "accepted") fail(`${id} 必须是 accepted finding`);
+  if (!policy.optimisticEligibleSeverities.includes(finding.severity)) fail(`${id} 的 severity 不允许乐观修复`);
+  const risk = stringFlag(flags, "risk-assessment", { required: true });
+  if (risk !== "normal") fail("乐观修复只允许 risk-assessment=normal");
+  const findingMatch = id.match(FINDING_ID);
+  const evidenceDir = findingMatch ? path.resolve(project, finding.evidence_dir) : null;
+  if (!evidenceDir || !fs.existsSync(path.join(evidenceDir, "replay-review.md"))) fail(`${id} 缺少 replay-review.md 证据`);
+  if (!findingMatch || (!hasFormalReproduction(project, findingMatch[1], findingMatch[2]) && !fs.existsSync(path.join(evidenceDir, "manual-steps.md")))) {
+    fail(`${id} 缺少已确认的正式复现测试或 manual-steps.md`);
+  }
+  if (finding.implementation_status && finding.implementation_status !== "none") fail(`${id} 已有实现状态，不能启动乐观修复`);
+  if (state.current_phase === "report" || ["converged", "converged_with_manual_merge"].includes(state.overall_status)) fail("流程已结束，不能启动乐观修复");
+  const previous = optimisticEntry(state, id);
+  if (previous && !["discarded", "stale", "conflict"].includes(previous.status)) fail(`${id} 已有活动或已提升的乐观修复记录`);
+  if (activeOptimisticRepairs(state).length >= policy.optimisticMaxWorktrees) fail("已达到乐观修复 worktree 数量上限");
+  if (!optimisticMainClean(project)) fail("主工作树包含非评审临时改动；乐观修复只从无源代码用户改动的 HEAD 创建");
+  const worktree = normalizeWorktreePath(project, stringFlag(flags, "worktree", { required: true }));
+  if (fs.existsSync(worktree)) fail(`worktree 路径已存在：${worktree}`);
+  const baseCommit = gitOutput(project, ["rev-parse", "HEAD"]);
+  const baseTree = gitOutput(project, ["rev-parse", "HEAD^{tree}"]);
+  const branch = `review/optimistic/${id.toLowerCase()}-${Date.now()}`;
+  execFileSync("git", ["worktree", "add", "-b", branch, worktree, baseCommit], { cwd: project, stdio: "inherit" });
+  state.optimistic_repairs = state.optimistic_repairs || [];
+  const optimistic = previous || {};
+  delete optimistic.formal_commit;
+  delete optimistic.promoted_at;
+  Object.assign(optimistic, {
+    finding_id: id,
+    base_commit: baseCommit,
+    base_tree: baseTree,
+    worktree,
+    branch,
+    candidate_commit: null,
+    candidate_tree: null,
+    touched_files: [],
+    test_status: "not_run",
+    quality_status: "not_run",
+    risk_assessment: risk,
+    status: "started",
+    created_at: now(),
+    updated_at: now(),
+  });
+  if (!previous) state.optimistic_repairs.push(optimistic);
+  persist(project, config, state, data);
+  console.log(`started optimistic repair for ${id}: ${worktree}`);
+}
+
+function commandOptimisticRecord(flags) {
+  const project = projectRoot(flags);
+  const { config, state, data } = loadAll(project);
+  const policy = optimisticPolicy(project);
+  const id = String(stringFlag(flags, "id", { required: true })).toUpperCase();
+  const entry = optimisticEntry(state, id);
+  if (!entry || entry.status !== "started") fail(`${id} 没有 started 的乐观修复记录`);
+  const candidate = stringFlag(flags, "candidate-commit", { required: true });
+  if (!/^[0-9a-f]{40}$/i.test(candidate) || !commitExists(entry.worktree, candidate)) fail("candidate-commit 必须是 worktree 中存在的完整 commit SHA");
+  if (gitOutput(entry.worktree, ["rev-parse", "HEAD"]) !== candidate) fail("candidate-commit 必须是候选 worktree 当前 HEAD");
+  try { execFileSync("git", ["merge-base", "--is-ancestor", entry.base_commit, candidate], { cwd: project, stdio: "ignore" }); }
+  catch { fail("candidate commit 必须基于 base_commit"); }
+  const testStatus = stringFlag(flags, "test-status", { required: true });
+  const qualityStatus = stringFlag(flags, "quality-status", { required: true });
+  if (testStatus !== "pass" || qualityStatus !== "pass") fail("乐观候选必须同时通过测试和代码质量检查");
+  const testLog = stringFlag(flags, "test-log", { required: true });
+  const qualityLog = stringFlag(flags, "quality-log", { required: true });
+  const optimisticEvidenceDir = path.join(project, EVIDENCE, "optimistic", id);
+  ensureDir(optimisticEvidenceDir);
+  const candidateTree = gitOutput(entry.worktree, ["rev-parse", `${candidate}^{tree}`]);
+  const copiedLogs = [];
+  for (const [name, log] of [["test.log", testLog], ["quality.log", qualityLog]]) {
+    const absolute = path.resolve(entry.worktree, log);
+    if (!fs.existsSync(absolute)) fail(`候选日志不存在：${log}`);
+    const content = fs.readFileSync(absolute, "utf8").replace(/\r/g, "");
+    const expectedMarker = name === "test.log" ? `TREE_HASH=${candidateTree}` : `QUALITY_TREE_HASH=${candidateTree}`;
+    if (!content.split("\n").includes("EXIT_CODE=0") || !content.split("\n").includes(expectedMarker)) {
+      fail(`候选日志必须记录 EXIT_CODE=0 和 ${expectedMarker}：${log}`);
+    }
+    if (name === "quality.log" && !content.split("\n").includes(`QUALITY_COMMAND=${policy.qualityCommand}`)) {
+      fail("候选质量日志 QUALITY_COMMAND 必须与 baseline 一致");
+    }
+    const expectedTestCommand = policy.tieringMode === "progressive" && policy.optimisticEligibleSeverities.includes(findingById(data, id).severity)
+      ? policy.fastCommand
+      : policy.fullCommand;
+    if (name === "test.log" && !content.split("\n").includes(`COMMAND=${expectedTestCommand}`)) {
+      fail("候选测试日志 COMMAND 必须匹配 baseline 对应的 fast/full 命令");
+    }
+    const destination = path.join(optimisticEvidenceDir, name);
+    fs.copyFileSync(absolute, destination);
+    copiedLogs.push(path.relative(project, destination).replace(/\\/g, "/"));
+  }
+  const changed = gitNameOnlyPaths(project, ["show", "--name-only", "--pretty=format:", "-z", candidate]);
+  if (!changed.length || changed.some((file) => file.startsWith(`${EVIDENCE}/`) || file.startsWith("tests/review/"))) fail("候选 commit 包含禁止文件或没有改动");
+  entry.candidate_commit = candidate;
+  entry.candidate_tree = candidateTree;
+  entry.touched_files = changed;
+  entry.test_status = testStatus;
+  entry.quality_status = qualityStatus;
+  [entry.test_log, entry.quality_log] = copiedLogs;
+  entry.status = "candidate_green";
+  entry.updated_at = now();
+  persist(project, config, state, data);
+  console.log(`recorded optimistic candidate for ${id}: ${candidate}`);
+}
+
+function commandOptimisticPromote(flags) {
+  const project = projectRoot(flags);
+  const { config, state, data } = loadAll(project);
+  const id = String(stringFlag(flags, "id", { required: true })).toUpperCase();
+  const entry = optimisticEntry(state, id);
+  if (!entry || entry.status !== "candidate_green") fail(`${id} 没有可提升的 candidate_green 候选`);
+  if (state.current_phase !== "repair" || state.active_finding !== id) fail("只能在该 finding 进入 repair 且为 active_finding 时提升");
+  if (gitOutput(project, ["rev-parse", "HEAD"]) !== entry.base_commit) { entry.status = "stale"; entry.updated_at = now(); persist(project, config, state, data); fail("主分支已偏离 candidate base_commit，候选已标记 stale"); }
+  if (!optimisticMainClean(project)) { entry.status = "conflict"; entry.updated_at = now(); persist(project, config, state, data); fail("主工作树包含源代码用户改动，候选已标记 conflict"); }
+  const patch = execFileSync("git", ["diff", "--binary", `${entry.base_commit}..${entry.candidate_commit}`], { cwd: project });
+  if (!patch.length) fail("候选 commit 没有可应用的差异");
+  const apply = require("node:child_process").spawnSync("git", ["apply", "--index", "--3way"], { cwd: project, input: patch, encoding: "utf8" });
+  if (apply.status !== 0) { entry.status = "conflict"; entry.updated_at = now(); persist(project, config, state, data); fail(`候选补丁应用失败：${apply.stderr || "冲突"}`); }
+  entry.status = "promote_pending_commit";
+  entry.promoted_at = now();
+  entry.updated_at = now();
+  persist(project, config, state, data);
+  console.log(`promoted optimistic candidate for ${id}; run guard-commit and create the formal commit`);
+}
+
+function commandOptimisticDiscard(flags) {
+  const project = projectRoot(flags);
+  const { config, state, data } = loadAll(project);
+  const id = String(stringFlag(flags, "id", { required: true })).toUpperCase();
+  const entry = optimisticEntry(state, id);
+  if (!entry) fail(`${id} 没有乐观修复记录`);
+  if (entry.worktree && fs.existsSync(entry.worktree)) {
+    if (!gitStatusClean(entry.worktree)) fail("候选 worktree 有未提交改动，不能自动删除");
+    execFileSync("git", ["worktree", "remove", entry.worktree], { cwd: project, stdio: "inherit" });
+  }
+  entry.status = "discarded";
+  entry.updated_at = now();
+  persist(project, config, state, data);
+  console.log(`discarded optimistic repair for ${id}`);
+}
+
 function commandRecordImplementation(flags) {
   const project = projectRoot(flags);
   const { config, state, data } = loadAll(project);
@@ -1015,6 +1206,14 @@ function commandRecordImplementation(flags) {
   finding.manual = manual;
   finding.test_files = tests.map((file) => String(file).replace(/\\/g, "/"));
   finding.commit = status === "fixed" || (status === "already_fixed" && commit !== "none") ? commit : "none";
+  const optimistic = optimisticEntry(state, id);
+  if (optimistic && optimistic.status === "promote_pending_commit" && status === "fixed") {
+    optimistic.status = "promoted";
+    optimistic.formal_commit = commit;
+    optimistic.updated_at = now();
+  } else if (optimistic && optimistic.status === "promote_pending_commit" && status !== "fixed") {
+    fail(`${id}: optimistic candidate 已提升到暂存区；必须作为 fixed 正式提交，或先人工还原暂存差异并记录阻塞`);
+  }
   if (["blocked", "cannot_fix"].includes(status)) {
     finding.unresolved = true;
     finding.unresolved_reason = reason;
@@ -1818,6 +2017,7 @@ function commandNormalize(flags) {
   state.current_round = Math.min(Math.max(state.current_round, lastRound, 1), config.max_rounds);
   state.can_trigger_new_round = state.rounds_consumed < config.max_rounds;
   if (!Array.isArray(state.repair_baseline_staged)) state.repair_baseline_staged = [];
+  if (!Array.isArray(state.optimistic_repairs)) state.optimistic_repairs = [];
   if (!state.final_audit || !Array.isArray(state.final_audit.attempts)) {
     state.final_audit = { attempts: [], reentry_pending: false, preflight_batches: [] };
   }
@@ -1841,6 +2041,10 @@ function usage() {
   record-finding --id R1-F001-SEC --role SEC --original-id SEC-001 --severity P1 --decision accepted --reproduced true --reproduction-status reproduced --evidence-dir ... [--challenge-required true --challenge-result supports] [--reproduced-by agent|main-agent]
   record-finding --id R1-F001-PERF ... --deferred-review-action include|continue|reject --deferred-review-reason TEXT  # 复核更早轮次的 deferred
   record-implementation --id ID --status fixed --commit SHA --test PATH
+  optimistic-start --id ID --worktree PATH --risk-assessment normal
+  optimistic-record --id ID --candidate-commit SHA --test-status pass --quality-status pass --test-log PATH --quality-log PATH
+  optimistic-promote --id ID
+  optimistic-discard --id ID
   record-verification --id ID --status pass [--adjacent-test PATH ...] [--verified-by agent|main-agent]
   record-adjacent-batch --status pass|fail|inconclusive --command CMD --exit-status N --tree-hash HASH --tested-commit SHA --log PATH --test-count N --failed-count N [--failed-finding ID ...]
   record-round-regression --status pass|fail --evidence .review-evidence/round-N/full-suite.json
@@ -1891,6 +2095,10 @@ async function main() {
     "promote-adjacent-test": commandPromoteAdjacentTest,
     "record-finding": commandRecordFinding,
     "record-implementation": commandRecordImplementation,
+    "optimistic-start": commandOptimisticStart,
+    "optimistic-record": commandOptimisticRecord,
+    "optimistic-promote": commandOptimisticPromote,
+    "optimistic-discard": commandOptimisticDiscard,
     "record-verification": commandRecordVerification,
     "next-finding": commandNextFinding,
     "mark-unresolved": commandMarkUnresolved,

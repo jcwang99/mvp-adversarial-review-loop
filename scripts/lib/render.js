@@ -39,6 +39,7 @@ function renderRunState(state, config, data) {
     `- current_head: ${state.current_head}`,
     `- last_completed_event: ${state.last_completed_event}`,
     `- active_finding: ${state.active_finding || "none"}`,
+    `- optimistic_repairs: ${(state.optimistic_repairs || []).filter((entry) => !["discarded"].includes(entry.status)).map((entry) => `${entry.finding_id}:${entry.status}`).join(", ") || "none"}`,
     `- next_action: ${state.next_action}`,
     `- blockers: ${state.blockers.length ? state.blockers.join("; ") : "none"}`,
     `- updated_at: ${state.updated_at}`,

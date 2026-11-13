@@ -32,6 +32,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 4. **先证明再修复**：每个 accepted finding 必须先确认 RED，再按 `references/tdd-and-commit.md` 完成 RED-GREEN-REFACTOR、回归和隔离提交。默认模式的 GREEN full 提交前必须通过；`progressive` 模式只允许普通风险 P2/P3 先通过快速套件提交，full 在轮末统一验收。
 5. **失败、未知、阻塞分开**：环境不可用或证据不足不能标 rejected 或 verified；未完成核验保持未完成并记录阻塞。
 6. **默认串行**：一次一个子代理；评审角色串行，复现/挑战/补强/验证/实现按批次串行。只有用户明确授权且有独立 worktree 隔离时才并行；未经授权不得并发评审或进行真实外部写入。
+   bounded 乐观修复是唯一旁路：baseline 的 `Optimistic repair policy: bounded` 显式开启后，只允许普通风险 P2/P3 accepted finding 在独立 worktree 中提前实现；默认最多 1 个活动 worktree。候选只能记录预检结果，不能直接改变 finding 状态或自动合并。
 7. **不覆盖用户改动**：修复提交只含当前 finding 的代码和正式测试；`.review-evidence/` 不进修复提交；禁止强制 checkout、reset、clean。
 8. **真实报告**：没有完成要求的验证时报告 INCOMPLETE；不把测试绿灯或“未发现问题”当成收敛证据。
 9. **授权留痕**：需要用户授权时使用当前 harness 的用户提问工具（Claude Code 的 AskUserQuestion、OpenCode 的 `question` 等；没有专用工具时直接在对话中提问并等待明确回答）；决策用 `reviewctl authorize --action ... --decision authorized|declined` 写入状态和 `blockers`，最终报告披露。
@@ -42,6 +43,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 14. **测试范围分级**：baseline full 必须为绿，否则停止并报告 blocked。`default` 保持每个修复提交前 GREEN full；`full-everywhere` 还要求验证代理运行 full；`progressive` 仅允许普通风险 P2/P3 先通过快速套件提交，并在每轮末尾对当前 HEAD 运行 full gate，通过后才能开新轮或终审。P0/P1 和实现代理判为高风险的 finding 在提交前仍跑 full；验证代理遇到 P0/P1 或高风险仍独立跑 full。最终审计始终运行 full。常规 full 命令排除 `tests/review/verifications/`。baseline 的 Adjacent test command 必须包含且仅包含 `{test_paths}`；每轮末尾只运行本轮登记路径，启动每次最终审计前再运行所有轮次的剩余相邻测试。快速/impacted 结果不得替代轮末 full 或终审 full。
 15. **长时测试与加速变体**：所有 tier 的 baseline 都登记稳定的长测 ID 清单和原始 full 尺度；有长测时 baseline 与之后每次 full 的日志及结构化证据都须记录同一用例清单和原始尺度。长测不要求在每个普通 finding 的高频闭环中重复运行；`progressive` fast 可缩小数据、加速时间、使用虚拟时钟或 tmpfs，但须记录保留的契约、未覆盖语义及 full 兜底。虚拟时钟适合定时逻辑；真实时间加速不能证明没有调度竞争；tmpfs 不能证明真实磁盘持久性或介质故障行为。fast 不能改写生产默认值、删除关键断言或冒充 full。full 保留原始时间尺度和关键资源条件；涉及调度/超时、重试、资源泄漏、长期状态漂移或稳定性契约的 finding，须由规定的 full 门禁覆盖，不能仅凭 fast 标记为已验证。
 16. **代码质量门禁**：baseline 必须声明项目适用的 formatter、linter、type checker 或等价工具，并记录一次通过结果。Rust 项目默认使用 `cargo fmt --all -- --check` 和 `cargo clippy --workspace --all-targets --all-features -- -D warnings`（按项目实际 feature/target 范围调整）；JavaScript/TypeScript、Python、Go 等语言使用仓库已有的格式化、lint 和类型检查命令。每个 repair finding 在提交前都必须在修复 tree 上运行 baseline 声明的 `Code quality command`，并在 `quality_checks` 证据中记录命令、tree hash、工作区状态和日志；质量检查失败不得提交。没有适用工具时必须写 `not_applicable: 原因`，不能留空或以未运行冒充通过。
+17. **有限乐观修复**：候选 worktree 必须从没有源代码用户改动的当前 HEAD 创建，记录 `base_commit`、候选 commit、tree、修改文件、测试日志和质量日志。主 HEAD 变化、主工作树含源代码用户改动、候选包含 `.review-evidence/` 或 `tests/review/` 时不得提升；提升只应用补丁到暂存区，之后仍必须运行 `guard-commit`、正式质量门禁、正式测试并由独立验证代理验证正式 commit。候选失败、过期或冲突必须丢弃或标记，不得强制 rebase、reset 或覆盖用户改动。
 
 ## 2. 阶段状态机
 

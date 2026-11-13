@@ -249,6 +249,27 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 
 ## 3. repair
 
+### 3.0 乐观修复（可选旁路）
+
+仅当 baseline 的 `Optimistic repair policy` 为 `bounded` 时启用。主代理可在当前 finding 验证期间，为后续已 accepted、已确认 RED、普通风险 P2/P3 finding 创建独立 worktree：
+
+```text
+reviewctl optimistic-start --id ID --worktree <仓库外路径> --risk-assessment normal
+reviewctl optimistic-record --id ID --candidate-commit SHA --test-status pass --quality-status pass --test-log PATH --quality-log PATH
+```
+
+候选测试日志必须包含对应的 `COMMAND=<baseline fast/full command>`、`TREE_HASH=<candidate tree>` 和 `EXIT_CODE=0`；质量日志必须包含 `QUALITY_COMMAND=<baseline Code quality command>`、`QUALITY_TREE_HASH=<candidate tree>` 和 `EXIT_CODE=0`。命令会把日志复制到 `.review-evidence/optimistic/`，以便 worktree 清理后仍可审计。
+
+候选 worktree 只能从干净主 HEAD 创建，默认最多一个活动候选；不得修改主状态或 `.review-evidence/`。候选记录的是预检证据，不是正式实现。
+
+当该 finding 正式进入 `repair` 后，且主 HEAD 仍等于候选 `base_commit`、主工作树干净，才可运行：
+
+```text
+reviewctl optimistic-promote --id ID
+```
+
+该命令只把候选补丁应用到暂存区并标记 `promote_pending_commit`。随后仍须运行 `guard-commit`、正式 GREEN/质量门禁、创建正式 commit，并委派独立验证代理。HEAD 变化、用户改动或补丁冲突会标记 stale/conflict；不能强制 rebase、reset 或覆盖改动。完成或放弃后运行 `optimistic-discard --id ID` 清理 worktree。
+
 **必须委派实现代理**，一次一个 accepted finding，按 `tdd-and-commit.md` 执行 RED-GREEN-REFACTOR 并提交。委派时替换提示模板中的 `[skill-dir]`，并要求复用 baseline 的编译缓存。
 
 - 实现代理只处理当前 finding；RED 必须先确认，测试必须合并到项目正式测试文件。确实无法自动化时使用 `--manual`，并在 `implementation-result.md` / `verification-result.md` 记录人工复测。

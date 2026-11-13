@@ -6,6 +6,12 @@
 
 **主代理一次只启动一个实现代理，处理一个 finding 的完整 RED-GREEN-REFACTOR 循环并提交。** 默认串行执行（原因：减少上下文管理复杂度、避免 git 工作区冲突、降低 token 消耗），除非用户明确授权并行且有独立的 git worktree 隔离机制。实现代理完成提交后，主代理再启动下一个实现代理处理下一个 finding。
 
+### 有限乐观修复旁路
+
+当 baseline 声明 `Optimistic repair policy: bounded` 时，主代理可以为已 accepted、已确认 RED 且 severity 为 P2/P3 的后续 finding 提前创建独立 worktree。使用 `reviewctl optimistic-start`、`optimistic-record`、`optimistic-promote` 和 `optimistic-discard` 管理生命周期；默认最多一个活动 worktree。候选 worktree 必须从没有源代码用户改动的 HEAD 创建（允许已有评审临时文件），并指定 `risk-assessment=normal`；不能写入主状态或正式证据。
+
+候选通过测试和代码质量检查只代表预检成功。只有在主 HEAD 仍等于 `base_commit`、主工作树干净且补丁无冲突时才能提升；提升后仍按本文件执行正式 RED/GREEN 证据、`guard-commit`、正式提交和独立验证。候选 commit 不得直接作为 finding 的正式 `commit`，也不得替代验证代理对正式 commit 的测试。主 HEAD 变化、用户改动、候选包含禁止路径或 worktree 有未提交改动时，标记 stale/conflict 或 discard，不得强制合并。
+
 ## 实现代理任务模板
 
 ```text

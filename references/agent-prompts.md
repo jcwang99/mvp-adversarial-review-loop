@@ -452,6 +452,8 @@ blockers: []
 
 ### 关键要求
 
+如果主代理提供的是乐观修复 worktree：只在该 worktree 内修改和测试；不要读取或修改主工作树的 `.review-evidence/`，不要把候选 commit 当成正式 finding commit。返回候选 commit、修改文件、测试日志和代码质量日志，候选结果只供主代理在正式 repair 入口提升后再次走 guard-commit 和独立验证。
+
 1. **RED 阶段**：
    - 读取 `tests/review/reproductions/r{round}_f{num}_{slug}{suffix}`（主代理已移动到此）
    - 将其测试用例复制到项目正式测试文件（如 `tests/auth.test.js`）

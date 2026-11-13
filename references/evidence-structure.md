@@ -251,6 +251,7 @@ required-features = ["adversarial-review"]
 | `active_finding` | 当前修复/验证的 finding ID 或 null |
 | `repair_baseline_staged` | 进入 repair 时已暂存的文件，用于 guard-commit 识别用户改动 |
 | `repair_baseline_index` | 同次 repair 入口的 HEAD 和逐文件暂存 diff；用于判定分块后是否仍夹带用户改动 |
+| `optimistic_repairs` | 有限乐观修复候选记录；包含 base/candidate commit、tree、worktree、修改文件、预检日志和状态；候选不能替代正式 finding commit 或验证 |
 | `next_action` | 下一步动作 |
 | `blockers` / `authorizations` | 阻塞和用户授权记录 |
 | `rounds` | 每轮计数和角色 |
@@ -329,6 +330,9 @@ node <skill-dir>/scripts/reviewctl.js render
 - Code quality policy: [每个 repair 提交前必须运行；记录适用范围和例外]
 - Baseline code quality result: [pass | not_applicable]
 - Baseline code quality log: [日志路径；not_applicable 时可填 not_applicable]
+- Optimistic repair policy: [off | bounded；默认 off]
+- Optimistic max active worktrees: [1 或 2]
+- Optimistic eligible severities: [P2,P3；只能是普通风险范围]
 - Full test command: [项目/workspace 全量；Rust 包含 doctest]
 - High-risk paths: [构建/依赖清单、公共 API、认证、数据迁移、并发、feature flag 等]
 - Verification default: [impacted；P0/P1/高风险/full-everywhere 重新运行 full]

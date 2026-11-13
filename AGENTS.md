@@ -17,6 +17,7 @@
 - `rounds_consumed` / `can_trigger_new_round`：已完成轮数 / 是否还能开新常规轮
 - `final_audit_attempt`：最终审计尝试次数（最多 3）
 - `active_finding`：当前正在修复/验证的 finding
+- `optimistic_repairs`：有限乐观修复候选；候选只能预检，不能替代正式提交和验证
 - `next_action`：下一步动作及需要委派的子代理类型
 
 校验命令：
