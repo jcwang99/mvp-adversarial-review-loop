@@ -52,8 +52,9 @@ function project(t) {
     assert.ifError(run.error);
     const log = `.review-evidence/batch-${++logNumber}.log`;
     write(log, `COMMAND=${selected.command}\n${run.stdout}${run.stderr}\nEXIT_CODE=${run.status}\n`);
-    const count = run.stdout.match(/^# tests (\d+)$/m);
-    const failed = run.stdout.match(/^# fail (\d+)$/m);
+    // Node >= 23 defaults to the spec reporter; accept TAP and spec counts alike.
+    const count = run.stdout.match(/^(?:# tests|ℹ tests) (\d+)$/m);
+    const failed = run.stdout.match(/^(?:# fail|ℹ fail) (\d+)$/m);
     assert.ok(count && failed, `test runner did not report actual test counts: ${run.stdout}${run.stderr}`);
     return { ...selected, log, exit: run.status, testCount: Number(count[1]), failedCount: Number(failed[1]) };
   };
