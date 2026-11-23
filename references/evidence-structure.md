@@ -159,9 +159,17 @@ required-features = ["adversarial-review"]
 
 ## 实跑日志
 
-基线、RED/GREEN、验证的 focused/impacted/fast/full、轮末 full、相邻批测（含全历史聚合）和终审实跑均按同一规则留证。每条实跑命令使用独立的 UTF-8 日志，独占一行写 `COMMAND=<实际执行的完整命令>`，保存原始输出，最后独占一行写 `EXIT_CODE=<实际进程退出码>`。两个标记各出现一次，保留失败时的非零值。基线及后续质量检查使用独立质量日志，命令行标记改用 `QUALITY_COMMAND=<实际质量命令>`，退出码规则相同。
+从分配的项目或 worktree 运行，每条命令使用独立的新日志。基线、复现、修复、验证、相邻批测和终审均用同一入口，示例如下。
 
-命令与对应门禁声明一致，相邻批测使用 `adjacent-plan` 展开后的精确命令。在输出重定向、管道或后续写日志操作改变退出状态前，取得被测进程的退出码。报告引用对应路径，重跑保留前次日志。无法启动命令时写明阻塞原因，只有实际启动的进程才有退出码。长测的 runtime 标记、乐观候选的 tree 标记按对应门禁另行记录。
+~~~text
+reviewctl run-logged --log ".review-evidence/baseline-full.log" --command "npm test"
+~~~
+
+将实际项目命令作为一个完整参数传给 `--command`，使用门禁声明的原命令（相邻批测取 `adjacent-plan` 的展开值）。项目命令须在前台完成测试，输出 UTF-8 并传递失败状态。Windows 默认使用 cmd，POSIX 默认使用 `/bin/sh`。若原命令依赖特定 shell 的语法，用 `--shell pwsh` 或 `--shell bash` 指定解释器，保持 `--command` 原文。从其他目录调用时用 `--project DIR` 指定测试工作目录。质量检查加 `--quality`，乐观候选加 `--candidate` 以记录该 worktree 的 HEAD tree。长测 runtime 标记由实际测试环境输出。
+
+运行器先独占创建日志，写入 `COMMAND=`（质量检查为 `QUALITY_COMMAND=`），从启动起将 stdout 和 stderr 直接写入文件。取得退出码后在末行写 `EXIT_CODE=` 并返回相同状态。报告引用这次日志。命令和退出码标记各占一行、各出现一次。
+
+终端只显示日志路径和退出状态。会话仍在运行时续等原会话。完成后按需在日志中搜索 reporter 的汇总、失败用例及上下文，或读取同次运行生成的 JUnit 等报告。缺少计数时记录证据缺口，避免从退出码猜测。若日志缺少结束标记，先确认原进程和报告状态。终端显示不全时直接读文件。确需重跑时保留旧日志并分配新路径，门禁要求固定文件名时先归档旧文件。
 
 **测试文件命名**：
 - **角色 token**（用于文件名）与 **role-slug**（用于目录）是两个不同概念：

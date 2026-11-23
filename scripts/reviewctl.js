@@ -1997,6 +1997,54 @@ function commandCoverage(flags) {
   );
 }
 
+function commandRunLogged(flags, positionals) {
+  const options = ["project", "command", "log", "quality", "candidate", "shell"];
+  if (positionals.length || Object.keys(flags).some(key => !options.includes(key))) {
+    fail("run-logged 收到多余参数，请把完整项目命令作为一个参数传给 --command");
+  }
+  const project = projectRoot(flags);
+  const command = stringFlag(flags, "command", { required: true });
+  if (/[\r\n\0]/.test(command)) fail("--command 必须是单行完整命令");
+  const log = path.resolve(project, stringFlag(flags, "log", { required: true }));
+  const shell = stringFlag(flags, "shell", { required: flags.shell !== undefined });
+  if (!fs.statSync(project).isDirectory()) fail("工作目录不存在：" + project);
+  const prefix = boolFlag(flags.quality, "quality") ? "QUALITY_" : "";
+  const candidate = boolFlag(flags.candidate, "candidate");
+  const tree = candidate ? gitOutput(project, ["rev-parse", "HEAD^{tree}"]) : null;
+  ensureDir(path.dirname(log));
+  let fd;
+  try {
+    fd = fs.openSync(log, "wx", 0o600);
+  } catch (error) {
+    if (error.code === "EEXIST") fail("日志已存在，请读取原日志。确需另跑时使用新路径：" + log);
+    throw error;
+  }
+  try {
+    fs.writeSync(fd, prefix + "COMMAND=" + command + "\n");
+    if (tree) fs.writeSync(fd, prefix + "TREE_HASH=" + tree + "\n");
+    console.log("LOG=" + log);
+    const spawnOptions = { cwd: project, stdio: ["inherit", fd, fd] };
+    let result;
+    if (shell && /^(?:powershell|pwsh)(?:\.exe)?$/i.test(path.basename(shell))) {
+      // -Command otherwise maps a native program's nonzero exit code to 1.
+      const script = command + "\nif ($?) { exit 0 }; if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1";
+      result = spawnSync(shell, ["-NonInteractive", "-Command", script], spawnOptions);
+    } else {
+      result = spawnSync(command, { ...spawnOptions, shell: shell || true });
+    }
+    if (result.error || result.status === null) {
+      const reason = result.error?.message || "signal " + result.signal;
+      fs.writeSync(fd, "\nRUN_ERROR=" + reason + "\n");
+      fail("运行中断，查看日志：" + log + " (" + reason + ")");
+    }
+    fs.writeSync(fd, "\nEXIT_CODE=" + result.status + "\n");
+    console.log("EXIT_CODE=" + result.status + " LOG=" + log);
+    process.exitCode = result.status;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function commandGuardCommit(flags) {
   const project = projectRoot(flags);
   const { state, data } = loadAll(project);
@@ -2057,6 +2105,7 @@ function usage() {
   init --interactive [--role-model ROLE=MODEL ...] [--project DIR]
   model-for --role ROLE  (${MODEL_ROLES.join(", ")})
   status [--json]
+  run-logged --log PATH --command CMD [--shell SHELL] [--quality] [--candidate] [--project DIR]
   new-inbox --round N --role SEC --temp-id SEC-001
   record-round --round N --raw N --duplicates N --screened N --new-p0p1p2 N
   record-finding --id R1-F001-SEC --role SEC --original-id SEC-001 --severity P1 --decision accepted --reproduced true --reproduction-status reproduced --evidence-dir ... [--challenge-required true --challenge-result supports] [--reproduced-by agent|main-agent]
@@ -2100,7 +2149,7 @@ record-verification 额外支持 --adjacent-reason TEXT、--unresolved-reason TE
 
 async function main() {
   const command = process.argv[2];
-  const { flags } = parseArgs(process.argv.slice(3));
+  const { flags, positionals } = parseArgs(process.argv.slice(3));
   if (!command || command === "help" || command === "--help") {
     usage();
     return;
@@ -2109,6 +2158,7 @@ async function main() {
     init: commandInit,
     "model-for": commandModelFor,
     status: commandStatus,
+    "run-logged": commandRunLogged,
     "new-inbox": commandNewInbox,
     "record-round": commandRecordRound,
     "record-adjacent-batch": commandRecordAdjacentBatch,
@@ -2137,7 +2187,7 @@ async function main() {
   };
   const handler = commands[command];
   if (!handler) fail(`未知命令：${command}`);
-  await handler(flags);
+  await handler(flags, positionals);
 }
 
 main().catch((error) => {

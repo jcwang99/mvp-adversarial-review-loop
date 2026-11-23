@@ -4,7 +4,9 @@
 
 主代理按 `SKILL.md` §0 解析角色模型，并把以下内容与对应模板一起发送。每个会话给出被评审项目根目录或分配的 worktree、轮次/attempt、允许读写的路径、报告与日志目的地。填入可直接运行的 `node "[skill-dir]/scripts/reviewctl.js"` 绝对路径，状态登记由主代理执行。
 
-附上适用于任务的 baseline 命令、缓存环境及磁盘预算。实现和验证还需要 severity、高风险路径、focused/impacted/fast/full 与质量命令、基线结果、长测 ID 和原始尺度。实跑按 `evidence-structure.md` 的“实跑日志”记录。使用项目依赖和隔离数据，命令若会改写持久数据或触发未授权外部操作，记录阻塞。仅回传结论、证据路径和缺口。盲扫只摘录允许的输入和通用规则，主代理保存会话身份，不给审计会话读取历史证据的入口。
+向每个需要运行测试的会话发送填好路径和项目命令的 `reviewctl run-logged --log "日志路径" --command "项目命令"`。质量检查加 `--quality`。这条规则也适用于探索性试跑和初次复现。遇到截断先读分配的日志或同次运行的报告，交接时附退出码、计数和日志路径。
+
+附上适用于任务的 baseline 命令、缓存环境及磁盘预算。实现和验证还需要 severity、高风险路径、focused/impacted/fast/full 与质量命令、基线结果、长测 ID 和原始尺度。使用项目依赖和隔离数据，命令若会改写持久数据或触发未授权外部操作，记录阻塞。仅回传结论、证据路径和缺口。盲扫只摘录允许的输入和通用规则，主代理保存会话身份，不给审计会话读取历史证据的入口。
 
 ## 目录
 
@@ -45,16 +47,7 @@
 - handoff.json：把下方 YAML 的等价 JSON 写入同一 inbox；这是 `reviewctl validate` 读取的结构化交接
 - 主代理会用 `reviewctl new-inbox` 预先创建目录；不要自行创建其他路径
 
-**运行 reproduction**：
-- 测试文件就是普通项目测试，调用项目代码和测试工具
-- 示例：
-  ```bash
-  # 显式运行单个临时测试
-  ADVERSARIAL_REVIEW=true npm test tests/review/candidates/r1_sec_001.test.js
-  
-  # 或使用项目的测试命令
-  pnpm vitest run tests/review/candidates/r1_sec_001.test.js
-  ```
+**运行 reproduction**。从分配的 worktree 使用通用交接里的 `run-logged` 命令，在 `--command` 内指定单个临时测试，例如 `pnpm vitest run tests/review/candidates/r1_sec_001.test.js`，日志写入本候选的 `output.log`。
 
 **隔离数据文件**（仅在需要避免冲突时）：
 - 测试数据库、fixture、临时输出可放在：`.review-evidence/round-[N]/_testdata/[role-slug]/`

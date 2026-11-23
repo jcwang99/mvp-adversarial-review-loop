@@ -7,7 +7,7 @@ const { spawnSync } = require("node:child_process");
 for (const args of [
   ["test-reviewctl.js"],
   ["test-optimistic.js"],
-  ["--test", "test-authorization.js", "test-staged-guard.js", "test-adjacent-batches.js"],
+  ["--test", "test-authorization.js", "test-staged-guard.js", "test-adjacent-batches.js", "test-run-logged.js"],
 ]) {
   const env = { ...process.env };
   delete env.REVIEWCTL_TEST_FILTER;
