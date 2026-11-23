@@ -1516,7 +1516,7 @@ test("two unchanged progressive rounds reach a report with two real full-suite i
   const tree = testPolicy.gitTree(project, head);
   const runFull = (log) => {
     const output = execFileSync(process.execPath, ["--test"], { cwd: project, encoding: "utf8" });
-    assert.match(output, /^# pass 1$/m);
+    assert.match(output, /^(?:# pass|ℹ pass) 1$/m);
     write(project, log, "COMMAND=node --test\n" + output + "\nEXIT_CODE=0\n");
     return { full_suite: { command: "node --test", status: "pass", exit_status: 0, tested_commit: head,
       tree_hash_before: tree, tree_hash_after: tree, run_location: "main-workspace", workspace_clean_before: true,

@@ -15,5 +15,8 @@ for (const args of [
     cwd: path.resolve(__dirname), env, stdio: "inherit",
   });
   if (result.error) console.error(result.error.message);
-  if (result.status !== 0) process.exit(result.status || 1);
+  if (result.status !== 0) {
+    console.error(`Failed: node ${args.join(" ")} (${result.signal || result.status || "could not start"})`);
+    process.exitCode ||= result.status || 1;
+  }
 }
