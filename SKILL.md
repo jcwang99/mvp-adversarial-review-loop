@@ -39,7 +39,7 @@ description: 当用户要求对已完成的 MVP 进行评审、查找并修复�
 轮末复用条件见 `references/phase-playbooks.md` §5.2。风险不明按高风险处理。每个修复仍须先证明 RED，提交前通过适用的代码质量门禁。`already_fixed` 的例外和高风险路径见 `references/tdd-and-commit.md`。相邻测试由主代理按轮及终审 attempt 单独批测。
 
 - 每次运行按 `references/evidence-structure.md` 的“实跑日志”留证。主代理核对原始输出、commit/tree、计数和风险判断，再用 `reviewctl` 登记。
-- 默认串行。并行需用户明确授权并隔离 worktree。baseline 显式开启的 bounded 乐观修复仅生成预检候选，提升后仍须正式提交和独立验证，见阶段手册 §3.0。
+- 默认串行。并行需用户明确授权并隔离 worktree。baseline 开启 `bounded` 后，可在各自分支并行实现和预检，再按 finding 依次集成、提交和独立验证。候选提升条件见阶段手册 §3.0。
 - 保留用户改动和暂存内容。一个 finding 一个隔离提交。环境或证据阻塞时记录实际状态，所需授权经用户明确决定后用 `reviewctl authorize` 留痕。
 
 ## 2. 阶段状态机

@@ -221,7 +221,7 @@ required-features = ["adversarial-review"]
 | `final_audit_attempt` | 0..3 |
 | `active_finding` | 当前修复/验证的 finding ID 或 null |
 | `repair_baseline_index` | 同次 repair 入口的 HEAD 和逐文件暂存 diff；用于判定分块后是否仍夹带用户改动 |
-| `optimistic_repairs` | 有限乐观修复候选记录；包含 base/candidate commit、tree、worktree、修改文件、预检日志和状态；候选不能替代正式 finding commit 或验证 |
+| `optimistic_repairs` | 有限乐观修复候选记录；包含 base/candidate commit、tree、worktree、修改文件、预检日志、实际提升时的 `promotion_head` 和状态；候选不能替代正式 finding commit 或验证 |
 | `next_action` | 当前阶段的提示，结合活动 finding 的当次结果定位断点 |
 | `blockers` / `authorizations` | 阻塞和用户授权记录 |
 | `rounds` | 每轮计数和角色 |

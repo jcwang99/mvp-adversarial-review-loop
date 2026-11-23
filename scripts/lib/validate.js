@@ -82,9 +82,9 @@ function readHeadFile(project, file) {
   });
 }
 
-function gitCommitIsAncestor(project, commit) {
+function gitCommitIsAncestor(project, commit, descendant = "HEAD") {
   try {
-    execFileSync("git", ["merge-base", "--is-ancestor", commit, "HEAD"], {
+    execFileSync("git", ["merge-base", "--is-ancestor", commit, descendant], {
       cwd: project,
       stdio: "ignore",
     });

@@ -3,7 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline/promises");
-const { execFileSync } = require("node:child_process");
+const { execFileSync, spawnSync } = require("node:child_process");
 const testPolicy = require("./lib/test-policy");
 
 const {
@@ -953,6 +953,13 @@ function optimisticPolicy(project) {
   return parsed.policy;
 }
 
+function eligibleOptimisticFinding(data, id, policy) {
+  const finding = findingById(data, id);
+  if (!finding || finding.decision !== "accepted") fail(`${id} 必须是 accepted finding`);
+  if (!policy.optimisticEligibleSeverities.includes(finding.severity)) fail(`${id} 的 severity 不允许乐观修复`);
+  return finding;
+}
+
 function normalizeWorktreePath(project, value) {
   if (!value) fail("缺少 --worktree");
   const resolved = path.resolve(value);
@@ -974,9 +981,7 @@ function commandOptimisticStart(flags) {
   const { config, state, data } = loadAll(project);
   const policy = optimisticPolicy(project);
   const id = String(stringFlag(flags, "id", { required: true })).toUpperCase();
-  const finding = findingById(data, id);
-  if (!finding || finding.decision !== "accepted") fail(`${id} 必须是 accepted finding`);
-  if (!policy.optimisticEligibleSeverities.includes(finding.severity)) fail(`${id} 的 severity 不允许乐观修复`);
+  const finding = eligibleOptimisticFinding(data, id, policy);
   const risk = stringFlag(flags, "risk-assessment", { required: true });
   if (risk !== "normal") fail("乐观修复只允许 risk-assessment=normal");
   const findingMatch = id.match(FINDING_ID);
@@ -1004,6 +1009,7 @@ function commandOptimisticStart(flags) {
     finding_id: id,
     base_commit: baseCommit,
     base_tree: baseTree,
+    promotion_head: null,
     worktree,
     branch,
     candidate_commit: null,
@@ -1031,9 +1037,8 @@ function commandOptimisticRecord(flags) {
   const candidate = stringFlag(flags, "candidate-commit", { required: true });
   if (!/^[0-9a-f]{40}$/i.test(candidate) || !commitExists(entry.worktree, candidate)) fail("candidate-commit 必须是 worktree 中存在的完整 commit SHA");
   if (gitOutput(entry.worktree, ["rev-parse", "HEAD"]) !== candidate) fail("candidate-commit 必须是候选 worktree 当前 HEAD");
-  try { execFileSync("git", ["merge-base", "--is-ancestor", entry.base_commit, candidate], { cwd: project, stdio: "ignore" }); }
-  catch { fail("candidate commit 必须基于 base_commit"); }
-  const changed = gitNameOnlyPaths(project, ["diff", "--no-renames", "--name-only", "-z", entry.base_commit, candidate]);
+  if (!gitCommitIsAncestor(project, entry.base_commit, candidate)) fail("candidate commit 必须基于 base_commit");
+  const changed = gitNameOnlyPaths(project, ["diff", "--no-renames", "--name-only", "--ignore-submodules=none", "-z", entry.base_commit, candidate]);
   if (!changed.length || changed.some((file) => file.startsWith(`${EVIDENCE}/`) || file.startsWith("tests/review/"))) fail("候选补丁包含禁止文件或没有改动");
   const testStatus = stringFlag(flags, "test-status", { required: true });
   const qualityStatus = stringFlag(flags, "quality-status", { required: true });
@@ -1081,12 +1086,44 @@ function commandOptimisticPromote(flags) {
   const entry = optimisticEntry(state, id);
   if (!entry || entry.status !== "candidate_green") fail(`${id} 没有可提升的 candidate_green 候选`);
   if (state.current_phase !== "repair" || state.active_finding !== id) fail("只能在该 finding 进入 repair 且为 active_finding 时提升");
-  if (gitOutput(project, ["rev-parse", "HEAD"]) !== entry.base_commit) { entry.status = "stale"; entry.updated_at = now(); persist(project, config, state, data); fail("主分支已偏离 candidate base_commit，候选已标记 stale"); }
-  if (!optimisticMainClean(project)) { entry.status = "conflict"; entry.updated_at = now(); persist(project, config, state, data); fail("主工作树包含源代码用户改动，候选已标记 conflict"); }
-  const patch = execFileSync("git", ["diff", "--binary", "--no-ext-diff", "--no-textconv", entry.base_commit, entry.candidate_commit], { cwd: project });
+
+  eligibleOptimisticFinding(data, id, optimisticPolicy(project));
+
+  function rejectCandidate(status, reason) {
+    entry.status = status;
+    entry.updated_at = now();
+    persist(project, config, state, data);
+    fail(`${id}: ${reason}（${status}）`);
+  }
+
+  if (!optimisticMainClean(project)) fail("主工作树包含源代码用户改动；保留候选，待主工作树干净后重试");
+  const head = gitOutput(project, ["rev-parse", "HEAD"]);
+  if (head !== entry.base_commit) {
+    if (!gitCommitIsAncestor(project, entry.base_commit, head)) rejectCandidate("stale", "当前 HEAD 未继承候选基准");
+    const merge = spawnSync("git", ["merge-tree", "--write-tree", "--no-messages", head, entry.candidate_commit], {
+      cwd: project, encoding: "utf8",
+    });
+    if (merge.error) throw merge.error;
+    if (merge.status === 1) rejectCandidate("conflict", "候选与当前 HEAD 存在合并冲突");
+    if (merge.status !== 0) fail("无法预演候选合并：" + merge.stderr.trim());
+    // Compare paths, modes and complete blob IDs, including both sides of renames.
+    const delta = (from, to) => execFileSync("git", [
+      "diff", "--raw", "--no-abbrev", "--no-renames", "--ignore-submodules=none", "-z", from, to, "--",
+    ], { cwd: project });
+    if (!delta(entry.base_commit, entry.candidate_commit).equals(delta(head, merge.stdout.trim()))) {
+      rejectCandidate("stale", "集成后的改动与已预检的候选补丁不同");
+    }
+  }
+  const patch = execFileSync("git", [
+    "diff", "--binary", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=none",
+    "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", entry.base_commit, entry.candidate_commit, "--",
+  ], { cwd: project });
   if (!patch.length) fail("候选 commit 没有可应用的差异");
-  const apply = require("node:child_process").spawnSync("git", ["apply", "--index"], { cwd: project, input: patch, encoding: "utf8" });
-  if (apply.status !== 0) { entry.status = "conflict"; entry.updated_at = now(); persist(project, config, state, data); fail(`候选补丁应用失败：${apply.stderr || "冲突"}`); }
+  if (gitHead(project) !== head) fail("预演期间主 HEAD 发生变化；请在新 HEAD 重新检查反例后重试");
+  const apply = spawnSync("git", ["apply", "--index", "--whitespace=nowarn"], { cwd: project, input: patch, encoding: "utf8" });
+  if (apply.error) throw apply.error;
+  if (apply.status !== 0) rejectCandidate("conflict", "候选补丁应用失败：" + apply.stderr.trim());
+  entry.promotion_head = head;
   entry.status = "promote_pending_commit";
   entry.promoted_at = now();
   entry.updated_at = now();

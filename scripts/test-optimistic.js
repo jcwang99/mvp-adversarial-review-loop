@@ -27,7 +27,7 @@ const baseline = [
   "- Fast test command: node test.js", "- Fast test profile: none", "- Fast profile semantics: not_applicable",
   "- Long-running test policy: none", "- Long-running test inventory: none", "- Full runtime scale: not_applicable",
   "- Time/volume scaling evidence: not_applicable", "- Code quality command: node --check src.js",
-  "- Optimistic repair policy: bounded", "- Optimistic max active worktrees: 1", "- Optimistic eligible severities: P2,P3",
+  "- Optimistic repair policy: bounded", "- Optimistic max active worktrees: 2", "- Optimistic eligible severities: P2,P3",
   "- Code quality policy: run before each repair commit", "- Baseline code quality result: pass",
   "- Baseline code quality log: .review-evidence/baseline-quality.log", "- Full test command: node test.js",
   "- Adjacent test command: node --test {test_paths}", "- High-risk paths: none", "- Verification default: impacted",
@@ -53,13 +53,25 @@ const findings = { schema_version: 1, findings: [{
   change_origin: "pre-existing", evidence_dir: ".review-evidence/round-1/R1-F001-FUNC", verification: "pending",
   implementation_status: "none", adjacent_tests: [], test_files: [], commit: null,
 }] };
+const first = findings.findings[0].id;
+const second = "R1-F002-FUNC";
+findings.findings.push({ ...findings.findings[0], id: second, original_ids: ["FUNC-002"], evidence_dir: ".review-evidence/round-1/" + second });
 fs.writeFileSync(findingsPath, JSON.stringify(findings, null, 2) + "\n");
 run(project, ["render"]);
 
 const worktree = path.join(path.dirname(project), `${path.basename(project)}-candidate`);
+const otherWorktree = worktree + "-2";
+const readState = () => JSON.parse(fs.readFileSync(statePath, "utf8"));
+const entry = id => readState().optimistic_repairs.find(item => item.finding_id === id);
+const start = (id, dir) => run(project, ["optimistic-start", "--id", id, "--worktree", dir, "--risk-assessment", "normal"]);
+const promote = id => run(project, ["optimistic-promote", "--id", id]);
+const discard = id => run(project, ["optimistic-discard", "--id", id]);
+write(project, "tests/review/reproductions/r1_f002_fix.test.js", "test\n");
+write(project, ".review-evidence/round-1/" + second + "/replay-review.md", "replayed\n");
 write(project, "tests/review/reproductions/r1_f001_fix.test.js", "test\n");
 write(project, ".review-evidence/round-1/R1-F001-FUNC/replay-review.md", "replayed\n");
-run(project, ["optimistic-start", "--id", "R1-F001-FUNC", "--worktree", worktree, "--risk-assessment", "normal"]);
+start(first, worktree);
+start(second, otherWorktree);
 // Promotion applies the entire base-to-candidate diff, including earlier commits.
 const transientFile = "tests/review/candidates/temporary.test.js";
 write(worktree, transientFile, "// transient review artifact\n");
@@ -68,24 +80,88 @@ git(worktree, ["commit", "-qm", "add earlier candidate file"]);
 write(worktree, "src.js", "module.exports = 2;\n");
 execFileSync("git", ["add", "src.js"], { cwd: worktree });
 execFileSync("git", ["commit", "-qm", "fix(review): candidate"], { cwd: worktree });
-function recordCandidate() {
-  const candidate = git(worktree, ["rev-parse", "HEAD"]);
-  const tree = git(worktree, ["rev-parse", "HEAD^{tree}"]);
-  write(worktree, ".review-evidence/candidate-test.log", `COMMAND=node test.js --impacted\nTREE_HASH=${tree}\nEXIT_CODE=0\n`);
-  write(worktree, ".review-evidence/candidate-quality.log", `QUALITY_COMMAND=node --check src.js\nQUALITY_TREE_HASH=${tree}\nEXIT_CODE=0\n`);
-  return run(project, ["optimistic-record", "--id", "R1-F001-FUNC", "--candidate-commit", candidate,
+function recordCandidate(id, dir) {
+  const candidate = git(dir, ["rev-parse", "HEAD"]);
+  const tree = git(dir, ["rev-parse", "HEAD^{tree}"]);
+  write(dir, ".review-evidence/candidate-test.log", `COMMAND=node test.js --impacted\nTREE_HASH=${tree}\nEXIT_CODE=0\n`);
+  write(dir, ".review-evidence/candidate-quality.log", `QUALITY_COMMAND=node --check src.js\nQUALITY_TREE_HASH=${tree}\nEXIT_CODE=0\n`);
+  return run(project, ["optimistic-record", "--id", id, "--candidate-commit", candidate,
     "--test-status", "pass", "--quality-status", "pass", "--test-log", ".review-evidence/candidate-test.log",
     "--quality-log", ".review-evidence/candidate-quality.log"]);
 }
-assert.throws(recordCandidate, /禁止文件/);
+assert.throws(() => recordCandidate(first, worktree), /禁止文件/);
 git(worktree, ["rm", "--", transientFile]);
 git(worktree, ["commit", "-qm", "remove temporary artifact"]);
-recordCandidate();
-assert.deepEqual(JSON.parse(fs.readFileSync(statePath)).optimistic_repairs[0].touched_files, ["src.js"]);
-run(project, ["optimistic-promote", "--id", "R1-F001-FUNC"]);
-assert.equal(fs.readFileSync(path.join(project, "src.js"), "utf8").replace(/\r/g, ""), "module.exports = 2;\n");
-run(project, ["optimistic-discard", "--id", "R1-F001-FUNC"]);
-const finalState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-assert.equal(finalState.optimistic_repairs[0].status, "discarded");
-execFileSync("git", ["reset", "--hard", "-q"], { cwd: project });
+recordCandidate(first, worktree);
+function commitFile(dir, file, contents) {
+  write(dir, file, contents);
+  git(dir, ["add", "--", file]);
+  git(dir, ["commit", "-qm", "change " + file]);
+}
+commitFile(otherWorktree, "other.js", "module.exports = 3;\n");
+recordCandidate(second, otherWorktree);
+assert.equal(entry(first).base_commit, entry(second).base_commit);
+assert.deepEqual(entry(first).touched_files, ["src.js"]);
+assert.throws(() => promote(second), /active_finding/);
+promote(first);
+assert.equal(git(project, ["show", ":src.js"]), "module.exports = 2;");
+git(project, ["commit", "-qm", "land first candidate"]);
+discard(first);
+assert.equal(entry(first).status, "discarded");
+// Seed the completed verification, then use the ordinary transition to the next repair.
+findings.findings[0].verification = "pass";
+fs.writeFileSync(findingsPath, JSON.stringify(findings));
+run(project, ["next-finding"]);
+assert.equal(readState().active_finding, second);
+const advanced = git(project, ["rev-parse", "HEAD"]);
+write(project, "user-work.txt", "in progress\n");
+git(project, ["add", "user-work.txt"]);
+const dirtyIndex = git(project, ["write-tree"]);
+assert.throws(() => promote(second), /主工作树/);
+assert.equal(entry(second).status, "candidate_green");
+assert.equal(git(project, ["write-tree"]), dirtyIndex);
+git(project, ["rm", "-qf", "user-work.txt"]);
+findings.findings[1].severity = "P1";
+fs.writeFileSync(findingsPath, JSON.stringify(findings));
+assert.throws(() => promote(second), /severity/);
+assert.equal(entry(second).status, "candidate_green");
+assert.equal(git(project, ["diff", "--cached", "--name-only"]), "");
+findings.findings[1].severity = "P2";
+fs.writeFileSync(findingsPath, JSON.stringify(findings));
+promote(second);
+assert.equal(entry(second).promotion_head, advanced);
+assert.equal(entry(second).status, "promote_pending_commit");
+assert.equal(git(project, ["diff", "--cached", "--name-only"]), "other.js");
+assert.equal(git(project, ["rev-parse", ":other.js"]), git(otherWorktree, ["rev-parse", "HEAD:other.js"]));
+git(project, ["commit", "-qm", "land second candidate"]);
+discard(second);
+
+// A clean textual merge in the same file would still change the prechecked patch.
+const lines = Array.from({ length: 15 }, (_, index) => "// line " + index + "\n").join("");
+commitFile(project, "other.js", lines);
+start(second, otherWorktree);
+commitFile(otherWorktree, "other.js", lines.replace("line 0", "candidate"));
+recordCandidate(second, otherWorktree);
+commitFile(project, "other.js", lines.replace("line 14", "main"));
+function assertRejected(status) {
+  const index = git(project, ["write-tree"]);
+  assert.throws(() => promote(second), new RegExp(status));
+  assert.equal(entry(second).status, status);
+  assert.equal(git(project, ["write-tree"]), index);
+  assert.equal(git(project, ["diff", "--name-only"]), "");
+  discard(second);
+}
+assertRejected("stale");
+
+start(second, otherWorktree);
+commitFile(otherWorktree, "other.js", "candidate version\n");
+recordCandidate(second, otherWorktree);
+commitFile(project, "other.js", "main version\n");
+assertRejected("conflict");
+
+start(second, otherWorktree);
+commitFile(otherWorktree, "independent.js", "module.exports = 4;\n");
+recordCandidate(second, otherWorktree);
+git(project, ["checkout", "--detach", "-q", "HEAD~1"]);
+assertRejected("stale");
 console.log("optimistic repair lifecycle passed");

@@ -230,24 +230,24 @@ reviewctl record-finding --id R1-F001-PERF --role PERF --original-id PERF-001 \
 
 ### 3.0 乐观修复（可选旁路）
 
-仅当 baseline 的 `Optimistic repair policy` 为 `bounded` 时启用。主代理可在当前 finding 验证期间，为后续已 accepted、已确认 RED、普通风险 P2/P3 finding 创建独立 worktree：
+用户授权并行、baseline 设为 `bounded` 时，主代理可从干净主 HEAD 为已 accepted、已确认 RED 的普通风险 P2/P3 各建一个 worktree。优先并行没有依赖、预计修改不同文件的 finding。活动候选默认最多 1 个，`Optimistic max active worktrees: 2` 允许两个候选同时实现和预检。主代理串行执行下列登记命令，候选代理只在各自的 worktree 工作。
 
 ```text
 reviewctl optimistic-start --id ID --worktree <仓库外路径> --risk-assessment normal
 reviewctl optimistic-record --id ID --candidate-commit SHA --test-status pass --quality-status pass --test-log PATH --quality-log PATH
 ```
 
-候选只做预检。`progressive` 运行 fast，`default` 运行 impacted，`full-everywhere` 按该模式运行 full。两份日志遵循证据手册的“实跑日志”，测试日志另加 `TREE_HASH=<candidate tree>`，质量日志另加 `QUALITY_TREE_HASH=<candidate tree>`。两项均通过才能记录候选。命令会把日志复制到 `.review-evidence/optimistic/`，以便 worktree 清理后仍可审计。
+候选预检在 `progressive` 模式下运行 fast，在 `default` 下运行 impacted，在 `full-everywhere` 下运行 full。测试和质量日志分别记录 `TREE_HASH=<candidate tree>` 和 `QUALITY_TREE_HASH=<candidate tree>`，遵循证据手册的“实跑日志”。两项通过后登记，CLI 将日志复制到主工作树的 `.review-evidence/optimistic/`。
 
-候选 worktree 只能从干净主 HEAD 创建，默认最多一个活动候选；不得修改主状态或 `.review-evidence/`。候选记录的是预检证据，不是正式实现。
-
-当该 finding 正式进入 `repair` 后，且主 HEAD 仍等于候选 `base_commit`、主工作树干净，才可运行：
+轮到该 finding 成为 `repair` 的 `active_finding` 时，若主 HEAD 已前进，先在新 HEAD 重放 focused 反例（手工项依原步骤）并复核风险。若反例已通过，按 §3.1 核实 `already_fixed`。风险升高时走正式修复。仍属普通风险且 RED 时运行以下命令。
 
 ```text
 reviewctl optimistic-promote --id ID
 ```
 
-该命令只把候选补丁应用到暂存区并标记 `promote_pending_commit`。随后运行正式 GREEN 和质量门禁，写好实现报告，再对暂存 tree 运行 `guard-commit`、提交并委派独立验证。HEAD 变化、用户改动或补丁冲突会标记 stale/conflict；不能强制 rebase、reset 或覆盖改动。完成或放弃后运行 `optimistic-discard --id ID` 清理 worktree。
+基准相同时直接应用候选补丁。主 HEAD 前进时，CLI 用 `git merge-tree --write-tree` 预演合并。跨提交提升需要本地 Git 支持该命令，且相对新 HEAD 的文件路径、前后内容和文件模式均须与原补丁一致。主工作树有用户改动时保留 `candidate_green`，待其干净后重试。历史分叉或补丁变化记为 `stale`，合并或应用冲突记为 `conflict`。这两种情况转回正式修复，可参考原 worktree。
+
+提升成功后补丁进入主工作树和暂存区，`promotion_head` 记录集成起点。按 §3.1 在集成后的代码上运行正式 GREEN 和质量门禁，执行 `guard-commit`、提交，再由独立代理验证正式提交。候选预检日志只对应候选 tree。完成或放弃时用 `optimistic-discard --id ID` 清理 worktree。
 
 ### 3.1 正式修复
 
