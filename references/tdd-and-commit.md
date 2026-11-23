@@ -30,7 +30,7 @@
 - 若需要验证修复前后状态对比的临时数据，可放在：.review-evidence/round-[N]/_testdata/impl-[finding-id]/
 - **测试输出先落盘**：运行 RED/GREEN/full 命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志，不要重复运行；RED、GREEN、full 可分别写入 `output-red.log`、`output-green-suite.log`、`output-full-suite.log`。
 - **技能脚本（如需）**：`node "[skill-dir]/scripts/reviewctl.js"`；`[skill-dir]` 由主代理替换为当前 harness 的实际绝对路径；用于 `guard-commit` 或状态查看，不要修改状态或推进阶段
-- **编译缓存复用（按磁盘预算）**：在 baseline 记录的磁盘预算内复用缓存（Rust 如 `CARGO_TARGET_DIR`）；focused 优先 `cargo test --test <target> <filter>` 或 `cargo nextest run -p <crate> -E 'test(<filter>)'`，impacted 用 `cargo nextest run -p <crate> -p <dependent>`，GREEN 按 baseline 的 full 命令运行；不要为每个 finding 新建 target 目录。缓存超预算时按主代理指示在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
+- **编译缓存复用（按磁盘预算）**：在 baseline 记录的磁盘预算内复用缓存（Rust 如 `CARGO_TARGET_DIR`）；focused 优先 `cargo test --test <target> <filter>` 或 `cargo nextest run -p <crate> -E 'test(<filter>)'`，impacted 用 `cargo nextest run -p <crate> -p <dependent>`，GREEN 按已选模式运行 fast 或 full；不要为每个 finding 新建 target 目录。缓存超预算时按主代理指示在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
 
 ## 输出约定
 - 完整实现报告写入：.review-evidence/round-[N]/[标准 ID]/implementation-result.md
@@ -41,18 +41,10 @@
 
 ## 测试范围分级
 
-GREEN 门禁由 baseline 的 tiering mode 决定；任何模式下，快速结果都不能替代 progressive 轮末 full 或最终审计 full。
+按 `SKILL.md` §1 的表选择 GREEN 和验证门禁。focused 用于复现及修复后的反例；impacted 包含改动目标和传递反向依赖；fast 是 baseline 明确声明的普通风险快速套件。每次 full 保留完整 feature 矩阵、长测清单和原始尺度。
 
-| 范围 | 含义 | 典型用途 |
-|------|------|----------|
-| focused | 反例、相邻测试或单个模块/测试目标 | RED、快速反馈 |
-| impacted | 改动所在 package/crate、直接依赖方及相关测试目标 | 验证阶段的默认回归 |
-| full | 项目/workspace 的完整测试套件，包含原始长时 I/O/稳定性测试 | default GREEN 提交前、progressive 轮末门禁、P0/P1/高风险/full-everywhere 验证、already_fixed 默认验证、最终审计 |
-
-- **GREEN 证据按 baseline mode 执行**：`default` 与 `full-everywhere` 保持提交前运行 full。`progressive` 对普通风险 P2/P3 运行 baseline `Fast test command`，在 `Reviewctl GREEN Evidence` 记录 `quality_checks`、`fast_suite`、`fast_profile`、缩放方式、保留契约和未覆盖语义，并在修复报告标 `risk_assessment: normal`；P0/P1 或实现代理判断为 high 时仍须提交前运行 full。无论 fast 还是 full，提交前都必须运行 baseline `Code quality command`；Rust 默认执行 `cargo fmt --all -- --check` 和 `cargo clippy --workspace --all-targets --all-features -- -D warnings`，其它语言执行 baseline 声明的 formatter/linter/type-check 命令。质量检查失败不得提交。fast/full 都必须在被测 index tree 上验证，记录命令、退出码、tree hash、clean 状态、运行位置、测试计数和日志；有长测时，full 证据及日志还必须绑定 baseline 登记的测试 ID 清单和原始 runtime scale。提交后 tree 必须与修复 commit 一致。progressive 的 full 集中在轮末，必须在当前 HEAD 运行并通过 `reviewctl record-round-regression`，且不得使用 fast 的缩短参数，否则不能开下一轮或终审。轮末失败须保留证据并回到 adjudication；不能把 fast/impacted 结果当作 full。
-- **验证默认 impacted**：验证代理按风险决定是否重放修复前反例，运行修复后反例和 impacted 回归，生成相邻测试交主代理轮末批测，并核对实现阶段的 full 证据（命令、退出码、tree hash 与修复 commit 一致、测试计数）。pass 的最低回归范围是 **impacted**；focused 只能作为补充。P0/P1、高风险变更、baseline 设为 full-everywhere，或 full 证据失败/缺失/不匹配时，验证代理必须自己重跑 full；P0/P1 和高风险变更不能用实现证据替代验证重跑。每次终审前还必须聚合全部历史相邻测试，见 phase-playbooks.md §5.3。
+- 提交前运行已声明的代码质量命令，记录 `quality_checks` 及 `fast_suite` 或 `full_suite`。核对测试前后 tree、运行位置、clean 状态、计数、日志与实际提交。fast 的缩放须保留关键断言，记录遗漏语义。机器证据格式见 `evidence-structure.md`。
 - **高风险触发 full**：构建/依赖清单（`Cargo.toml`、`Cargo.lock`、`build.rs`、workspace 配置）、公共 API、共享核心模块、认证/权限、数据 schema/迁移、并发/全局状态、feature flag、序列化、测试基础设施、调度/超时/重试、资源泄漏/长期稳定性，或改动跨多个 package、无法有把握判断影响范围。“测试基础设施”仅指影响多个测试的 harness、配置、fixture、helper 或测试运行器；在普通正式测试文件中新增一个用例不算。
-- 小项目如果 full 只需 1-2 分钟，可以直接在所有阶段使用 full，不必引入分级。
 - Rust：focused 示例 `cargo nextest run -p <crate> -E 'test(<module_or_name>)'` 或 `cargo test -p <crate> --lib <filter>`；impacted = 改动所在 crate + 反向依赖 crate，示例 `cargo nextest run -p <crate> -p <dependent>`（反向依赖可用 `cargo tree -i <crate>` 或 `cargo metadata` 计算）；full 示例 `cargo nextest run --workspace --all-targets` 加 `cargo test --workspace --doc`。`cargo test <filter>` 仍会编译当前 package/workspace 默认成员的所有测试目标，缩小编译范围要用 `-p`、`--lib`、`--test` 或 `cargo nextest` 的 package/target 选择。
 
 ### 实现状态与 full 义务
@@ -60,7 +52,7 @@ GREEN 门禁由 baseline 的 tiering mode 决定；任何模式下，快速结�
 | implementation_status | 实现阶段 full | 验证阶段 |
 |---|---|---|
 | `fixed`（含 manual fixed） | default/full-everywhere 提交前 full；progressive 普通风险 P2/P3 提交前 fast，P0/P1/high 提交前 full | 复核 GREEN 证据；P0/P1、高风险或 full-everywhere 必须重跑 full |
-| `already_fixed` | 允许 `not_run` | 默认在当前 HEAD 重跑 full；普通风险 P2/P3 可按验证模板使用 baseline ancestor 例外 |
+| `already_fixed` | 允许 `not_run` | 默认在当前 HEAD 重跑 full；普通风险 P2/P3 在 default/progressive 下，历史修复是已通过 full 的 baseline HEAD 的祖先且例外证据齐全时，可运行修复后反例和 impacted |
 | `prepared` | 允许 `not_run` | 不走 pass，按 `blocked_by_user_changes` 记录 |
 | `blocked` / `cannot_fix` | 允许 `not_run` | 不 pass，登记 unresolved |
 | `blocked_by_user_changes` | 允许 `not_run` | 不 pass；报告披露无 full 证据 |
@@ -106,7 +98,7 @@ GREEN 门禁由 baseline 的 tiering mode 决定；任何模式下，快速结�
    - 修复后按 baseline tiering mode 运行 GREEN：default/full-everywhere 必须运行 full；progressive 普通风险 P2/P3 运行 Fast test command，P0/P1 或 high 风险必须运行 full。
      - finding 正式回归测试必须通过
      - progressive fast command 必须包含 baseline 声明的快速回归范围
-   - 在 `implementation-result.md` 记录实际门禁命令、退出码、测试时的 tree hash 和日志路径；门禁失败不得提交。progressive 延后的 full 在轮末运行
+   - 在 `implementation-result.md` 记录实际门禁命令、退出码、测试时的 tree hash 和日志路径；门禁失败不得提交。progressive 轮末门禁按阶段手册 §5.2 登记
    - 不要为了让测试通过而删除/放宽断言、吞掉错误、跳过权限检查或把真实调用改成无条件 mock
 
 3. **回归检查**：GREEN 门禁已覆盖其声明的测试范围；这里运行类型检查、lint、构建和适用的安全扫描
@@ -116,7 +108,7 @@ GREEN 门禁由 baseline 的 tiering mode 决定；任何模式下，快速结�
 
 ## 工作区与暂存隔离
 
-共享工作区可能已有用户改动。实现代理必须在开始和提交前各执行一次 `git status --short`，比较基线；只暂存自己为当前 finding 新增或修改的明确路径，例如 `git add -- path/to/test path/to/source`，禁止 `git add -A` 或 `git commit -am`。进入 repair 时 `reviewctl` 会记录 `repair_baseline_staged` 路径和 `repair_baseline_index` 内容基线（HEAD 与暂存 diff）；`guard-commit` 会拒绝仍包含用户改动的提交。同一文件可先取消暂存，再用 `git add -p` 仅暂存与用户改动不重叠的修复，用户改动保留在工作区。守卫只读，不会刷新基线或修改索引。旧状态只有路径基线、HEAD 已变化、重叠块、重复文本造成对齐歧义、二进制或文件类型/模式变化时，守卫保守拒绝；无法安全分离则登记 `blocked_by_user_changes`，不要通过重建基线绕过检查。
+共享工作区可能已有用户改动。实现代理必须在开始和提交前各执行一次 `git status --short`，比较基线；只暂存自己为当前 finding 新增或修改的明确路径，例如 `git add -- path/to/test path/to/source`，禁止 `git add -A` 或 `git commit -am`。进入 repair 时 `reviewctl` 会记录 `repair_baseline_index` 内容基线（HEAD 与暂存 diff）；`guard-commit` 会拒绝仍包含用户改动的提交。同一文件可先取消暂存，再用 `git add -p` 仅暂存与用户改动不重叠的修复，用户改动保留在工作区。守卫只读，不会刷新基线或修改索引。缺少内容基线、HEAD 已变化、重叠块、重复文本造成对齐歧义、二进制或文件类型/模式变化时，守卫保守拒绝；无法安全分离则登记 `blocked_by_user_changes`，不要通过重建基线绕过检查。
 
 ### 工作区冲突处理
 
@@ -211,7 +203,7 @@ fix(review): [ID] concise behavior being corrected
 - RED 阶段失败证据与原始反例一致。
 - **复现测试已复制到项目正式测试文件**；手工 finding 已添加可行的自动化回归测试，或使用 `--manual` 记录无法自动化的理由、已尝试的相邻可测路径、以及修复前后手工执行证据。
 - 修复最小、可读、符合现有契约，且正式测试锁定回归；无法自动化的手工 finding 有明确理由和修复后复测证据。验证阶段产生的相邻测试留在 `tests/review/verifications/`，在轮末批量执行；批测发现的缺陷转为正式 finding 后，其修复回归测试才进入正式测试套件。
-- focused 和 GREEN 门禁的实际结果已记录；GREEN 证据包含命令、退出码、tree hash、workspace clean/run location、测试计数（total/passed/failed/skipped）和日志；失败/跳过没有被隐藏。progressive 轮末 full gate 通过并绑定当前 HEAD。
+- focused 和 GREEN 门禁的实际结果已记录；GREEN 证据包含命令、退出码、tree hash、workspace clean/run location、测试计数（total/passed/failed/skipped）和日志；失败/跳过没有被隐藏。progressive 的轮末门禁由主代理在 round_decision 单独验收。
 - **提交只包含当前 finding（源代码 + 正式测试文件修改）**，`git diff --check` 通过，用户改动未被覆盖。
 - commit、测试、反例和 finding ID 已通过 `reviewctl` 写入 `findings.json` / `state.json`。
 - **临时文件 `tests/review/reproductions/` 保留在工作区**（不提交，供 verification 使用）。

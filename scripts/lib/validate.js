@@ -78,7 +78,6 @@ function readHeadFile(project, file) {
   return execFileSync("git", ["show", `HEAD:${normalized}`], {
     cwd: project,
     encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
   });
 }
 
@@ -374,6 +373,32 @@ function hasFormalReproduction(project, round, number) {
   return fs.readdirSync(dir).some((file) => file.startsWith(prefix));
 }
 
+function validateReplayEvidence(project, evidenceDir, label, errors) {
+  const filename = path.join(evidenceDir, "replay-review.md");
+  if (!exists(filename)) {
+    errors.push(label + ": 缺少 replay-review.md（独立复现审查）");
+    return;
+  }
+  const parsed = testPolicy.parseJsonSection(fs.readFileSync(filename, "utf8"), "Reviewctl Replay Evidence", "Reviewctl Replay Evidence");
+  errors.push(...parsed.errors.map((error) => label + ": " + error));
+  const evidence = parsed.value;
+  if (!evidence) return;
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(evidence.tested_commit) || !gitCommitIsAncestor(project, evidence.tested_commit)) {
+    errors.push(label + ": replay tested_commit 无效或不在 HEAD 历史中");
+  } else if (testPolicy.gitTree(project, evidence.tested_commit) !== evidence.tested_tree_hash) {
+    errors.push(label + ": replay tested_tree_hash 与 tested_commit 不一致");
+  }
+  const testPath = path.resolve(project, String(evidence.test_path || ""));
+  if (!inside(project, testPath) || !exists(testPath) || !fs.statSync(testPath).isFile() || !inside(fs.realpathSync(project), fs.realpathSync(testPath))) {
+    errors.push(label + ": replay test_path 不存在或越出项目目录");
+  } else if (testPolicy.sha256File(testPath) !== evidence.test_sha256) {
+    errors.push(label + ": replay 测试文件 SHA-256 不匹配");
+  }
+  if (typeof evidence.command !== "string" || !evidence.command.trim() || !Number.isSafeInteger(evidence.exit_status)) {
+    errors.push(label + ": replay evidence 必须记录实际命令及数值退出码");
+  }
+}
+
 function validateFindingFiles(project, finding, errors, state) {
   const label = finding.id;
   const evidenceDir = path.resolve(project, finding.evidence_dir || "");
@@ -413,49 +438,7 @@ function validateFindingFiles(project, finding, errors, state) {
   if (finding.decision !== "needs-evidence" && !hasReproduction(evidenceDir)) {
     errors.push(`${label}: 缺少 reproduce.* 或 manual-steps.md`);
   }
-  if (finding.decision !== "needs-evidence" && !exists(path.join(evidenceDir, "replay-review.md"))) {
-    errors.push(`${label}: 缺少 replay-review.md（独立复现审查）`);
-  }
-  if (finding.decision !== "needs-evidence" && exists(path.join(evidenceDir, "replay-review.md"))) {
-    const replay = testPolicy.parseJsonSection(
-      fs.readFileSync(path.join(evidenceDir, "replay-review.md"), "utf8"),
-      "Reviewctl Replay Evidence",
-      "Reviewctl Replay Evidence"
-    );
-    errors.push(...replay.errors.map((error) => `${label}: ${error}`));
-    const evidence = replay.value;
-    if (evidence) {
-      if (!/^[0-9a-f]{40,64}$/i.test(String(evidence.tested_commit || ""))) {
-        errors.push(`${label}: replay tested_commit 必须是完整 commit SHA`);
-      } else {
-        try {
-          const tree = testPolicy.gitTree(project, evidence.tested_commit);
-          if (tree.toLowerCase() !== String(evidence.tested_tree_hash || "").toLowerCase()) {
-            errors.push(`${label}: replay tested_tree_hash 与 tested_commit 不一致`);
-          }
-          execFileSync("git", ["merge-base", "--is-ancestor", evidence.tested_commit, "HEAD"], { cwd: project, stdio: "ignore" });
-        } catch (error) {
-          errors.push(`${label}: replay tested_commit 无效或不在 HEAD 历史中：${error.message}`);
-        }
-      }
-      const testPath = path.resolve(project, String(evidence.test_path || ""));
-      if (!inside(project, testPath) || !exists(testPath)) {
-        errors.push(`${label}: replay test_path 不存在或越出项目目录`);
-      } else {
-        if (!/^[0-9a-f]{64}$/i.test(String(evidence.test_sha256 || ""))) {
-          errors.push(`${label}: replay test_sha256 必须是 SHA-256`);
-        } else {
-          const actualHash = testPolicy.sha256File(testPath);
-          if (actualHash.toLowerCase() !== evidence.test_sha256.toLowerCase()) {
-            errors.push(`${label}: replay 测试文件 SHA-256 不匹配`);
-          }
-        }
-      }
-      if (typeof evidence.command !== "string" || !evidence.command.trim() || evidence.exit_status !== 0) {
-        errors.push(`${label}: replay evidence 必须记录实际命令及成功退出码`);
-      }
-    }
-  }
+  if (finding.decision !== "needs-evidence") validateReplayEvidence(project, evidenceDir, label, errors);
   if (
     finding.decision === "accepted" &&
     !cleanedFinalFinding &&
@@ -656,15 +639,11 @@ function validateRoundCandidates(project, round, data, errors) {
   const allFindings = new Map((data.findings || []).map((finding) => [finding.id, finding]));
   const findings = (data.findings || []).filter((finding) =>
     finding.source !== "final-audit" && Number(String(finding.id).match(FINDING_ID)?.[1]) === round.round);
-  const readHandoff = (file, role, canonical = null) => {
+  const readHandoff = (file, role) => {
     if (!exists(file)) return;
     const handoff = readJsonSafe(file);
     validateHandoff(project, file, round.round, role, errors, data);
     if (!Array.isArray(handoff?.findings)) return;
-    if (canonical && !handoff.findings.some((candidate) => canonical.original_ids?.includes(candidate.finding_id))) {
-      errors.push(`${label}: ${canonical.id} handoff 没有该 finding 的原始候选`);
-      return;
-    }
     const seen = new Set();
     for (const candidate of handoff.findings) {
       const id = candidate.finding_id;
@@ -676,7 +655,7 @@ function validateRoundCandidates(project, round, data, errors) {
       seen.add(id);
       const previous = candidates.get(id);
       if (previous) {
-        // A preserved inbox and its canonical copy describe one submission.
+        // A role may include the same submission in multiple batch handoffs.
         if (!isDeepStrictEqual(previous, candidate)) {
           errors.push(`${label}: ${id} 存在重复或矛盾的 handoff`);
         }
@@ -691,11 +670,6 @@ function validateRoundCandidates(project, round, data, errors) {
       readHandoff(path.join(inbox, role, tempId, "handoff.json"), role);
     }
   }
-  // Older instructions permitted moving inbox directories into canonical paths.
-  for (const finding of findings) {
-    readHandoff(path.join(root, finding.id, "handoff.json"), roleSlug(finding.role || finding.id.split("-").at(-1)), finding);
-  }
-
   const screeningPath = path.join(root, "screening.json");
   const screening = exists(screeningPath) ? readJsonSafe(screeningPath) : [];
   const dispositions = new Map();
@@ -755,20 +729,56 @@ function validateRoundCandidates(project, round, data, errors) {
   }
 }
 
+function auditEvidence(project, attempt, errors, requiredCommit) {
+  const label = "audit attempt " + attempt.attempt;
+  const dir = path.join(EVIDENCE, "round-" + attempt.round, "final-audit", "attempt-" + attempt.attempt);
+  const file = (name) => {
+    const filename = testPolicy.resolveEvidencePath(project, path.join(dir, name), errors, label + " " + name);
+    if (filename && fs.realpathSync(filename) !== path.join(fs.realpathSync(path.join(project, EVIDENCE)), path.relative(EVIDENCE, dir), name)) {
+      errors.push(label + ": 审计文件必须位于本次 attempt 目录");
+      return null;
+    }
+    return filename;
+  };
+  const blind = file("blind-scan.md");
+  const targeted = file("targeted-review.md");
+  if (!blind || !targeted) return null;
+  if (!fs.readFileSync(blind, "utf8").split(/\r?\n/).some((line) => line.trim() && !line.trim().startsWith("#"))) errors.push(label + ": blind-scan.md 缺少扫描结果");
+  const parsed = testPolicy.parseJsonSection(fs.readFileSync(targeted, "utf8"), "Reviewctl Audit Evidence", label + " full_suite");
+  const baseline = testPolicy.parseBaselinePolicy(project);
+  errors.push(...parsed.errors, ...baseline.errors);
+  const run = parsed.value?.full_suite;
+  if (!run || !baseline.policy) {
+    errors.push(label + ": 缺少 full_suite 或 baseline 策略");
+    return null;
+  }
+  const log = file("output-full-suite.log");
+  if (!log) return null;
+  if (typeof run.log !== "string" || path.resolve(project, run.log) !== log) errors.push(label + ": full 日志必须来自本次 attempt");
+  if (!testPolicy.hasRunMarkers(log, baseline.policy.fullCommand, run.exit_status)) errors.push(label + ": 日志缺少唯一的精确 COMMAND 和 EXIT_CODE");
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(run.tested_commit) || !gitCommitIsAncestor(project, run.tested_commit) ||
+      (requiredCommit && run.tested_commit !== requiredCommit)) {
+    errors.push(label + ": tested_commit 无效或与被审计 HEAD 不符");
+    return null;
+  }
+  const tree = testPolicy.gitTree(project, run.tested_commit);
+  if (run.status === "pass") {
+    errors.push(...testPolicy.validateFullRun(project, run, baseline.policy, label, tree));
+  } else if (run.status !== "fail" || attempt.new_issues < 1 || !Number.isSafeInteger(run.exit_status) || run.exit_status === 0 ||
+      run.tree_hash_before !== tree || run.tree_hash_after !== tree || run.command !== baseline.policy.fullCommand) {
+    errors.push(label + ": 失败的 full 必须绑定提交、命令和非零退出码并登记新问题");
+  }
+  return { status: run.status, tested_commit: run.tested_commit, log_sha256: testPolicy.sha256File(log),
+    blind_sha256: testPolicy.sha256File(blind), targeted_sha256: testPolicy.sha256File(targeted) };
+}
+
 function validateAudits(project, state, errors) {
+  const auditors = new Set();
   for (const attempt of state.final_audit.attempts) {
-    const dir = path.join(
-      project,
-      EVIDENCE,
-      `round-${attempt.round || state.current_round}`,
-      "final-audit",
-      `attempt-${attempt.attempt}`
-    );
-    const required = attempt.status === "complete" ? ["blind-scan.md", "targeted-review.md"] : [];
-    for (const name of required) {
-      if (!exists(path.join(dir, name))) {
-        errors.push(`audit attempt ${attempt.attempt}: 缺少 ${name}`);
-      }
+    if (!attempt.auditor || auditors.has(attempt.auditor)) errors.push("每次终审必须登记独立的新审计代理");
+    auditors.add(attempt.auditor);
+    if (attempt.status === "complete" && !isDeepStrictEqual(auditEvidence(project, attempt, errors), attempt.full_evidence)) {
+      errors.push("audit attempt " + attempt.attempt + ": 与登记时的报告或日志摘要不一致");
     }
     if (!["complete", "failed"].includes(attempt.status)) {
       errors.push(`audit attempt ${attempt.attempt}: status 非法`);
@@ -785,7 +795,7 @@ function validateProject(project, config, state, data) {
   errors.push(...validateConfig(config));
   errors.push(...validateState(state, config));
   errors.push(...validateFindings(data));
-  if (!Array.isArray(state.rounds)) {
+  if (errors.length) {
     return { errors, warnings, coverage: coverage(data) };
   }
   errors.push(...verifyViews(project, state, config, data));
@@ -794,12 +804,14 @@ function validateProject(project, config, state, data) {
   validateTestDirectories(project, errors);
   validateRounds(state, errors);
   testPolicy.validateAdjacentPromotions(project, state, data, errors);
+  const baselinePolicy = testPolicy.parseBaselinePolicy(project).policy;
   for (const round of state.rounds) {
     if (round.status === "completed") {
       validateRoundCandidates(project, round, data, errors);
-      const baselinePolicy = testPolicy.parseBaselinePolicy(project).policy;
-      if (baselinePolicy?.tieringMode === "progressive") {
-        testPolicy.validateRoundRegression(project, round, errors, { requireCurrentHead: round.round === state.current_round && state.current_phase === "round_decision" });
+      const atDecision = round.round === state.current_round && state.current_phase === "round_decision";
+      if (baselinePolicy?.tieringMode === "progressive" && (!atDecision || round.regression_gate)) {
+        testPolicy.validateRoundRegression(project, round, errors, { requireCurrentHead: atDecision });
+        if (!atDecision && round.regression_gate?.status !== "pass") errors.push(`round ${round.round}: 历史轮次缺少通过的 full regression gate`);
       }
       if (round.round !== state.current_round || !["verification", "round_decision"].includes(state.current_phase)) {
         testPolicy.validateAdjacentBatch(project, round, state, data, errors);
@@ -821,6 +833,10 @@ function validateProject(project, config, state, data) {
   }
   for (const finding of data.findings) {
     validateFindingFiles(project, finding, errors, state);
+    if (finding.verification === "pass" && finding.adjacent_tests?.some((file) => !state.adjacent_registry.some((entry) =>
+      entry.test_path === file && entry.finding_id === finding.id && entry.round === finding.adjacent_round))) {
+      errors.push(`${finding.id}: 已验证的相邻测试缺少对应登记`);
+    }
     if (finding.verification === "pass" && ["fixed", "already_fixed"].includes(finding.implementation_status)) {
       const verificationPath = path.join(path.resolve(project, finding.evidence_dir), "verification-result.md");
       errors.push(...testPolicy.validateVerificationEvidence(project, finding, config, verificationPath, null, { historical: true }));
@@ -892,9 +908,10 @@ function guardCommit(project, findingId, testPaths, data, state) {
     return [`无法读取 git 暂存区：${error.message}`];
   }
   if (staged.length === 0) errors.push("暂存区为空");
-  const baselineStaged = new Set((state && state.repair_baseline_staged) || []);
+  const baselineFiles = state?.repair_baseline_index?.files;
+  if (!baselineFiles || typeof baselineFiles !== "object" || Array.isArray(baselineFiles)) errors.push("缺少暂存内容基线");
   for (const file of staged) {
-    if (baselineStaged.has(file)) {
+    if (baselineFiles && Object.hasOwn(baselineFiles, file)) {
       const conflict = stagedBaselineConflict(project, file, state);
       if (conflict) errors.push(`${file}：${conflict}；保留用户工作区改动，仅分块暂存独立修复；无法分离时登记 blocked_by_user_changes`);
     }
@@ -944,9 +961,11 @@ module.exports = {
   validateInbox,
   validateTestDirectories,
   validateFindingFiles,
+  validateReplayEvidence,
   validateRounds,
   validateRoundCandidates,
   validateAudits,
+  auditEvidence,
   guardCommit,
   isCandidateTestFile,
   isReproductionTestFile,

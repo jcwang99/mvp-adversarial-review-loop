@@ -102,10 +102,10 @@ try {
     assert.deepEqual(guard(dir, state), []);
     assert.equal(fs.readFileSync(path.join(dir, "source.js"), "utf8"), user);
   });
-  test("legacy path-only baseline rejects same path without pretending unstage fixes it", (dir, state) => {
+  test("a missing snapshot prevents a repair commit", (dir, state) => {
     delete state.repair_baseline_index;
     stageRepair(dir);
-    blocked(dir, state, /旧状态缺少暂存内容基线/);
+    blocked(dir, state, /缺少暂存内容基线/);
   });
   test("changed HEAD rejects stale coordinates", (dir, state) => {
     git(dir, ["restore", "--staged", "source.js"]);
@@ -189,9 +189,8 @@ try {
     git(dir, ["add", "source.js"]);
     blocked(dir, state, /用户改动/);
   });
-  test("clearing baseline clears both paths and content", (dir, state) => {
+  test("clearing the repair snapshot removes its staged entries", (dir, state) => {
     clearStagedBaseline(state);
-    assert.deepEqual(state.repair_baseline_staged, []);
     assert.equal(state.repair_baseline_index, null);
   });
   console.log(`${passed} staged guard tests passed`);

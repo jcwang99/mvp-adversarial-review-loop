@@ -39,12 +39,6 @@ function authorizationReceipt(state, action, scope) {
 function wasAuthorized(state, action, scope, receipts) {
   const entries = state.authorizations;
   if (!Array.isArray(entries) || !entries.every(validAuthorization)) return false;
-  // Legacy records cannot prove whether an action preceded a revocation. Only
-  // accept an unambiguous history; re-record the action after renewed consent.
-  if (receipts === undefined || (receipts && typeof receipts === "object" && !Array.isArray(receipts) && !Object.hasOwn(receipts, action))) {
-    return hasAuthorization(state, action, scope) && !entries.some((entry) =>
-      entry.action === action && (!entry.scope || entry.scope === scope) && entry.decision === "declined");
-  }
   if (!receipts || typeof receipts !== "object" || Array.isArray(receipts)) return false;
   const receipt = receipts[action];
   if (!receipt || typeof receipt !== "object" || Array.isArray(receipt) ||

@@ -39,7 +39,7 @@ function run(project, args, { expectFail = false } = {}) {
       if (state.current_phase === "round_decision") {
         const findingsPath = path.join(project, ".review-evidence/findings.json");
         const findings = JSON.parse(fs.readFileSync(findingsPath, "utf8")).findings || [];
-        const adjacent = findings.filter((finding) => testPolicy.adjacentRound(finding) === state.current_round && finding.verification === "pass" && (finding.adjacent_tests || []).length > 0);
+        const adjacent = findings.filter((finding) => finding.adjacent_round === state.current_round && finding.verification === "pass" && (finding.adjacent_tests || []).length > 0);
         if (adjacent.length) {
           const paths = [...new Set(adjacent.flatMap((finding) => finding.adjacent_tests))].sort();
           const command = testPolicy.expandAdjacentCommand("node --test {test_paths}", paths);
@@ -49,7 +49,7 @@ function run(project, args, { expectFail = false } = {}) {
           const testedCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: project, encoding: "utf8" }).trim();
           execFileSync(process.execPath, [CLI, "record-adjacent-batch", "--status", "pass", "--command", command, "--exit-status", "0", "--tree-hash", tree, "--tested-commit", testedCommit, "--log", log, "--test-count", String(paths.length), "--failed-count", "0", "--project", project], { cwd: project, stdio: "ignore" });
         }
-        const allPaths = testPolicy.adjacentTestPaths({ findings }, state.current_round, state.adjacent_promotions || [], state);
+        const allPaths = testPolicy.adjacentTestPaths(state);
         if (args[args.indexOf("--to") + 1] === "final_audit" && allPaths.length) {
           const command = testPolicy.expandAdjacentCommand("node --test {test_paths}", allPaths);
           const log = `.review-evidence/final-adjacent-${state.final_audit_attempt + 1}-${Date.now()}.log`;
@@ -318,6 +318,40 @@ function test(name, fn) {
   }
 }
 
+test("role models resolve at startup, by domain and after resuming", () => {
+  const project = makeProject();
+  const start = ["init", "--max-rounds", "2", "--user-confirmed"];
+  for (const invalid of [["no-such-role=x"], ["SEC="], ["sec=x", "security=y"]]) {
+    run(project, [...start, ...invalid.flatMap((value) => ["--role-model", value])], { expectFail: true });
+    assert.equal(fs.existsSync(path.join(project, ".review-evidence/review-config.json")), false);
+  }
+  run(project, [...start, "--role-model", "review=A", "--role-model", "func=provider/B", "--role-model", "repair=C"]);
+  const template = fs.readFileSync(path.join(project, ".review-evidence/baseline.md"), "utf8");
+  assert.match(template, /- Optimistic repair policy: off/);
+  assert.doesNotMatch(template, /^## Verification$/m);
+  const model = (role) => JSON.parse(run(project, ["model-for", "--role", role])).model;
+  assert.equal(model("functionality"), "provider/B");
+  assert.equal(model("REL"), "A");
+  assert.equal(model("repair"), "C");
+  for (const role of ["main", "verification", "replay", "challenge", "reinforce", "final-audit"]) assert.equal(model(role), null);
+  run(project, ["model-for", "--role", "typo"], { expectFail: true });
+  const config = JSON.parse(run(project, ["status", "--json"])).config;
+  assert.deepEqual(config.role_models, { review: "A", FUNC: "provider/B", repair: "C" });
+  delete config.role_models;
+  writeJson(project, ".review-evidence/review-config.json", config);
+  assert.match(String(run(project, ["validate"], { expectFail: true }).stderr), /role_models/);
+});
+
+test("interactive init accepts optional models and a blank default", () => {
+  for (const [input, rounds, models] of [["\n", 5, {}], ["3 main=Main-A api=Model/B\n", 3, {main: "Main-A", API: "Model/B"}], ["review=A\n", 5, { review: "A" }]]) {
+    const project = makeProject();
+    execFileSync(process.execPath, [CLI, "init", "--interactive", "--project", project], { input });
+    const config = JSON.parse(run(project, ["status", "--json"])).config;
+    assert.equal(config.max_rounds, rounds);
+    assert.deepEqual(config.role_models, models);
+  }
+});
+
 // FUNC-001: every raw candidate must have exactly one accounted disposition.
 test("validate rejects replay evidence when its reproduction file hash changes", () => {
   const project = makeProject();
@@ -326,6 +360,13 @@ test("validate rejects replay evidence when its reproduction file hash changes",
     id: "R1-F001-SEC", role: "SEC", original: "SEC-001", severity: "P2",
     slug: "r1_f001_replay_hash",
   });
+  const report = path.join(project, evidence, "replay-review.md");
+  const original = fs.readFileSync(report, "utf8");
+  fs.writeFileSync(report, original.replace('"exit_status": 0', '"exit_status": 1'));
+  run(project, ["validate"]);
+  fs.writeFileSync(report, original.replace('"exit_status": 0', '"exit_status": null'));
+  assert.match(String(run(project, ["validate"], { expectFail: true }).stderr), /退出码/);
+  fs.writeFileSync(report, original);
   write(project, `${evidence}/reproduce.test.js`, "// altered after replay\n");
   const result = run(project, ["validate"], { expectFail: true });
   assert.match(String(result.stderr) + String(result.stdout), /replay 测试文件 SHA-256 不匹配/);
@@ -427,23 +468,30 @@ test("FUNC-001 reconciles identities, exclusions, duplicate mappings and counts"
   data.findings.push({ id: "R2-F001-FUNC", source: "review", original_ids: ["FUNC-001"], decision: "deferred" });
   data.findings.push({ id: "R1-F003-FUNC", source: "final-audit", original_ids: ["FA-001"] });
   assert.equal(check(), "");
-  // Canonical directories retain handoffs when evidence is moved out of inbox.
-  const moved = path.join(project, ".review-evidence/round-1/R1-F001-FUNC");
-  fs.renameSync(path.join(project, ".review-evidence/round-1/inbox/functionality/FUNC-001"), moved);
-  const movedHandoff = JSON.parse(fs.readFileSync(path.join(moved, "handoff.json")));
-  movedHandoff.findings[0].evidence_dir = ".review-evidence/round-1/R1-F001-FUNC";
-  movedHandoff.findings[0].counterexample_file = ".review-evidence/round-1/R1-F001-FUNC/counterexample.md";
-  writeJson(project, ".review-evidence/round-1/R1-F001-FUNC/handoff.json", movedHandoff);
-  assert.equal(check(), "");
+  // Only the original inbox can establish submission provenance.
+  fs.renameSync(path.join(project, ".review-evidence/round-1/inbox/functionality/FUNC-001"),
+    path.join(project, ".review-evidence/round-1/R1-F001-FUNC"));
+  assert.match(check(), /FUNC-001/);
 });
 
 test("FUNC-001 completed rounds are rechecked by validate and finalize", () => {
   const project = makeProject();
   setupTwoCleanRounds(project);
   const audit = ".review-evidence/round-2/final-audit/attempt-1";
-  write(project, `${audit}/blind-scan.md`, "# Blind Scan\n");
-  write(project, `${audit}/targeted-review.md`, "# Targeted Review\n");
-  run(project, ["record-audit", "--attempt", "1", "--status", "complete", "--new-issues", "0", "--auditor", "independent-auditor"]);
+  write(project, `${audit}/blind-scan.md`, "# Blind Scan\n\nChecked the fixture contract.\n");
+  write(project, audit + "/targeted-review.md", "# Targeted Review\n");
+  const record = ["record-audit", "--attempt", "1", "--status", "complete", "--new-issues", "0", "--auditor", "independent-auditor"];
+  assert.match(String(run(project, record, { expectFail: true }).stderr), /full_suite/);
+  testPolicyFixtures.writeAuditEvidence(project, audit);
+  const log = path.join(project, audit, "output-full-suite.log");
+  const original = fs.readFileSync(log, "utf8");
+  fs.appendFileSync(log, "EXIT_CODE=1\n");
+  assert.match(String(run(project, record, { expectFail: true }).stderr), /EXIT_CODE/);
+  fs.writeFileSync(log, original);
+  run(project, record);
+  fs.appendFileSync(log, "altered\n");
+  assert.match(String(run(project, ["validate"], { expectFail: true }).stderr), /摘要/);
+  fs.writeFileSync(log, original);
   run(project, ["advance", "--to", "report"]);
   run(project, ["finalize", "--status", "converged", "--ack-empty-coverage"]);
   addCandidate(project, 1, "FUNC-099");
@@ -453,7 +501,7 @@ test("FUNC-001 completed rounds are rechecked by validate and finalize", () => {
   }
 });
 
-test("FUNC-001 preserves batched handoffs copied into canonical evidence", () => {
+test("FUNC-001 deduplicates identical batched inbox handoffs and rejects conflicts", () => {
   const { validateRoundCandidates } = require("./lib/validate");
   const project = makeProject();
   init(project);
@@ -477,11 +525,9 @@ test("FUNC-001 preserves batched handoffs copied into canonical evidence", () =>
   // Agents may save their complete batch response in each candidate inbox.
   writeHandoff(project, 1, "FUNC", "FUNC-002", batch.findings);
   assert.equal(check(), "");
-  // Removing only the original handoff exercises recovery from retained copies.
-  fs.unlinkSync(path.join(project, inbox, "handoff.json"));
-  assert.equal(check(), "");
+
   batch.findings[0].claim = "Conflicting copy";
-  writeJson(project, ".review-evidence/round-1/R1-F002-FUNC/handoff.json", batch);
+  writeHandoff(project, 1, "FUNC", "FUNC-002", batch.findings);
   assert.match(check(), /FUNC-001.*矛盾/);
 });
 
@@ -1092,8 +1138,8 @@ test("full happy path reaches converged", () => {
   assert.match(fs.readFileSync(path.join(project, ".review-evidence/round-2/final-audit/attempt-1/adjacent-batch-attempt-1.md"), "utf8"), /"status": "fail"/);
 
   const audit = ".review-evidence/round-2/final-audit/attempt-1";
-  write(project, `${audit}/blind-scan.md`, "# Blind Scan\n");
-  write(project, `${audit}/targeted-review.md`, "# Targeted Review\n");
+  write(project, `${audit}/blind-scan.md`, "# Blind Scan\n\nChecked the fixture contract.\n");
+  testPolicyFixtures.writeAuditEvidence(project, audit);
   run(project, [
     "record-audit",
     "--attempt",
@@ -1151,8 +1197,8 @@ test("final audit rejected issue at max_rounds can still converge", () => {
   run(project, ["advance", "--to", "final_audit"]);
 
   const audit = ".review-evidence/round-2/final-audit/attempt-1";
-  write(project, `${audit}/blind-scan.md`, "# Blind Scan\n");
-  write(project, `${audit}/targeted-review.md`, "# Targeted Review\n");
+  write(project, `${audit}/blind-scan.md`, "# Blind Scan\n\nChecked the fixture contract.\n");
+  testPolicyFixtures.writeAuditEvidence(project, audit);
   run(project, [
     "record-audit",
     "--attempt",
@@ -1373,6 +1419,129 @@ test("progressive mode requires a current-HEAD full regression gate before leavi
   const state = JSON.parse(fs.readFileSync(path.join(project, ".review-evidence/state.json"), "utf8"));
   assert.equal(state.current_phase, "review");
   assert.equal(state.rounds[0].regression_gate.status, "pass");
+  addRoundHandoffs(project, 2);
+  run(project, ["record-round", "--round", "2", "--raw", "0", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+  run(project, ["advance", "--to", "adjudication"]);
+  run(project, ["advance", "--to", "round_decision"]);
+  run(project, ["record-round-regression", "--reuse"]);
+  run(project, ["advance", "--to", "final_audit"]);
+});
+
+test("progressive round reuse accepts a verified finding's independent full run", () => {
+  const project = makeProject();
+  write(project, "tests/fix.test.js", "// R1-F001-FUNC committed regression\n");
+  testPolicyFixtures.git(project, ["add", "tests/fix.test.js"]);
+  testPolicyFixtures.git(project, ["commit", "-qm", "add existing formal regression"]);
+  init(project);
+  const baseline = path.join(project, ".review-evidence/baseline.md");
+  fs.writeFileSync(baseline, fs.readFileSync(baseline, "utf8").replace("Tiering mode: default", "Tiering mode: progressive"));
+  const id = "R1-F001-FUNC";
+  const evidence = setupAcceptedFinding(project, { id, role: "FUNC", original: "FUNC-001", severity: "P2", slug: "r1_f001_func" });
+  run(project, ["advance", "--to", "repair"]);
+  write(project, evidence + "/implementation-result.md", "# Already fixed\n## RED\nregression already passes\n## GREEN\nverified in HEAD\n");
+  run(project, ["record-implementation", "--id", id, "--status", "already_fixed", "--commit", testPolicyFixtures.git(project, ["rev-parse", "HEAD"]), "--test", "tests/fix.test.js"]);
+  run(project, ["advance", "--to", "verification"]);
+  write(project, evidence + "/verification-result.md", "# Verification\n**Final Verdict**: pass\n");
+  run(project, ["record-verification", "--id", id, "--status", "pass", "--adjacent-reason", "isolated fixture"]);
+  run(project, ["advance", "--to", "round_decision"]);
+  run(project, ["record-round-regression", "--reuse"]);
+  const state = JSON.parse(fs.readFileSync(path.join(project, ".review-evidence/state.json"), "utf8"));
+  assert.equal(state.rounds[0].regression_gate.reused_from, id);
+  run(project, ["advance", "--to", "review"]);
+});
+
+test("progressive round reuse binds the original baseline run and refuses changed inputs", () => {
+  const project = makeProject();
+  write(project, "smoke.test.js", 'require("node:test")("smoke", () => {});\n');
+  testPolicyFixtures.git(project, ["add", "smoke.test.js"]);
+  testPolicyFixtures.git(project, ["commit", "-qm", "add smoke test"]);
+  init(project);
+  const baseline = path.join(project, ".review-evidence/baseline.md");
+  const policy = fs.readFileSync(baseline, "utf8").replace("Tiering mode: default", "Tiering mode: progressive");
+  fs.writeFileSync(baseline, policy);
+  const head = testPolicyFixtures.git(project, ["rev-parse", "HEAD"]);
+  const tree = testPolicy.gitTree(project, head);
+  const result = execFileSync(process.execPath, ["--test"], { cwd: project, encoding: "utf8" });
+  const log = ".review-evidence/baseline-full.log";
+  const originalLog = "COMMAND=node --test\n" + result + "\nEXIT_CODE=0\n";
+  write(project, log, originalLog);
+  const suite = { status: "pass", command: "node --test", exit_status: 0, tested_commit: head,
+    tree_hash_before: tree, tree_hash_after: tree, run_location: "main-workspace",
+    workspace_clean_before: true, workspace_clean_after: true, test_counts: { total: 1, passed: 1, failed: 0, skipped: 0 },
+    expected_test_count_delta: 0, expected_skipped_count_delta: 0, log };
+  writeJson(project, ".review-evidence/baseline-full.json", { full_suite: suite });
+  const reuse = ["record-round-regression", "--reuse"];
+  for (const round of [1, 2]) {
+    run(project, ["advance", "--to", "review"]);
+    addRoundHandoffs(project, round);
+    run(project, ["record-round", "--round", String(round), "--raw", "0", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+    run(project, ["advance", "--to", "adjudication"]);
+    run(project, ["advance", "--to", "round_decision"]);
+    run(project, ["validate"]);
+    if (round === 1) {
+      writeJson(project, ".review-evidence/baseline-full.json", { full_suite: suite, changed: true });
+      assert.match(String(run(project, reuse, { expectFail: true }).stderr), /文件哈希/);
+      writeJson(project, ".review-evidence/baseline-full.json", { full_suite: suite });
+      write(project, log, originalLog + "extra output\n");
+      assert.match(String(run(project, reuse, { expectFail: true }).stderr), /log hash/);
+      write(project, log, originalLog);
+      fs.appendFileSync(baseline, "\nchanged configuration\n");
+      assert.match(String(run(project, reuse, { expectFail: true }).stderr), /baseline 已变更/);
+      fs.writeFileSync(baseline, policy);
+      write(project, "new-input.json", "{}\n");
+      assert.match(String(run(project, reuse, { expectFail: true }).stderr), /未提交改动/);
+      fs.unlinkSync(path.join(project, "new-input.json"));
+    }
+    run(project, reuse);
+    const state = JSON.parse(fs.readFileSync(path.join(project, ".review-evidence/state.json"), "utf8"));
+    assert.equal(state.rounds[round - 1].regression_gate.reused_from, "baseline");
+  }
+  run(project, ["validate"]);
+  testPolicyFixtures.git(project, ["commit", "--allow-empty", "-qm", "same tree, different HEAD"]);
+  assert.match(String(run(project, reuse, { expectFail: true }).stderr), /不同 HEAD/);
+  run(project, ["record-round-regression", "--status", "inconclusive", "--reason", "environment changed"]);
+  assert.match(String(run(project, reuse, { expectFail: true }).stderr), /没有可复用/);
+});
+
+test("two unchanged progressive rounds reach a report with two real full-suite invocations", () => {
+  const project = makeProject();
+  const counter = ".review-evidence/full-invocations.txt";
+  write(project, "contract.test.js", 'require("node:test")("contract", () => require("node:fs").appendFileSync("' + counter + '", "run\\n"));\n');
+  testPolicyFixtures.git(project, ["add", "contract.test.js"]);
+  testPolicyFixtures.git(project, ["commit", "-qm", "add project contract"]);
+  init(project);
+  const baseline = path.join(project, ".review-evidence/baseline.md");
+  fs.writeFileSync(baseline, fs.readFileSync(baseline, "utf8").replace("Tiering mode: default", "Tiering mode: progressive"));
+  const head = testPolicyFixtures.git(project, ["rev-parse", "HEAD"]);
+  const tree = testPolicy.gitTree(project, head);
+  const runFull = (log) => {
+    const output = execFileSync(process.execPath, ["--test"], { cwd: project, encoding: "utf8" });
+    assert.match(output, /^# pass 1$/m);
+    write(project, log, "COMMAND=node --test\n" + output + "\nEXIT_CODE=0\n");
+    return { full_suite: { command: "node --test", status: "pass", exit_status: 0, tested_commit: head,
+      tree_hash_before: tree, tree_hash_after: tree, run_location: "main-workspace", workspace_clean_before: true,
+      workspace_clean_after: true, test_counts: { total: 1, passed: 1, failed: 0, skipped: 0 },
+      expected_test_count_delta: 0, expected_skipped_count_delta: 0, log } };
+  };
+  writeJson(project, ".review-evidence/baseline-full.json", runFull(".review-evidence/baseline-full.log"));
+  for (const round of [1, 2]) {
+    startAdjudication(project, round);
+    run(project, ["advance", "--to", "round_decision"]);
+    run(project, ["record-round-regression", "--reuse"]);
+  }
+  run(project, ["advance", "--to", "final_audit"]);
+  const dir = ".review-evidence/round-2/final-audit/attempt-1";
+  write(project, dir + "/blind-scan.md", "Checked the project contract. No findings.\n");
+  const evidence = runFull(dir + "/output-full-suite.log");
+  write(project, dir + "/targeted-review.md", "## Reviewctl Audit Evidence\n~~~json\n" + JSON.stringify(evidence) + "\n~~~\n");
+  run(project, ["record-audit", "--attempt", "1", "--status", "complete", "--new-issues", "0", "--auditor", "audit-1"]);
+  run(project, ["advance", "--to", "report"]);
+  run(project, ["finalize", "--status", "converged", "--ack-empty-coverage"]);
+  assert.equal(fs.readFileSync(path.join(project, counter), "utf8"), "run\nrun\n");
+  write(project, "src.js", "module.exports = 2;\n");
+  testPolicyFixtures.git(project, ["add", "src.js"]);
+  testPolicyFixtures.git(project, ["commit", "-qm", "change audited code"]);
+  assert.match(String(run(project, ["finalize", "--status", "converged", "--ack-empty-coverage"], { expectFail: true }).stderr), /终审后项目|最终审计后项目/);
 });
 
 test("progressive GREEN accepts fast evidence only for normal-risk P2/P3 findings", () => {
@@ -1881,6 +2050,19 @@ test("invalid rounds fail validation and normalize without changing state", () =
   assert.equal(fs.readFileSync(statePath, "utf8"), originalState);
 });
 
+test("normalize leaves malformed audit and registry history intact", () => {
+  const project = makeProject();
+  init(project);
+  const filename = ".review-evidence/state.json";
+  const state = JSON.parse(fs.readFileSync(path.join(project, filename), "utf8"));
+  state.final_audit.attempts = null;
+  delete state.adjacent_registry;
+  writeJson(project, filename, state);
+  const original = fs.readFileSync(path.join(project, filename));
+  for (const command of ["validate", "normalize"]) assert.match(String(run(project, [command], { expectFail: true }).stderr), /final_audit.attempts/);
+  assert.deepEqual(fs.readFileSync(path.join(project, filename)), original);
+});
+
 test("help lists the full advanced parameter set", () => {
   const output = run(makeProject(), ["help"]);
   assert.match(output, /--change-origin/);
@@ -1976,6 +2158,9 @@ test("P3 unclear_claim and rejected final-audit findings do not block convergenc
   const reasons = convergenceReasons(state, config, data, "converged", { ackEmptyCoverage: true });
   assert.equal(reasons.length, 0);
 
+  state.final_audit.attempts[0].full_evidence = { status: "fail" };
+  assert.match(convergenceReasons(state, config, data, "converged").join(" "), /full 未通过/);
+  state.final_audit.attempts[0].full_evidence.status = "pass";
   const acceptedAuditData = {
     findings: [
       {
@@ -2065,8 +2250,8 @@ test("re-entered final audit requires its own recorded result", () => {
   }
   run(project, ["advance", "--to", "final_audit"]);
   const audit1 = ".review-evidence/round-2/final-audit/attempt-1";
-  write(project, `${audit1}/blind-scan.md`, "# Blind Scan\n");
-  write(project, `${audit1}/targeted-review.md`, "# Targeted Review\n");
+  write(project, `${audit1}/blind-scan.md`, "# Blind Scan\n\nChecked the fixture contract.\n");
+  testPolicyFixtures.writeAuditEvidence(project, audit1);
   run(project, ["record-audit", "--attempt", "1", "--status", "complete", "--new-issues", "1", "--auditor", "test-auditor"]);
   run(project, ["advance", "--to", "adjudication"]);
 
@@ -2104,9 +2289,9 @@ test("re-entered final audit requires its own recorded result", () => {
   writeJson(project, ".review-evidence/state.json", unrecordedAttempt2);
 
   const audit2 = ".review-evidence/round-3/final-audit/attempt-2";
-  write(project, `${audit2}/blind-scan.md`, "# Blind Scan\n");
-  write(project, `${audit2}/targeted-review.md`, "# Targeted Review\n");
-  run(project, ["record-audit", "--attempt", "2", "--status", "complete", "--new-issues", "0", "--auditor", "test-auditor"]);
+  write(project, `${audit2}/blind-scan.md`, "# Blind Scan\n\nChecked the fixture contract.\n");
+  testPolicyFixtures.writeAuditEvidence(project, audit2);
+  run(project, ["record-audit", "--attempt", "2", "--status", "complete", "--new-issues", "0", "--auditor", "second-auditor"]);
   run(project, ["advance", "--to", "report"]);
   run(project, ["finalize", "--status", "converged"]);
 
@@ -2130,8 +2315,9 @@ test("accepted final-audit finding can trigger a new round and re-audit", () => 
   }
   run(project, ["advance", "--to", "final_audit"]);
   const audit1 = ".review-evidence/round-2/final-audit/attempt-1";
-  write(project, `${audit1}/blind-scan.md`, "# Blind Scan\n");
-  write(project, `${audit1}/targeted-review.md`, "# Targeted Review\n");
+  write(project, `${audit1}/blind-scan.md`, "# Blind Scan\n\nChecked the fixture contract.\n");
+  testPolicyFixtures.writeAuditEvidence(project, audit1, "fail");
+  assertCommandFails(project, ["record-audit", "--attempt", "1", "--status", "complete", "--new-issues", "0", "--auditor", "test-auditor"]);
   run(project, ["record-audit", "--attempt", "1", "--status", "complete", "--new-issues", "1", "--auditor", "test-auditor"]);
   run(project, ["advance", "--to", "adjudication"]);
 
@@ -2179,9 +2365,9 @@ test("accepted final-audit finding can trigger a new round and re-audit", () => 
   run(project, ["advance", "--to", "final_audit"]);
 
   const audit2 = ".review-evidence/round-3/final-audit/attempt-2";
-  write(project, `${audit2}/blind-scan.md`, "# Blind Scan\n");
-  write(project, `${audit2}/targeted-review.md`, "# Targeted Review\n");
-  run(project, ["record-audit", "--attempt", "2", "--status", "complete", "--new-issues", "0", "--auditor", "test-auditor"]);
+  write(project, `${audit2}/blind-scan.md`, "# Blind Scan\n\nChecked the fixture contract.\n");
+  testPolicyFixtures.writeAuditEvidence(project, audit2);
+  run(project, ["record-audit", "--attempt", "2", "--status", "complete", "--new-issues", "0", "--auditor", "second-auditor"]);
   run(project, ["advance", "--to", "report"]);
   run(project, ["finalize", "--status", "converged"]);
 });

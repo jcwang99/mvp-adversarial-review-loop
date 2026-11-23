@@ -61,6 +61,22 @@ const ROLES = {
   OPS: "operations",
   PROD: "product",
 };
+const MODEL_ROLES = ["main", "review", ...Object.keys(ROLES), "replay", "challenge", "reinforce", "repair", "verification", "final-audit"];
+
+function modelRole(value) {
+  const name = String(value).trim().toLowerCase();
+  return MODEL_ROLES.find((role) => role.toLowerCase() === name || ROLES[role] === name);
+}
+
+function validateRoleModels(models) {
+  if (!models || typeof models !== "object" || Array.isArray(models)) return ["role_models 必须是角色到模型的映射"];
+  return Object.entries(models).flatMap(([role, model]) => {
+    if (!MODEL_ROLES.includes(role)) return [`未知模型角色：${role}`];
+    if (typeof model !== "string" || !model.trim() || model !== model.trim() || /[\x00-\x1f\x7f]/.test(model)) return [`${role} 的模型名称必须为非空单行文本`];
+    return [];
+  });
+}
+
 const FINDING_ID = /^R(\d+)-F(\d{3})-(SEC|FUNC|REL|API|PERF|UX|OPS|PROD)$/;
 const TEMP_ID = /^(SEC|FUNC|REL|API|PERF|UX|OPS|PROD)-\d{3}$/;
 const AUDIT_TEMP_ID = /^FA-\d{3}$/;
@@ -129,11 +145,12 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-function defaultConfig(project, maxRounds, mode) {
+function defaultConfig(project, maxRounds, mode, roleModels = {}) {
   const at = now();
   return {
     schema_version: SCHEMA_VERSION,
     max_rounds: maxRounds,
+    role_models: roleModels,
     confirmed_by_user: true,
     confirmed_at: at,
     confirmation_mode: mode,
@@ -156,9 +173,9 @@ function defaultState(config) {
     active_finding: null,
     baseline_head: config.baseline_head,
     current_head: config.baseline_head,
-    repair_baseline_staged: [],
     repair_baseline_index: null,
     optimistic_repairs: [],
+    last_full_run: null,
     last_completed_event: "initialized",
     next_action: "建立 baseline 并进入 review",
     blockers: [],
@@ -223,6 +240,7 @@ function ensureRound(state, round) {
       replay_eligible: null,
       new_in_scope_p0p1p2: null,
       adjacent_batch: null,
+      regression_gate_attempts: [],
       started_at: now(),
       completed_at: null,
     };
@@ -243,7 +261,7 @@ function lastAudit(state) {
 }
 
 function validateConfig(config) {
-  const errors = [];
+  const errors = validateRoleModels(config.role_models);
   if (config.schema_version !== SCHEMA_VERSION) errors.push("review-config.json schema_version 必须为 1");
   if (!Number.isInteger(config.max_rounds) || config.max_rounds < 2) {
     errors.push("max_rounds 必须是 >= 2 的整数");
@@ -315,23 +333,21 @@ function validateState(state, config) {
   if (!Array.isArray(state.blockers)) errors.push("blockers 必须是数组");
   if (!Array.isArray(state.authorizations)) errors.push("authorizations 必须是数组");
   else if (!state.authorizations.every(validAuthorization)) errors.push("authorizations 包含非法记录");
-  if (state.adjacent_promotions !== undefined && !Array.isArray(state.adjacent_promotions)) errors.push("adjacent_promotions 必须是数组");
-  if (state.adjacent_registry !== undefined) {
-    if (!Array.isArray(state.adjacent_registry) || state.adjacent_registry.some((entry) =>
-      !entry || typeof entry.test_path !== "string" || !FINDING_ID.test(entry.finding_id) ||
-      !Number.isInteger(entry.round) || entry.round < 1 || entry.round > state.current_round)) {
-      errors.push("adjacent_registry 必须包含合法的测试路径、finding 和登记轮次");
-    } else if (new Set(state.adjacent_registry.map((entry) => entry.test_path)).size !== state.adjacent_registry.length) {
-      errors.push("adjacent_registry 不得重复登记路径");
-    }
+  if (!Array.isArray(state.adjacent_promotions)) errors.push("adjacent_promotions 必须是数组");
+  if (!Array.isArray(state.adjacent_registry) || state.adjacent_registry.some((entry) =>
+    !entry || typeof entry.test_path !== "string" || !FINDING_ID.test(entry.finding_id) ||
+    !Number.isInteger(entry.round) || entry.round < 1 || entry.round > state.current_round)) {
+    errors.push("adjacent_registry 必须包含合法的测试路径、finding 和登记轮次");
+  } else if (new Set(state.adjacent_registry.map((entry) => entry.test_path)).size !== state.adjacent_registry.length) {
+    errors.push("adjacent_registry 不得重复登记路径");
   }
   if (!Array.isArray(state.rounds)) errors.push("rounds 必须是数组");
-  if (state.repair_baseline_staged !== undefined && !Array.isArray(state.repair_baseline_staged)) {
-    errors.push("repair_baseline_staged 必须是数组");
+  else if (state.rounds.some((round) => !round || !Number.isInteger(round.round) || !Array.isArray(round.roles))) {
+    errors.push("rounds 条目必须包含轮次和 roles 数组");
   }
-  if (state.optimistic_repairs !== undefined && !Array.isArray(state.optimistic_repairs)) {
+  if (!Array.isArray(state.optimistic_repairs)) {
     errors.push("optimistic_repairs 必须是数组");
-  } else if (Array.isArray(state.optimistic_repairs)) {
+  } else {
     const optimisticIds = new Set();
     const activeStatuses = new Set(["started", "candidate_green", "promote_pending_commit"]);
     for (const entry of state.optimistic_repairs) {
@@ -365,14 +381,10 @@ function validateState(state, config) {
         typeof indexBaseline.head !== "string" || !/^[a-f0-9]{40,64}$/.test(indexBaseline.head) ||
         !indexBaseline.files || typeof indexBaseline.files !== "object" || Array.isArray(indexBaseline.files)) {
       errors.push("repair_baseline_index 必须包含 HEAD 和逐文件暂存 diff");
-    } else {
-      const paths = Array.isArray(state.repair_baseline_staged) ? state.repair_baseline_staged : [];
-      if (Object.keys(indexBaseline.files).length !== paths.length || paths.some((file) => {
-        const change = indexBaseline.files[file];
-        return !change || typeof change.raw !== "string" || typeof change.patch !== "string";
-      })) errors.push("repair_baseline_index 与 repair_baseline_staged 不一致");
+    } else if (Object.values(indexBaseline.files).some((change) => !change || typeof change.raw !== "string" || typeof change.patch !== "string")) {
+      errors.push("repair_baseline_index 必须保留每个已暂存文件的原始差异");
     }
-  }
+  } else if (state.current_phase === "repair") errors.push("repair 缺少暂存内容基线");
   if (!state.final_audit || !Array.isArray(state.final_audit.attempts)) {
     errors.push("final_audit.attempts 必须是数组");
   } else {
@@ -385,6 +397,10 @@ function validateState(state, config) {
       !Number.isInteger(state.final_audit.reentry_after_round)
     ) {
       errors.push("final_audit.reentry_after_round 必须是整数或 null");
+    }
+    if (state.final_audit.attempts.some((entry) => !entry || !Number.isInteger(entry.attempt) || !Number.isInteger(entry.round))) {
+      errors.push("final_audit.attempts 包含非法的轮次或 attempt");
+      return errors;
     }
     const maxAttempt = state.final_audit.attempts.reduce(
       (max, attempt) => Math.max(max, Number(attempt.attempt) || 0),
@@ -659,6 +675,7 @@ function convergenceReasons(state, config, data, target, options = {}) {
   if (!audit || audit.status !== "complete") {
     reasons.push("最终审计未完成");
   } else {
+    if (audit.full_evidence?.status === "fail") reasons.push("最终审计 full 未通过");
     const auditFindings = findings.filter(
       (finding) => finding.source === "final-audit" && finding.audit_attempt === audit.attempt
     );
@@ -685,6 +702,9 @@ function convergenceReasons(state, config, data, target, options = {}) {
 
 module.exports = {
   SCHEMA_VERSION,
+  MODEL_ROLES,
+  modelRole,
+  validateRoleModels,
   PHASES,
   TRANSITIONS,
   STATUSES,

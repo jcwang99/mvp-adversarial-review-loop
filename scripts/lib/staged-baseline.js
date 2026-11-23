@@ -23,12 +23,10 @@ function captureStagedBaseline(project, state) {
   const paths = git(project, ["diff", "--cached", "--no-renames", "--name-only", "-z", head])
     .split("\0").filter(Boolean);
   for (const file of paths) files[file] = stagedChange(project, head, file);
-  state.repair_baseline_staged = paths;
   state.repair_baseline_index = { head, files };
 }
 
 function clearStagedBaseline(state) {
-  state.repair_baseline_staged = [];
   state.repair_baseline_index = null;
 }
 
@@ -79,9 +77,6 @@ function countBlock(text, block) {
 
 function stagedBaselineConflict(project, file, state) {
   const baseline = state && state.repair_baseline_index;
-  if (!baseline || !baseline.files || !Object.prototype.hasOwnProperty.call(baseline.files, file)) {
-    return "旧状态缺少暂存内容基线，无法证明同路径改动已安全分离";
-  }
   try {
     if (git(project, ["rev-parse", "--verify", "HEAD"]).trim() !== baseline.head) {
       return "HEAD 已变化，无法使用开始修复时的暂存内容基线安全比较";

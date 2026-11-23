@@ -23,7 +23,7 @@ const baseline = [
   "# Review Baseline", "", "## Test Scope / Regression Policy",
   "- Tiering mode: default", "- Full-suite duration: short", "- Baseline full result: pass",
   "- Baseline full log: .review-evidence/baseline-full.log", "- Expected test count: 1 / 1 / 0 / 0",
-  "- Full suite composition: unit", "- Focused test command: node test.js", "- Impacted test command: node test.js",
+  "- Full suite composition: unit", "- Focused test command: node test.js", "- Impacted test command: node test.js --impacted",
   "- Fast test command: node test.js", "- Fast test profile: none", "- Fast profile semantics: not_applicable",
   "- Long-running test policy: none", "- Long-running test inventory: none", "- Full runtime scale: not_applicable",
   "- Time/volume scaling evidence: not_applicable", "- Code quality command: node --check src.js",
@@ -43,6 +43,7 @@ const statePath = path.join(project, ".review-evidence/state.json");
 const findingsPath = path.join(project, ".review-evidence/findings.json");
 const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
 state.current_phase = "repair";
+require("./lib/staged-baseline").captureStagedBaseline(project, state);
 state.active_finding = "R1-F001-FUNC";
 state.optimistic_repairs = [];
 fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
@@ -64,7 +65,7 @@ execFileSync("git", ["add", "src.js"], { cwd: worktree });
 execFileSync("git", ["commit", "-qm", "fix(review): candidate"], { cwd: worktree });
 const candidate = git(worktree, ["rev-parse", "HEAD"]);
 const candidateTree = git(worktree, ["rev-parse", `${candidate}^{tree}`]);
-write(worktree, ".review-evidence/candidate-test.log", `COMMAND=node test.js\nTREE_HASH=${candidateTree}\nEXIT_CODE=0\n`);
+write(worktree, ".review-evidence/candidate-test.log", `COMMAND=node test.js --impacted\nTREE_HASH=${candidateTree}\nEXIT_CODE=0\n`);
 write(worktree, ".review-evidence/candidate-quality.log", `QUALITY_COMMAND=node --check src.js\nQUALITY_TREE_HASH=${candidateTree}\nEXIT_CODE=0\n`);
 run(project, ["optimistic-record", "--id", "R1-F001-FUNC", "--candidate-commit", candidate, "--test-status", "pass", "--quality-status", "pass", "--test-log", ".review-evidence/candidate-test.log", "--quality-log", ".review-evidence/candidate-quality.log"]);
 run(project, ["optimistic-promote", "--id", "R1-F001-FUNC"]);

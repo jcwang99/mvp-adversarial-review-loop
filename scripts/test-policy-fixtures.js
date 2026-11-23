@@ -137,4 +137,16 @@ function writeVerificationEvidence(project, evidenceDir, finding, risk = 'normal
   appendReport(project, evidenceDir + '/verification-result.md', 'Reviewctl Verification Evidence', evidence);
 }
 
-module.exports = { writeBaseline, writeGreenEvidence, writeVerificationEvidence, git };
+function writeAuditEvidence(project, dir, status = "pass") {
+  const suite = fullSuite(project, dir, git(project, ["rev-parse", "HEAD^{tree}"]));
+  suite.tested_commit = git(project, ["rev-parse", "HEAD"]);
+  if (status === "fail") {
+    suite.status = "fail";
+    suite.exit_status = 1;
+    suite.test_counts = { total: 1, passed: 0, failed: 1, skipped: 0 };
+    write(project, suite.log, "COMMAND=node --test\nfixture assertion failed\nEXIT_CODE=1\n");
+  }
+  appendReport(project, dir + "/targeted-review.md", "Reviewctl Audit Evidence", { full_suite: suite });
+}
+
+module.exports = { writeAuditEvidence, writeBaseline, writeGreenEvidence, writeVerificationEvidence, git };

@@ -36,7 +36,6 @@ function parseBaselinePolicy(project) {
     tieringMode: bullet(scope, "Tiering mode").toLowerCase(),
     baselineResult: bullet(scope, "Baseline full result").toLowerCase(),
     baselineLog: bullet(scope, "Baseline full log"),
-    expectedTestCount: Number((bullet(scope, "Expected test count").match(/\d+/) || [])[0]),
     focusedCommand: bullet(scope, "Focused test command"),
     impactedCommand: bullet(scope, "Impacted test command"),
     fastCommand: bullet(scope, "Fast test command"),
@@ -50,14 +49,14 @@ function parseBaselinePolicy(project) {
     qualityPolicy: bullet(scope, "Code quality policy"),
     qualityResult: bullet(scope, "Baseline code quality result").toLowerCase(),
     qualityLog: bullet(scope, "Baseline code quality log"),
-    optimisticRepairPolicy: (/^\[/.test(bullet(scope, "Optimistic repair policy")) ? "off" : (bullet(scope, "Optimistic repair policy") || "off")).toLowerCase(),
-    optimisticMaxWorktrees: Number.parseInt(/^\[/.test(bullet(scope, "Optimistic max active worktrees")) ? "1" : (bullet(scope, "Optimistic max active worktrees") || "1"), 10),
-    optimisticEligibleSeverities: (/^\[/.test(bullet(scope, "Optimistic eligible severities")) ? "P2,P3" : (bullet(scope, "Optimistic eligible severities") || "P2,P3"))
+    optimisticRepairPolicy: (bullet(scope, "Optimistic repair policy") || "off").toLowerCase(),
+    optimisticMaxWorktrees: Number(bullet(scope, "Optimistic max active worktrees") || "1"),
+    optimisticEligibleSeverities: (bullet(scope, "Optimistic eligible severities") || "P2,P3")
       .split(",").map((value) => value.trim()).filter(Boolean),
     fullCommand: bullet(scope, "Full test command"),
     adjacentCommand: bullet(scope, "Adjacent test command"),
   };
-  const baselineTestValues = bullet(scope, "Expected test count").split(" / ").map((value) => Number.parseInt(value.trim(), 10));
+  const baselineTestValues = bullet(scope, "Expected test count").split("/").map((value) => /^\d+$/.test(value.trim()) ? Number(value) : NaN);
   policy.baselineTestCounts = {
     total: baselineTestValues[0],
     passed: baselineTestValues[1],
@@ -85,10 +84,10 @@ function parseBaselinePolicy(project) {
   if (!hasLongRunningTests && (!policy.fullScale || /\[|\]|TODO/i.test(policy.fullScale))) {
     errors.push("无长时测试时 Full runtime scale 必须填写 not_applicable 或说明完整套件尺度");
   }
-  if (baselineTestValues.length < 4 || !Object.values(policy.baselineTestCounts).every((value) => Number.isSafeInteger(value) && value >= 0) || policy.expectedTestCount < 1) {
+  if (baselineTestValues.length !== 4 || !Object.values(policy.baselineTestCounts).every((value) => Number.isSafeInteger(value) && value >= 0) || policy.expectedTestCount < 1) {
     errors.push("baseline.md 的 Expected test count 必须依次记录 total / passed / failed / skipped");
-  } else if (policy.baselineTestCounts.failed !== 0 || policy.baselineTestCounts.passed + policy.baselineTestCounts.failed + policy.baselineTestCounts.skipped !== policy.expectedTestCount) {
-    errors.push("baseline.md 的测试计数必须满足 failed=0 且 passed + failed + skipped = total");
+  } else if (policy.baselineTestCounts.passed < 1 || policy.baselineTestCounts.failed !== 0 || policy.baselineTestCounts.passed + policy.baselineTestCounts.failed + policy.baselineTestCounts.skipped !== policy.expectedTestCount) {
+    errors.push("baseline.md 的测试计数必须满足 passed>0、failed=0 且 passed + failed + skipped = total");
   }
   for (const [label, value] of [
     ["Focused test command", policy.focusedCommand],
@@ -194,23 +193,8 @@ function hasExactCommand(log, command) {
   return String(log).replace(/\r/g, "").split("\n").includes(`COMMAND=${command}`);
 }
 
-function adjacentRound(finding) {
-  return finding.adjacent_round || Number(String(finding.id).match(/^R(\d+)-/)?.[1]);
-}
-
-function adjacentRegistry(state, data) {
-  const registry = new Map((Array.isArray(state.adjacent_registry) ? state.adjacent_registry : []).filter((entry) => entry && typeof entry.test_path === "string").map((entry) => [entry.test_path, entry]));
-  for (const finding of data.findings || []) {
-    if (finding.verification !== "pass") continue;
-    for (const file of finding.adjacent_tests || []) {
-      if (!registry.has(file)) registry.set(file, { test_path: file, finding_id: finding.id, round: adjacentRound(finding) });
-    }
-  }
-  return [...registry.values()];
-}
-
-function roundAdjacentPaths(state, data, round) {
-  return adjacentRegistry(state, data).filter((entry) => entry.round === round).map((entry) => entry.test_path).sort();
+function roundAdjacentPaths(state, round) {
+  return state.adjacent_registry.filter((entry) => entry.round === round).map((entry) => entry.test_path).sort();
 }
 
 function validateAdjacentLog(project, batch) {
@@ -230,7 +214,7 @@ function validateAdjacentPromotions(project, state, data, errors) {
       errors.push("相邻测试升级记录缺少 test_path");
       continue;
     }
-    const owner = adjacentRegistry(state, data).find((item) => item.test_path === promotion.test_path);
+    const owner = state.adjacent_registry.find((item) => item.test_path === promotion.test_path);
     const target = data.findings.find((item) => item.id === promotion.finding_id);
     if (seen.has(promotion.test_path)) errors.push(`相邻测试重复升级：${promotion.test_path}`);
     seen.add(promotion.test_path);
@@ -276,6 +260,14 @@ function resolveEvidencePath(project, filename, errors, label) {
     return null;
   }
   return absolute;
+}
+
+function hasRunMarkers(logPath, command, exitStatus) {
+  const lines = fs.readFileSync(logPath, "utf8").replace(/\r/g, "").split("\n");
+  const commands = lines.filter((line) => /^\s*COMMAND\s*=/.test(line));
+  const exits = lines.filter((line) => /^\s*EXIT_CODE\s*=/.test(line));
+  return commands.length === 1 && commands[0] === "COMMAND=" + command &&
+    exits.length === 1 && exits[0] === "EXIT_CODE=" + exitStatus;
 }
 
 function hasSuccessfulExit(logPath) {
@@ -370,7 +362,7 @@ function validateFullRun(project, run, policy, label, expectedTreeHash = null) {
   if (!counts || !["total", "passed", "failed", "skipped"].every((key) => Number.isSafeInteger(counts[key]) && counts[key] >= 0)) {
     errors.push(`${label} test_counts 必须包含非负整数 total/passed/failed/skipped`);
   } else {
-    if (counts.total < 1) errors.push(`${label} total 必须大于 0`);
+    if (counts.passed < 1) errors.push(`${label} 至少一个测试必须实际通过`);
     if (counts.failed !== 0) errors.push(`${label} failed 必须为 0`);
     if (counts.passed + counts.failed + counts.skipped !== counts.total) {
       errors.push(`${label} passed + failed + skipped 必须等于 total`);
@@ -502,7 +494,7 @@ function validateTestedCommit(project, testedCommit, expectedTree, label, errors
 
 function validateAdjacentBatch(project, round, state, data, errors) {
   const batch = round?.adjacent_batch;
-  const expectedPaths = roundAdjacentPaths(state, data, round.round);
+  const expectedPaths = roundAdjacentPaths(state, round.round);
   if (!expectedPaths.length) return;
   if (!parseBaselinePolicy(project).policy?.adjacentCommand) {
     errors.push(`round ${round.round}: baseline.md 缺少 Adjacent test command`);
@@ -545,7 +537,7 @@ function validateAdjacentBatch(project, round, state, data, errors) {
     const absolute = path.resolve(project, filename);
     if (!fs.existsSync(absolute)) {
       if (!reviewTestsCleaned) errors.push(`round ${round.round}: adjacent test 不存在：${filename}`);
-    } else if (testSha256(absolute).toLowerCase() !== String(batch.test_hashes?.[filename] || "").toLowerCase()) {
+    } else if (sha256File(absolute).toLowerCase() !== String(batch.test_hashes?.[filename] || "").toLowerCase()) {
       errors.push(`round ${round.round}: adjacent test hash 不匹配：${filename}`);
     }
   }
@@ -627,8 +619,23 @@ function validateRoundRegression(project, round, errors, { requireCurrentHead = 
       errors.push(`round ${round.round}: regression gate tested_commit 无效：${error.message}`);
     }
   }
-  if (gate.status === "pass") errors.push(...validateFullRun(project, gate.run, baseline.policy, `round ${round.round} full regression`, gate.tree_hash));
-  else if (gate.status === "fail") {
+  if (gate.status === "pass") {
+    errors.push(...validateFullRun(project, gate.run, baseline.policy, `round ${round.round} full regression`, gate.tree_hash));
+    const log = resolveEvidencePath(project, gate.run.log, errors, "full regression log");
+    if (log && sha256File(log) !== gate.log_sha256) errors.push("full regression log hash 不匹配");
+    if (gate.reused_from) {
+      if (log) {
+        if (!hasRunMarkers(log, gate.command, 0)) {
+          errors.push("复用要求单次 full 的精确 COMMAND 和 EXIT_CODE=0 日志");
+        }
+      }
+      if (requireCurrentHead) {
+        if (sha256File(path.join(project, EVIDENCE, "baseline.md")) !== gate.baseline_sha256) errors.push("baseline 已变更，必须重新运行 full");
+        const dirty = require("node:child_process").execFileSync("git", ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none", "--", ".", ":(exclude).review-evidence", ":(exclude)tests/review"], { cwd: project, encoding: "utf8" });
+        if (dirty) errors.push("被评审项目有未提交改动，不能复用 full");
+      }
+    }
+  } else if (gate.status === "fail") {
     if (!Number.isSafeInteger(gate.run.exit_status) || gate.run.exit_status === 0) errors.push(`round ${round.round}: fail regression gate 必须记录非零退出码`);
     const logPath = resolveEvidencePath(project, gate.run.log, errors, `round ${round.round} regression log`);
     if (logPath && (!hasNonzeroExit(logPath) || !hasExactCommand(fs.readFileSync(logPath, "utf8"), gate.command))) errors.push(`round ${round.round}: fail regression log 必须记录精确命令和非零退出码`);
@@ -643,15 +650,15 @@ function validateRoundRegression(project, round, errors, { requireCurrentHead = 
   }
 }
 
-function adjacentTestPaths(data, throughRound = Infinity, promotions = [], state = {}) {
-  const promoted = new Set((Array.isArray(promotions) ? promotions : []).filter(Boolean).map((item) => item.test_path));
-  return adjacentRegistry(state, data).filter((entry) => entry.round <= throughRound && !promoted.has(entry.test_path)).map((entry) => entry.test_path).sort();
+function adjacentTestPaths(state) {
+  const promoted = new Set(state.adjacent_promotions.map((item) => item.test_path));
+  return state.adjacent_registry.filter((entry) => !promoted.has(entry.test_path)).map((entry) => entry.test_path).sort();
 }
 
 function validateFinalAdjacentBatch(project, state, data, errors, attempt = state.final_audit_attempt + 1) {
   const batches = state.final_audit?.preflight_batches;
   const batch = (Array.isArray(batches) ? batches : []).find((item) => item?.attempt === attempt);
-  const paths = adjacentTestPaths(data, state.current_round, state.adjacent_promotions || [], state);
+  const paths = adjacentTestPaths(state);
   if (!paths.length) return;
   if (!batch) {
     errors.push(`final audit attempt ${attempt}: 缺少终审前全历史相邻测试批测`);
@@ -710,25 +717,9 @@ function validateFinalAdjacentBatch(project, state, data, errors, attempt = stat
   if (batch.status !== "pass") errors.push(`final audit attempt ${attempt}: 全历史相邻测试批测尚未通过（${batch.status}）`);
 }
 
-function recordAdjacentBatch(project, round, data, fields) {
-  const findings = (data.findings || []).filter((finding) =>
-    adjacentRound(finding) === round.round &&
-    finding.verification === "pass" && (finding.adjacent_tests || []).length > 0
-  );
-  const paths = [...new Set(findings.flatMap((finding) => finding.adjacent_tests))].sort();
-  if (!paths.length) return { status: "not_required", test_paths: [], recorded_at: new Date().toISOString() };
-  const hashes = Object.fromEntries(paths.map((filename) => [filename, sha256File(path.resolve(project, filename))]));
-  return { ...fields, test_paths: paths, test_hashes: hashes, recorded_at: new Date().toISOString() };
-}
-
-function testSha256(filename) {
-  return require("node:crypto").createHash("sha256").update(fs.readFileSync(filename)).digest("hex");
-}
-
-function parseImplementationEvidence(project, filename, expectedTreeHash = null, { finding = null } = {}) {
+function parseImplementationEvidence(project, filename, expectedTreeHash = null, { finding = null, baseline = parseBaselinePolicy(project) } = {}) {
   const errors = [];
   if (!fs.existsSync(filename)) return { run: null, policy: null, errors: ["缺少 implementation-result.md"] };
-  const baseline = parseBaselinePolicy(project);
   errors.push(...baseline.errors);
   if (!baseline.policy) return { run: null, policy: null, errors };
   const report = fs.readFileSync(filename, "utf8");
@@ -866,35 +857,29 @@ function validateVerificationEvidence(project, finding, config, filename, expect
     errors.push("提供 verification full evidence 时 regression.scope 必须为 full");
   }
 
-  const implementationPath = path.join(path.dirname(filename), "implementation-result.md");
-  const impl = parseImplementationEvidence(project, implementationPath, null, { finding });
-  const implStatus = evidence.implementation_full_suite_status;
+  let highRisk = evidence.risk_assessment === "high";
   if (finding.implementation_status === "fixed") {
     if (!finding.commit || finding.commit === "none") errors.push("fixed finding 缺少修复 commit，无法核对 GREEN tree");
     else {
       try {
         const fixTree = gitTree(project, finding.commit);
+        const implementationPath = path.join(path.dirname(filename), "implementation-result.md");
+        const impl = parseImplementationEvidence(project, implementationPath, fixTree, { finding, baseline });
+        errors.push(...impl.errors);
+        highRisk ||= impl.evidence?.risk_assessment === "high";
         if (baseline.policy.tieringMode === "progressive" && !impl.run) {
-          if (!["P2", "P3"].includes(finding.severity) || evidence.risk_assessment !== "normal") {
-            errors.push("progressive 模式只有普通风险 P2/P3 finding 可延後 GREEN full 至轮末");
+          if (!["P2", "P3"].includes(finding.severity) || highRisk) errors.push("只有普通风险 P2/P3 可延后 GREEN full 至轮末");
+          if (evidence.implementation_full_suite_status !== "not_run" || evidence.implementation_fast_suite_status !== "pass") {
+            errors.push("延后 GREEN full 时必须记录 implementation_full_suite_status=not_run 和 implementation_fast_suite_status=pass");
           }
-          if (implStatus !== "not_run" || evidence.implementation_fast_suite_status !== "pass") {
-            errors.push("延後 GREEN full 时必须记录 implementation_full_suite_status=not_run 和 implementation_fast_suite_status=pass");
-          }
-          errors.push(...validateFastRun(project, impl.fastRun, impl.policy || baseline.policy, "GREEN fast evidence", fixTree));
-        } else {
-          if (impl.run?.status === "fail") errors.push("实现阶段 GREEN full 为 fail，必须重新修复并通过 GREEN full");
-          errors.push(...validateFullRun(project, impl.run, impl.policy || baseline.policy, "GREEN full evidence", fixTree));
-          if (implStatus !== "pass") errors.push("implementation_full_suite_status 必须为 pass");
-        }
+        } else if (evidence.implementation_full_suite_status !== "pass") errors.push("implementation_full_suite_status 必须为 pass");
       } catch (error) {
-        errors.push(`无法读取修复 commit tree：${error.message}`);
+        errors.push(`无法核对修复 commit 的 GREEN 证据：${error.message}`);
       }
     }
-    errors.push(...impl.errors);
   }
 
-  const severityRequiresFull = ["P0", "P1"].includes(finding.severity) || evidence.risk_assessment === "high";
+  const severityRequiresFull = ["P0", "P1"].includes(finding.severity) || highRisk;
   const tieringRequiresFull = baseline.policy.tieringMode === "full-everywhere";
   if (finding.implementation_status === "already_fixed" && !verificationFull) {
     const fullRequired = severityRequiresFull || tieringRequiresFull;
@@ -945,13 +930,11 @@ module.exports = {
   validateFinalAdjacentBatch,
   adjacentTestPaths,
   expandAdjacentCommand,
-  adjacentRound,
-  adjacentRegistry,
   roundAdjacentPaths,
   hasExactCommand,
+  hasRunMarkers,
   validateAdjacentLog,
   validateAdjacentPromotions,
-  recordAdjacentBatch,
   sha256File,
   sha256GitFile,
   gitTree,

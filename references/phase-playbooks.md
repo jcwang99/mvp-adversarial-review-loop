@@ -8,7 +8,7 @@
 
 | 动作 | 命令 |
 |------|------|
-| 初始化/确认 max_rounds | `reviewctl init --max-rounds N --user-confirmed`（或 `--interactive`） |
+| 启动配置 | `reviewctl init --max-rounds N --user-confirmed [--role-model ROLE=MODEL ...]`（或 `--interactive`） |
 | 查看/校验 | `reviewctl status`、`reviewctl validate` |
 | 创建评审 inbox | `reviewctl new-inbox --round N --role SEC --temp-id SEC-001` |
 | 记录/修订轮次计数 | `reviewctl record-round --round N --raw N --duplicates N --screened N --new-p0p1p2 N`（review 或 adjudication 中仅限当前未完成轮次）|
@@ -18,17 +18,18 @@
 | 标记未解决 | `reviewctl mark-unresolved --id ID --reason TEXT`（repair 阶段用于 blocked/cannot_fix） |
 | 记录终审 | `reviewctl record-audit --attempt N --status complete|failed --new-issues N --auditor NAME` |
 | 授权留痕 | `reviewctl authorize --action NAME --decision authorized 或 declined` |
-
-授权按追加顺序取最后一条适用记录（全局或相同 finding 的 `--scope`）；其他 scope 不影响本项。`declined` 撤销后续动作权限，重新授权后才能再次登记。登记动作时保存授权日志位置、摘要和时间，后续撤销不追溯否定合法完成的动作。旧数据没有此凭据时，仅接受从未出现适用拒绝的明确授权历史；有歧义时需重新取得授权并重新执行、登记动作。
 | 阶段转移 | `reviewctl advance --to PHASE` |
 | 覆盖率/收尾 | `reviewctl coverage`、`reviewctl finalize --status ...` |
 | 状态修复 | `reviewctl normalize`（重算派生字段） |
 | 提交守卫/重绘 | `reviewctl guard-commit --finding ID [--test PATH ...]`、`reviewctl render` |
 
+授权以最后一条适用于全局或本 finding 的决定为准。撤销对后续动作生效。已登记的动作须有当时的授权凭据。
+
 `reviewctl help` 输出完整参数。不要手改 `state.json`、`findings.json`、`run-state.md` 或 `findings-index.md`。
 
 ## 委派通用要求
 
+- 按 `SKILL.md` §0 解析实际角色并在 harness 的委派参数中应用模型。审计的两阶段在同一个新会话中完成。
 - 委派任何子代理时，把提示模板中的 `[skill-dir]` 替换为当前 harness 的技能安装目录绝对路径（各 harness 不同，动态解析；路径含空格时给命令加引号），并提供 `node [skill-dir]/scripts/reviewctl.js` 的可执行形式。子代理只读使用脚本，不得修改状态或推进阶段。
 - 委派实现或验证代理时，同时提供 `baseline.md` 的 “Test Scope / Regression Policy” 摘要（focused/impacted/fast/full 命令、长测 ID 清单及原始尺度、高风险路径、baseline full result）和 finding 的 severity；验证代理无法判断高风险时按高风险处理。
 - 长编译项目（Rust、C++、大型 TypeScript 等）在 baseline 完成编译预热，并把共享缓存路径、环境变量和磁盘预算写入 `baseline.md`；委派时要求子代理在预算内复用同一缓存，不要每个 finding 重建依赖或创建独立 target。超预算时在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理。
@@ -37,19 +38,21 @@
 
 **主代理执行**，不委派评审。
 
-1. 确认 MVP 范围、明确排除项、验收标准及来源、技术栈、入口和关键数据流、外部服务与认证边界、部署方式。
-2. 记录仓库路径、分支、`baseline_head`、初始 `git status`、已有用户改动。
-3. 确认测试/构建/类型检查/lint/安全扫描命令，并记录测试范围分级：
+1. 与用户确认 `max_rounds`（默认 5，最少 2），同时接受可选的角色模型。按 `SKILL.md` §0 初始化，终端可用 `init --interactive`。已有运行从 `status` 恢复。
+2. 确认 MVP 范围、明确排除项、验收标准及来源、技术栈、入口和关键数据流、外部服务与认证边界、部署方式。
+3. 记录仓库路径、分支、`baseline_head`、初始 `git status`、已有用户改动。
+4. 确认测试/构建/类型检查/lint/安全扫描命令，并记录测试范围分级：
    - `focused`：反例、相邻测试或单个模块/测试目标的命令
-   - `impacted`：改动所在 package/crate、直接依赖方及相关测试目标的命令
+   - `impacted`：改动所在 package/crate、传递反向依赖及相关测试目标的命令
    - `fast`：仅 progressive 模式必填的快速回归命令；应覆盖微型数据集和高频逻辑测试，不能删减为无测试的成功命令。允许使用 `reduced-data`、`accelerated-time`、`virtual-clock`、`tmpfs` 或 `mixed` profile；必须保留关键断言，并说明保留契约、未覆盖语义和对应 full 兜底。虚拟时钟适合定时逻辑；加速真实时间不覆盖调度竞争；tmpfs 不覆盖真实磁盘持久性、崩溃和介质故障
    - `full`：项目/workspace 的完整测试套件命令（Rust 需包含 doctest；`cargo test <filter>` 仍会编译当前 package/workspace 默认成员的全部测试目标，缩小编译范围要用 `-p`、`--lib`、`--test` 或 `cargo nextest`）
    - `Adjacent test command`：独立的相邻测试命令模板，以唯一的 `{test_paths}` 结尾，如 `node --test {test_paths}`。不得额外扫描目录或吞掉失败；不支持文件参数的框架使用只执行给定路径的项目适配脚本。正常 full 排除 `tests/review/verifications/`。
    - tiering mode（`default`、`full-everywhere` 或 `progressive`）、高风险路径清单、full 单次耗时、full suite composition、feature matrix 和 baseline full result。所有 tier 都须登记稳定的长测 ID 清单及 Full runtime scale；无长测填写 `none` / `not_applicable`。progressive 还需记录 Fast test command、Fast test profile、快速测试清单/耗时、长时测试策略、profile 的保留/缺失语义和时间/数据缩放证据
+   - 在基线 full 之前确认项目命令只收集正式套件，排除 `tests/review/` 及 `.review-evidence/` 中的临时测试。优先使用现有的正式测试入口或命令参数，保留全部正式测试。把隔离方式和临时配置的恢复方式写入 baseline；无法确保时记录阻塞。
    - 长测清单和原始尺度要在基线 full 开始前确定，并让测试 runner 将对应 runtime 标记写入原始日志；运行后再把同一记录填入 baseline，避免事后补写运行信息
    - 代码质量门禁：记录 `Code quality command`、`Code quality policy`、`Baseline code quality result` 和日志。Rust 默认包含 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets --all-features -- -D warnings`；其它语言填写仓库已有的 formatter/linter/type-check 命令。无适用工具时写 `not_applicable: 原因`，不得把未运行写成 pass
    写入 `baseline.md` 的 "Test Scope / Regression Policy"。
-4. **按实测决定是否编译预热**：只有全量测试/构建耗时明显（例如单次超过 2-3 分钟）或会生成大量临时测试的项目才做；短编译项目沿用现有命令，不要额外引入缓存层。
+5. **按实测决定是否编译预热**：只有全量测试/构建耗时明显（例如单次超过 2-3 分钟）或会生成大量临时测试的项目才做；短编译项目沿用现有命令，不要额外引入缓存层。
    - 先确定磁盘预算：记录可用空间和缓存上限，云端环境尤其要留足余量；缓存目录放在仓库外，不要放进 `.review-evidence/`，也不要提交。
    - Rust：可设置共享的 `CARGO_TARGET_DIR`，先运行 `cargo test --tests --no-run`（或 `cargo nextest run --no-run`）预编译测试目标；类型检查用 `cargo check --tests`，聚焦测试用 `cargo test --test <target> <filter>` 或 `cargo nextest run <filter>`；保持 `CARGO_INCREMENTAL=1`。
    - 缓存策略：同一轮内复用缓存，不要为每个 finding 新建 target；当缓存超过预算或磁盘紧张时，在轮次边界集中清理（删除共享 target 或 `cargo clean`），下一轮再预热。不要每个 finding 都清理重建，也不要无上限保留。
@@ -57,19 +60,19 @@
    - 可选：项目已有 `sccache`/构建缓存配置时沿用，不要覆盖；没有且实测收益明显时再考虑安装。
    - 其他长编译栈：仅在实测确实拖慢流程时启用依赖预编译/缓存，并设置同样的磁盘预算和轮次边界清理策略；短编译栈不要过度优化。
    - 把预热命令、缓存路径、环境变量、磁盘预算、清理时机和单次测试耗时写入 `baseline.md` 的 "Build Cache / Compile Prewarm"；无法安全预热时记录耗时和阻塞，不要跳过。
-5. 运行基线 full（使用预热后的缓存）；记录结果（pass/fail）、完整日志路径、耗时、测试计数和已知环境限制。full 必须包含原始长时 I/O/稳定性测试；存在长测时，日志必须记录 `RUNTIME_PROFILE=original`、排序后的 `LONG_RUNNING_TESTS=<ID,...>`、`FULL_RUNTIME_SCALE=<baseline 中的原始尺度>`，结构化证据也须绑定同一清单和尺度。运行 baseline 声明的代码质量命令并保存独立日志；formatter/linter/type checker 失败时停止并报告 blocked。若环境无法运行，记录为 blocked，不得用缩短参数、排除项或过滤命令冒充 full。full 失败时停止并报告 blocked，不得带红灯基线进入 review。
-6. 与用户确认 `max_rounds`：默认 5，用户可指定，最小 2；小于 2 时 `reviewctl init` 会拒绝。然后运行 `reviewctl init --max-rounds N --user-confirmed`（终端场景可用 `--interactive`），由脚本创建 `review-config.json`、`state.json`、`findings.json` 和生成视图。`init` 拒绝覆盖任何已有状态文件；需要重跑时先归档或手动清理 `.review-evidence/`。
+6. 希望减少 full 次数且已有可信 fast 套件时选 `progressive`。将本次 full 的实际运行记录同时保存为 `.review-evidence/baseline-full.json`（结构见 `evidence-structure.md` 的“轮末 progressive full gate”）。进入 review 时会核对原始日志、计数和 HEAD 并登记摘要，供后续轮末引用。
+
+   运行基线 full（使用预热后的缓存）；记录结果（pass/fail）、完整日志路径、耗时、测试计数和已知环境限制。full 必须包含原始长时 I/O/稳定性测试；存在长测时，日志必须记录 `RUNTIME_PROFILE=original`、排序后的 `LONG_RUNNING_TESTS=<ID,...>`、`FULL_RUNTIME_SCALE=<baseline 中的原始尺度>`，结构化证据也须绑定同一清单和尺度。运行 baseline 声明的代码质量命令并保存独立日志；formatter/linter/type checker 失败时停止并报告 blocked。若环境无法运行，记录为 blocked，不得用缩短参数、排除项或过滤命令冒充 full。full 失败时停止并报告 blocked，不得带红灯基线进入 review。
 7. 填写 `init` 创建的 `baseline.md` 和 `screening-log.md` 模板。
-8. 确保项目测试配置忽略 `tests/review/`（或使用 `ADVERSARIAL_REVIEW` 等开关），把方式和结束时如何还原写入 `baseline.md`；无法确保时记录阻塞。
-9. 部署恢复指南（幂等，可重复运行）：
+8. 默认直接使用技能目录的 `AGENTS.md` 恢复，将该绝对路径记入 `baseline.md` 的 Recovery Guide Deployment，模式填 `skipped`。这样项目工作区不会因为写入恢复指南而失去复用资格。若用户或 harness 确需项目级指南，按以下方式部署：
    - 目标是项目根目录的 `AGENTS.md`；若项目以 `CLAUDE.md` 为项目级指令文件（存在 `CLAUDE.md` 且无 `AGENTS.md`），以 `CLAUDE.md` 为目标。
    - 目标文件已含标记 `mvp-adversarial-review-loop-recovery-guide` 或标题 `Main Agent Recovery Guide - MVP Adversarial Review Loop` 时跳过。
    - 目标文件不存在：复制技能目录的 `AGENTS.md`，并在前后加 `<!-- BEGIN mvp-adversarial-review-loop-recovery-guide -->` / `<!-- END mvp-adversarial-review-loop-recovery-guide -->`。
    - 目标文件已存在：先把原内容备份到 `.review-evidence/baseline-project-instructions.bak`，再把带标记的恢复指南追加到末尾。
    - 把目标文件、模式（created / appended / skipped）、标记和备份路径写入 `baseline.md` 的 "Recovery Guide Deployment"。
-10. 运行 `reviewctl validate`；失败时先运行 `reviewctl normalize`，仍失败则按错误逐项修复，直到 `validate` 通过；通过后才运行 `reviewctl advance --to review`。脚本会设置 `current_round: 1`、`rounds_consumed: 0`、`can_trigger_new_round: true` 和 `next_action`。
+9. 运行 `reviewctl advance --to review`。该命令先校验状态和基线，遇到错误按提示修复；派生字段不一致时使用 `normalize`。脚本会设置 `current_round: 1`、`rounds_consumed: 0`、`can_trigger_new_round: true` 和 `next_action`。
 
-启动部署对项目级指令文件的改动属于本流程引入的临时改动，不提交，结束时还原。本流程要求 Node.js（>= 18）和 Git；缺少任一依赖时不要初始化，记录阻塞。
+可选部署对项目级指令文件的改动属于本流程引入的临时改动，不提交，结束时还原。本流程要求 Node.js（>= 18）和 Git；缺少任一依赖时不要初始化，记录阻塞。
 
 ## 1. review
 
@@ -82,7 +85,7 @@
 - 从项目根目录运行，使用项目自身的测试框架和依赖；需要隔离数据时放在 `.review-evidence/round-[N]/_testdata/[role-slug]/`。
 - 证据写入脚本创建的 inbox；运行测试前先把完整输出重定向到 `output.log` 并记录退出码，输出被截断时读日志而不是重跑，不要粘贴到回复。
 - 使用 `agent-prompts.md` 的"评审代理"模板；委派时把 `[skill-dir]` 替换为当前技能目录绝对路径，并要求复用 baseline 的编译缓存。代理必须把同一结构写入 inbox 的 `handoff.json`，聊天里的 YAML 摘要只作交接提示。
-- 轮次策略、最后两轮回归检查和角色选择见 `SKILL.md` 的轮次策略表。
+- 轮次策略、最后两轮回归检查和角色选择见 `SKILL.md` 的轮次策略。
 - 被判定为回归检查的轮次只提供待检查的修复提交/变更路径，不提供历史 finding、裁决或预期结论。
 - 要求代理记录 `uncovered_paths` 和 `blockers`；没有发现时返回 `findings: []`，不要用偏好凑数。
 
@@ -98,7 +101,7 @@
 
 1. 把纯偏好、措辞建议、明确不在 MVP 范围内的功能请求筛到 `screening-log.md`，写明依据；同时在 `round-[N]/screening.json` 记录 original_id、disposition 和 reason（格式见 `evidence-structure.md`）。不分配标准 ID，不进入覆盖率分母，也无需运行反例。
 2. 对其余候选去重；重复项指向 canonical ID，保留原始 inbox。跨角色重复必须在 screening.json 中记录 duplicate 和 canonical_id；同角色多 original-id 映射到同一标准 finding 时自动计算重复数。
-3. 进入生命周期的候选分配标准 ID（`R[N]-F[XXX]-[CAT]`），把 inbox 的内容平铺复制到 `.review-evidence/round-[N]/[标准 ID]/`（保留原始 inbox；不要把 `inbox/[...]/[临时 ID]/` 整个目录嵌套进去），并把候选复现文件复制为 `reproduce.*`；`tests/review/` 中的原文件保留运行用。然后运行 `reviewctl record-finding --id ... --decision ...` 写入状态。
+3. 进入生命周期的候选分配标准 ID（`R[N]-F[XXX]-[CAT]`），把 inbox 的内容平铺复制到 `.review-evidence/round-[N]/[标准 ID]/`（保留原始 inbox；不要把 `inbox/[...]/[临时 ID]/` 整个目录嵌套进去），并把候选复现文件复制为 `reproduce.*`；`tests/review/` 中的原文件保留运行用。独立审查及裁决完成后，再用 `reviewctl record-finding` 登记结论。
 4. 标准 ID 一旦分配，永久计入覆盖率分母，即使后来 rejected 或 deferred。
 5. 关闭本轮前核对所有候选的去向并更新 record-round 计数。脚本会在进入 round_decision 以及已完成轮次的 validate/finalize 时拒绝遗漏候选、无来源的标准 finding、矛盾的筛查映射或不符的计数。
 
@@ -258,7 +261,7 @@ reviewctl optimistic-start --id ID --worktree <仓库外路径> --risk-assessmen
 reviewctl optimistic-record --id ID --candidate-commit SHA --test-status pass --quality-status pass --test-log PATH --quality-log PATH
 ```
 
-候选测试日志必须包含对应的 `COMMAND=<baseline fast/full command>`、`TREE_HASH=<candidate tree>` 和 `EXIT_CODE=0`；质量日志必须包含 `QUALITY_COMMAND=<baseline Code quality command>`、`QUALITY_TREE_HASH=<candidate tree>` 和 `EXIT_CODE=0`。命令会把日志复制到 `.review-evidence/optimistic/`，以便 worktree 清理后仍可审计。
+候选只做预检。`progressive` 运行 fast，`default` 运行 impacted，`full-everywhere` 按该模式运行 full。候选测试日志必须包含对应的 `COMMAND=<实际预检命令>`、`TREE_HASH=<candidate tree>` 和 `EXIT_CODE=0`；质量日志必须包含 `QUALITY_COMMAND=<baseline Code quality command>`、`QUALITY_TREE_HASH=<candidate tree>` 和 `EXIT_CODE=0`。命令会把日志复制到 `.review-evidence/optimistic/`，以便 worktree 清理后仍可审计。
 
 候选 worktree 只能从干净主 HEAD 创建，默认最多一个活动候选；不得修改主状态或 `.review-evidence/`。候选记录的是预检证据，不是正式实现。
 
@@ -273,8 +276,8 @@ reviewctl optimistic-promote --id ID
 **必须委派实现代理**，一次一个 accepted finding，按 `tdd-and-commit.md` 执行 RED-GREEN-REFACTOR 并提交。委派时替换提示模板中的 `[skill-dir]`，并要求复用 baseline 的编译缓存。
 
 - 实现代理只处理当前 finding；RED 必须先确认，测试必须合并到项目正式测试文件。确实无法自动化时使用 `--manual`，并在 `implementation-result.md` / `verification-result.md` 记录人工复测。
-- GREEN 按 baseline tiering mode 执行：default/full-everywhere 每个修复提交前必须 full；progressive 仅普通风险 P2/P3 可用 fast suite 提交，P0/P1 或实现代理判定 high 仍须提交前 full。无论采用 fast 还是 full，提交前都必须运行 baseline 声明的代码质量命令并在 `quality_checks` 中记录；质量检查失败不得提交。fast suite 若缩短长测，必须使用 baseline 声明的 profile，并记录缩放方式、保留的断言和未覆盖的长期风险；它不能改变生产默认配置或替代 full。运行证据写入 `Reviewctl GREEN Evidence` JSON 并绑定提交 tree。progressive 普通风险的 full 由主代理在轮末对当前 HEAD 统一运行并用 `reviewctl record-round-regression --status pass|fail|inconclusive --evidence .review-evidence/round-N/full-suite.json` 记录；缺少通过证据时不能开始下一轮或终审。失败须回到 adjudication，重跑使用新日志和 evidence 文件，历史记录保留。
-- 进入 repair 时脚本会记录 `repair_baseline_staged`；提交只包含当前 finding 的源代码、正式测试和必要配置；不包含 `.review-evidence/` 或 `tests/review/` 临时文件。
+- 按 `SKILL.md` §1 的门禁表和 `tdd-and-commit.md` 记录 GREEN、质量检查及修复 tree。快速套件缩放长测时记录实际 profile、保留的断言和未覆盖的语义。
+- 进入 repair 时脚本将 HEAD 和逐文件暂存差异记录在 `repair_baseline_index`；提交只包含当前 finding 的源代码、正式测试和必要配置；不包含 `.review-evidence/` 或 `tests/review/` 临时文件。
 - 提交前运行 `reviewctl guard-commit --finding [ID] --test [PATH]`；脚本会拒绝证据目录、临时测试目录，以及在进入 repair 前就已暂存的用户改动。
 - 提交后运行 `reviewctl record-implementation --id ID --status fixed --commit SHA --test PATH` 或 `reviewctl record-implementation --id ID --status already_fixed --commit SHA --test PATH`；手工 finding 加 `--manual`；用户改动导致无法提交时运行 `reviewctl record-implementation --id ID --status prepared --reason "user changes conflict"`。
 - `already_fixed`：确认现有提交覆盖后进入验证；测试文件必须已跟踪，且内容已提交、工作区/index 与 HEAD 一致（`git diff --quiet HEAD -- <path>`；`reviewctl` 会检查 `gitFileMatchesHead`）；仅在历史 commit 或其他分支中存在不算；能定位历史修复 commit 时用 `--commit SHA` 记录。
@@ -290,7 +293,7 @@ reviewctl optimistic-promote --id ID
 - 状态机一次只有一个 `active_finding`，因此一个验证代理一次验证一个 finding；不同 finding 的验证串行进行。
 - 使用 `agent-prompts.md` 的验证代理模板，并按其 YAML 结构回收摘要；`verification-result.md` 还必须包含 `Reviewctl Verification Evidence` JSON 区块，字段见 `evidence-structure.md`。提供原始 counterexample、reproduction、修复 commit 和 changed files、当前 HEAD、正式测试路径和运行入口、baseline 的 “Test Scope / Regression Policy” 摘要、finding severity；`risk_assessment` 由验证代理根据 changed files 独立判断。
 - 验证代理写 `verification-result.md`；主代理用 `reviewctl record-verification --id [ID] --status pass|fail|inconclusive|blocked_by_user_changes` 写入状态（代理输出的 `blocked` 按 `inconclusive` 记录）。pass 时必须提供至少 2 个 `--adjacent-test`，或用 `--adjacent-reason` 说明无法生成的理由；相邻测试只放在 `tests/review/verifications/`，不合并正式测试，也不进入常规 full。`Reviewctl Verification Evidence` JSON 必须记录 regression scope/命令/退出状态/tree hash/tested commit/测试计数/日志、风险评估、实现阶段 full 状态；验证阶段重跑 full 时还要记录完整 `full_test_suite`。`reviewctl` 会校验结构化字段、baseline 命令和计数、tree hash 与日志退出标记，但不会自行运行测试，也无法独立证明日志确由所写命令产生或风险分类准确；主代理仍须对照原始日志、HEAD 和 changed files 复核这些事实。
-- 检查 RED 证据；当 P0/P1、高风险或复现 commit/tree/测试哈希无法核对时，在修复前 commit 的独立 worktree 重放原始反例；证据可信且风险普通时可跳过修复前重放。随后在修复后验证、生成至少 2 个相邻测试（正常 + 边界），并在轮末用 `reviewctl adjacent-plan --scope round` 获取精确文件命令，运行后用 `reviewctl record-adjacent-batch` 记录。P0/P1、`risk_assessment = high`、baseline 为 full-everywhere，或实现阶段 full 证据缺失/不匹配时，验证代理必须自己重跑完整回归；full 证据失败时先重新修复并重新 GREEN full，或按环境/flaky 记录后判 `inconclusive`。P0/P1 和高风险不能复用实现证据。不得把实现代理的结论当作验证结果。
+- 独立检查 RED 和被修复的行为。P0/P1、高风险或复现 commit/tree/测试哈希无法核对时，在修复前 commit 的独立 worktree 重放。随后在修复后的 HEAD 运行反例和表中规定的回归。progressive 普通 P2/P3 有合规的 GREEN fast 时，验证代理运行 impacted。所需 GREEN 门禁失败或证据无效时交回修复或登记阻塞。相邻测试由主代理按 §5.3 批测。
 - 相邻测试不进入修复提交，也不要求单独提交；它们保存在 `tests/review/verifications/`。轮末批测只运行本轮登记文件；每次 final audit 前还要对所有轮次的相邻测试运行聚合批测。只有失败被裁决为正式缺陷并通过正式测试验证后，才可用 `reviewctl promote-adjacent-test` 记录替代关系；保留原相邻文件与哈希以供审计，后续历史聚合不再运行它。
 - 若轮末批测为 fail：保存失败日志和失败 finding 映射，运行 `reviewctl advance --to adjudication` 重新打开本轮；将失败场景作为正式候选走独立复现和裁决。候选计数确定后，在 adjudication 中重新运行 `reviewctl record-round` 更新本轮 raw/duplicates/screened/new-p0p1p2，再进入修复或 round_decision。旧批测记录保留为编号的 `adjacent-batch-attempt-N.md`，不得覆盖为 pass。
 - 若轮末批测为 inconclusive：不得开新常规轮；重新进入 adjudication 处理环境阻塞并重新批测。有遗留阻塞时，终审前聚合仍须通过才能进入最终审计，最终只能报告 `INCOMPLETE`。每次重跑前，旧批测证据必须另存，不得覆盖。
@@ -316,7 +319,7 @@ reviewctl optimistic-promote --id ID
 
 1. 确认本轮所有 accepted findings 已终结。
 2. `reviewctl advance` 在进入 `round_decision` 时自动设置 `rounds_consumed = current_round` 并重算 `can_trigger_new_round`。
-3. baseline 为 `progressive` 时，在当前 HEAD 运行 full；将机器证据写入 `.review-evidence/round-[N]/full-suite.json`，然后记录 `reviewctl record-round-regression`。失败或 inconclusive 时只能进入 adjudication 处理，不能跳过 gate。通过后再按下列条件运行本轮相邻测试并选择下一阶段。
+3. `progressive` 要求每轮有当前 HEAD 的 full 证据。若运行时、依赖、环境变量、外部服务或数据、长测资源条件均与原运行相同，且没有新失败、flaky 或要求现场重跑的验证目标，先用 `reviewctl record-round-regression --reuse`。它只引用最近登记的成功 full（结构化基线、验证代理的 full、或实跑的轮末 full），复核 HEAD、产品工作区、baseline、证据与日志哈希。Git 之外的输入由主代理核实。条件不明、命令拒绝或没有记录时，在干净的当前 HEAD 实跑一次 full，并用 `record-round-regression --status pass|fail --evidence FILE` 登记新的原始证据。无法运行用 `--status inconclusive --reason TEXT`。失败或阻塞进入 adjudication。
 4. 检查进入最终审计的条件：
    - 提前收敛：从第 2 轮起，最近连续两轮都没有新找到的、范围内的 P0/P1/P2。
    - 达到上限：完成 `max_rounds` 轮。
@@ -337,7 +340,7 @@ reviewctl optimistic-promote --id ID
 3. **失败或阻塞**：失败附 `--failed-finding ID`（失败用例原所属 finding，可跨轮），阻塞附 `--reason`。聚合未通过不能进入终审；`advance --to adjudication` 可重开当前轮，失败场景写入当前轮候选，按独立复现、裁决、TDD、验证处理并更新 `record-round` 计数。重跑沿用尚未启动的审计 attempt，但用新的日志路径；脚本将旧记录归档为 `adjacent-batch-attempt-N.md`，原始日志不得覆盖。重新判断轮次条件；批测本身不消耗新常规轮或终审次数。
 4. **升级正式测试**：缺陷处理完成、本轮批测通过后，运行 `promote-adjacent-test --test <原相邻路径> --finding <已验证缺陷 ID> --formal-test <已提交正式测试> --reason <覆盖对应关系>`。主代理核对正式用例保留了原断言；登记保存源测试哈希、正式测试路径、提交和哈希。原文件仍保留以核验历史证据，后续聚合交由正式 full 覆盖该用例。
 
-相邻测试登记历史不会随 finding 重裁决清空。已完成轮次的测试文件及其依赖 fixture 必须保留到流程结束；重验新增用例使用新的文件名，不覆盖历史测试。不得通过删除文件或取消登记缩小聚合范围。旧状态使用 `normalize` 补齐派生字段后，把 baseline 的目录式命令改为模板；已有目录式批测记录不能自动证明精确范围，需要在升级前完成当前运行，或归档旧运行后按新命令重新开始。
+相邻测试登记历史不会随 finding 重裁决清空。已完成轮次的测试文件及其依赖 fixture 必须保留到流程结束；重验新增用例使用新的文件名，不覆盖历史测试。不得通过删除文件或取消登记缩小聚合范围。
 
 ### 5.4 轮次上限与扫描范围
 
@@ -360,7 +363,7 @@ reviewctl optimistic-promote --id ID
 - decision 或分类变更不得用于缩小分母。
 - 运行 `reviewctl coverage` 获取脚本计算值。
 
-### 5.5 回归与 needs-evidence
+### 5.6 回归与 needs-evidence
 
 - 每条新 finding 在 `adjudication.md` 标记 `change_origin: regression | pre-existing | undetermined`。只有证据表明由本轮修复引入时才标 regression；无法确定时保持 undetermined 并将 decision 设为 needs-evidence。回归 finding 按实际影响评估严重性，不自动升一级。
 - needs-evidence：
@@ -368,7 +371,7 @@ reviewctl optimistic-promote --id ID
   - P2 必须标记 `needs_evidence_clarity`：`clear_claim_lacking_env` 可作为残余风险；`unclear_claim` 阻止收敛。
   - P3 可作为残余风险披露，不阻止收敛。
 
-### 5.6 轮次证据
+### 5.7 轮次证据
 
 每轮 accepted findings 验证完成后，可把 `.review-evidence/` 变更作为独立提交（如 `chore(review): round-[N] evidence`），不夹带产品代码或测试；用户不希望提交或无法安全区分时跳过并记录。
 
@@ -386,9 +389,9 @@ reviewctl optimistic-promote --id ID
 ### 6.2 第二阶段：定向复核
 
 - 第一阶段保存后，提供所有 accepted finding、未结的范围内 needs-evidence P0/P1、原始证据路径、修复测试路径和提交。
-- 第一阶段盲扫可用 focused/impacted 探索；**第二阶段必须运行 full 测试、构建和适用静态检查**，并记录 HEAD、tree hash、workspace clean、run location、测试计数和日志。有长测时，full 日志还须记录原始 runtime profile、baseline 长测 ID 清单和完整原始尺度；主代理复核实际配置与日志。第一阶段结果不能替代第二阶段 full。
+- 在当前审计 HEAD 独立运行一次 baseline full、构建和适用静态检查。长测使用基线清单及原始尺度。
 - 要求逐项复核修复有效性、回归、测试覆盖、遗留风险。
-- 结果写入 `targeted-review.md`；不得改写第一阶段结论。
+- 在 `targeted-review.md` 的 `## Reviewctl Audit Evidence` 小节内写一个 JSON 代码块，顶层 `full_suite` 沿用轮末格式，包含 `tested_commit`。日志固定为本 attempt 的 `output-full-suite.log`，包含唯一的 `COMMAND=<完整命令>` 和 `EXIT_CODE=<实际退出码>`。full 失败且发现新问题时记录 `fail`、实际非零退出码并转裁决；收敛要求最近一次终审 full 通过。
 - 运行 `reviewctl record-audit --attempt K --status complete --new-issues N --auditor NAME` 记录结果；审计代理身份写入 state 和 `blind-scan.md`。审计无法完成时可用 `--status failed` 记录（不要求两份报告），随后从 `final_audit` 进入 `report` 并 `finalize --status incomplete`；已记录的 attempt 不能覆盖。
 - `new_issues=N` 表示该 attempt 报告了 N 个新问题；进入 `adjudication` 后必须为这 N 个问题各记录一个 `source=final-audit`、`audit_attempt=K` 的 finding（重复项也要记录并裁决/去重），否则 `advance --to round_decision` 和 `finalize` 都会拒绝。仅记录 1 个 rejected finding 不能代表 N 个问题已裁决。
 
@@ -430,8 +433,7 @@ reviewctl optimistic-promote --id ID
 
 ### 7.3 清理
 
-- 完成 `finalize` 后清理临时测试。所有 accepted 均已验证时可删除 `tests/review/`；INCOMPLETE 或有手工合并项时保留未完成 finding 的复现/验证文件，仅删除已完成项。保留标准目录中的 `reproduce.*`、原始 handoff 和已提交的正式测试。已最终报告且 verified 的 finding 不再要求临时复现/相邻测试存在，但仍校验持久证据和正式测试。
-- 清理 `.review-evidence/**/_testdata/`（如果所有 findings 已终结）；保留失败/未结论 finding 仍需复现的数据。
+- `finalize` 后对照初始工作区和证据引用清理本次生成的临时测试与 `_testdata/`。保留用户文件、仍被报告或未完成项引用的复现/验证文件及 fixture、标准目录中的反例、原始 handoff 和正式回归测试。整目录清理只适用于内容全部属于本次运行且均可丢弃的目录。
 - 保留 `.review-evidence/` 作为审计证据。
 - 还原 baseline 阶段为隔离临时测试对项目测试配置做的临时改动；只还原自己引入的部分，不触碰用户改动；无法安全还原时记录。
 - 按 `baseline.md` 的 "Recovery Guide Deployment" 还原项目级指令文件：
@@ -442,11 +444,4 @@ reviewctl optimistic-promote --id ID
 
 ## 8. 恢复
 
-压缩上下文后：
-
-1. 立即读取 `.review-evidence/run-state.md`、`.review-evidence/state.json` 和 `baseline.md` 的 “Test Scope / Regression Policy”。
-2. 运行 `reviewctl status` 和 `reviewctl validate`；失败时先运行 `reviewctl normalize`。没有 Node.js 时无法推进状态机，停止并报告阻塞。
-3. 确认 `current_phase`、`current_round`、`max_rounds`、`rounds_consumed`、`can_trigger_new_round`、`final_audit_attempt` 和 `next_action`。
-4. 按 `next_action` 继续；不要跳过或重复已完成的阶段。
-5. 这是多轮循环：最少 2 轮，最多 `max_rounds` 轮，不要在第 1 轮后就结束。
-6. 若项目级指令文件既无恢复指南标记也无恢复指南标题，先按 §0 重新部署。
+按技能目录的 `AGENTS.md` 恢复。仅在 baseline 已记录项目级部署且标记和标题均丢失时，按 §0 恢复该分节。

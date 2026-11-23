@@ -8,7 +8,7 @@
 
 ~~~
 .review-evidence/
-├── review-config.json                      # max_rounds、用户确认记录
+├── review-config.json                      # 轮次、角色模型、用户确认记录
 ├── state.json                              # 当前阶段、轮次、审计尝试、授权记录
 ├── findings.json                           # finding 生命周期
 ├── render.json                             # 生成视图的 hash
@@ -232,6 +232,7 @@ required-features = ["adversarial-review"]
 | 字段 | 说明 |
 |------|------|
 | `max_rounds` | 常规评审轮上限，>= 2 |
+| `role_models` | 用户指定的角色模型映射，默认 `{}`。键及解析顺序见 `SKILL.md` §0 |
 | `confirmed_by_user` | 必须为 true |
 | `confirmed_at` | ISO 8601 |
 | `confirmation_mode` | `interactive` 或 `agent_declared` |
@@ -249,7 +250,6 @@ required-features = ["adversarial-review"]
 | `can_trigger_new_round` | 由脚本重算，等于 `rounds_consumed < max_rounds` |
 | `final_audit_attempt` | 0..3 |
 | `active_finding` | 当前修复/验证的 finding ID 或 null |
-| `repair_baseline_staged` | 进入 repair 时已暂存的文件，用于 guard-commit 识别用户改动 |
 | `repair_baseline_index` | 同次 repair 入口的 HEAD 和逐文件暂存 diff；用于判定分块后是否仍夹带用户改动 |
 | `optimistic_repairs` | 有限乐观修复候选记录；包含 base/candidate commit、tree、worktree、修改文件、预检日志和状态；候选不能替代正式 finding commit 或验证 |
 | `next_action` | 下一步动作 |
@@ -302,23 +302,17 @@ node <skill-dir>/scripts/reviewctl.js render
 - Initial git status:
 - Existing user changes:
 
-## Verification
-- Unit/integration/E2E commands:
-- Build/type-check/lint/security commands:
-- Baseline results: [summary and paths to full logs]
-- Known environment limits:
-
 ## Test Scope / Regression Policy
-本小节是 focused/impacted/full 分级的唯一权威；`## Verification` 的测试命令仅作 baseline 参考，必须与本小节的对应命令一致。
 - Tiering mode: [default | full-everywhere | progressive]
 - Full-suite duration: [实测耗时]
 - Baseline full result: [pass | fail；fail 时必须停止并报告 blocked]
 - Baseline full log: [日志路径]
 - Expected test count: [total / passed / failed / skipped]
 - Full suite composition: [unit / integration / E2E / doctest / feature matrix]
+- Additional build/security checks and environment limits: none
 - Feature matrix: [default | all-features | 逐项列表]
 - Focused test command: [反例/单模块]
-- Impacted test command: [改动 package/crate + 直接依赖方]
+- Impacted test command: [改动目标及其传递反向依赖]
 - Fast test command: [progressive 模式必填；其余模式可填 not_applicable]
 - Fast test profile: [none | reduced-data | accelerated-time | virtual-clock | tmpfs | mixed；progressive 必填]
 - Fast profile semantics: [缩放时填写；明确保留的契约、未覆盖的语义和对应 full 测试]
@@ -330,9 +324,9 @@ node <skill-dir>/scripts/reviewctl.js render
 - Code quality policy: [每个 repair 提交前必须运行；记录适用范围和例外]
 - Baseline code quality result: [pass | not_applicable]
 - Baseline code quality log: [日志路径；not_applicable 时可填 not_applicable]
-- Optimistic repair policy: [off | bounded；默认 off]
-- Optimistic max active worktrees: [1 或 2]
-- Optimistic eligible severities: [P2,P3；只能是普通风险范围]
+- Optimistic repair policy: off
+- Optimistic max active worktrees: 1
+- Optimistic eligible severities: P2,P3
 - Full test command: [项目/workspace 全量；Rust 包含 doctest]
 - High-risk paths: [构建/依赖清单、公共 API、认证、数据迁移、并发、feature flag 等]
 - Verification default: [impacted；P0/P1/高风险/full-everywhere 重新运行 full]
@@ -399,9 +393,9 @@ progressive 的 `fast_suite` 使用与 `full_suite` 相同的基础证据字段�
 
 ### 轮末 progressive full gate
 
-轮末将下列对象写入 `.review-evidence/round-[N]/full-suite.json`，命令为 baseline Full test command，`tested_commit` 必须是当前 HEAD。随后运行 `reviewctl record-round-regression --status pass --evidence .review-evidence/round-[N]/full-suite.json`。失败用同一证据文件记录实际非零退出码和日志，再以 `--status fail` 登记；无法运行时可用 `--status inconclusive --reason ...`，不提供虚构运行结果。只有 pass 可离开本轮进入下一轮或终审。证据与日志须保留，不得覆盖；修复导致 HEAD 改变后必须重跑。
+实跑轮末 full 时，用单独的日志记录 `COMMAND=<baseline Full test command>`、原始输出以及 `EXIT_CODE=<实际退出码>`。将 `full_suite` 对象写入本轮新的 JSON 文件（例如 `.review-evidence/round-1/full-suite.json`），用 `reviewctl record-round-regression --status pass|fail --evidence FILE` 登记。无法运行用 `--status inconclusive --reason TEXT`。保留每次尝试的原始文件。
 
-该 JSON 顶层包含 `full_suite`，字段沿用上方 GREEN full 对象，并增加 `tested_commit`。CLI 会记录证据文件 SHA-256，并核对 full 命令、当前 HEAD/tree、测试计数和日志退出码。
+JSON 顶层为 `full_suite`，字段沿用 GREEN full 并增加实测的完整提交 SHA `tested_commit`。同一结构也可在 baseline 实跑时写入 `.review-evidence/baseline-full.json`，使用 baseline 声明的日志路径，两个计数差值均为 0。`--reuse` 根据 `state.last_full_run` 读取原始 JSON 或验证报告，将来源记入本轮 `regression_gate.reused_from`。使用条件见 `phase-playbooks.md` §5.2。
 
 ### verification-result.md
 
@@ -441,7 +435,7 @@ progressive 的 `fast_suite` 使用与 `full_suite` 相同的基础证据字段�
 }
 ~~~
 
-当 scope 为 full 时，regression.command 必须是 baseline 的 full command；regression.log 必须等于 full_test_suite.log，且 JSON 中要附加 full_test_suite 对象。该对象复用 GREEN full 的字段，并增加 tested_commit（固定提交后的 HEAD SHA）。already_fixed 默认也运行 verification full。只有 severity 为 P2/P3、risk_assessment 为 normal、tiering mode 为 default，且修复 commit 是 baseline_head 祖先、baseline full 为 pass 时，才可省略 verification full 并填写 already_fixed_baseline_exception，其中 baseline_head_ancestor 和 baseline_full_pass 都为 true。
+当 scope 为 full 时，regression.command 必须是 baseline 的 full command；regression.log 必须等于 full_test_suite.log，且 JSON 中要附加 full_test_suite 对象。该对象复用 GREEN full 的字段，并增加 tested_commit（固定提交后的 HEAD SHA）。already_fixed 默认也运行 verification full。只有 severity 为 P2/P3、risk_assessment 为 normal、tiering mode 为 default 或 progressive，且修复 commit 是 baseline_head 祖先、baseline full 为 pass 时，才可省略 verification full 并填写 already_fixed_baseline_exception，其中 baseline_head_ancestor 和 baseline_full_pass 都为 true。
 
 ## Build Cache / Compile Prewarm
 - Slow-compile stack: [Rust / C++ / large TypeScript / none]
@@ -462,7 +456,7 @@ progressive 的 `fast_suite` 使用与 `full_suite` 相同的基础证据字段�
 - Mode: [created | appended | skipped]
 - Marker: mvp-adversarial-review-loop-recovery-guide
 - Backup: [.review-evidence/baseline-project-instructions.bak | none]
-- Notes: [无法部署或跳过时说明]
+- Notes: [默认使用的技能恢复指南绝对路径，或部署说明]
 ~~~
 
 先记录初始 git status，再创建审计文件。区分原有用户改动、评审证据文件和后续实现改动；任何提交都不得夹带基线中的用户改动。启动部署对项目级指令文件的改动属于本流程引入的临时改动，记录在 baseline.md 的 Recovery Guide Deployment 小节，不提交，结束时还原。
@@ -503,7 +497,7 @@ screening-log.md 按轮次记录全部原始评审报告及其去重/筛查结�
 
 常规轮关闭前，脚本按候选身份核对 handoff、original_ids、screening.json 和 raw/duplicates/screened/replay_eligible 计数。每个原始候选必须有且仅有一个一致的去向；筛除项不能同时属于标准 finding。completed 轮次在 `validate` 和 `finalize` 时仍会复核。跨轮 deferred 继续使用原 finding ID，不算当前轮新候选；终审 finding 不计入常规轮独立 finding 数。
 
-兼容旧版移动 inbox 的证据布局：标准 finding 目录中保留的 handoff 可作为候选来源，但必须包含该 finding 的 original_id，且轮次、角色、证据路径有效。一份批量 handoff 被复制到多个标准目录只按候选身份计算一次；冲突副本会报错。建议保留原始 inbox，避免移动后留下失效的证据路径。
+常规评审候选以原始 inbox 的 handoff 为准。一个角色可以批量提交候选，同一身份的重复记录必须一致。裁决时保留原始 inbox。
 
 ## Finding 记录
 
@@ -551,14 +545,14 @@ screening-log.md 按轮次记录全部原始评审报告及其去重/筛查结�
 
 ## Final audit records
 
-每次最终审计记录放在 `round-[N]/final-audit/attempt-[K]/`，候选材料放在 `round-[N]/final-audit/attempt-[K]/inbox/`（临时 ID 使用 FA- 前缀，如 FA-001）。重跑时递增 attempt，保留旧目录，不覆盖历史扫描或复核结果。`state.json` 的每次尝试记录 `auditor`（审计代理身份）和 `new_issues`；已记录的 attempt 不允许覆盖，失败时从 `final_audit` 进入 `report` 并报告 INCOMPLETE。`new_issues=N` 必须在 adjudication 中对应 N 个 `source=final-audit`、`audit_attempt=K` 的 finding 记录；否则不能离开 adjudication 或 finalize converged。
+每次最终审计记录放在 `round-[N]/final-audit/attempt-[K]/`，候选材料放在 `round-[N]/final-audit/attempt-[K]/inbox/`（临时 ID 使用 FA- 前缀，如 FA-001）。重跑时递增 attempt，保留旧目录，不覆盖历史扫描或复核结果。第二阶段报告须包含 `## Reviewctl Audit Evidence` 及一个 JSON 代码块，内容采用轮末 `{ "full_suite": ... }` 结构。`full_suite.log` 指向该 attempt 的 `output-full-suite.log`。CLI 在登记时绑定本次 HEAD、两份报告和日志摘要。`state.json` 的每次尝试记录 `auditor`（审计代理身份）和 `new_issues`；已记录的 attempt 不允许覆盖，失败时从 `final_audit` 进入 `report` 并报告 INCOMPLETE。`new_issues=N` 必须在 adjudication 中对应 N 个 `source=final-audit`、`audit_attempt=K` 的 finding 记录；否则不能离开 adjudication 或 finalize converged。
 
 日志不得包含未脱敏的凭据、个人数据或秘密。若实际运行输出含敏感信息，先清理再保存；记录关键片段和退出状态，避免把整份日志贴入代理回复。
 
 ## 审计材料的 Git 生命周期
 
-审计材料应纳入版本控制以保持追溯。可在每轮评审结束时单独提交证据记录；实现修复提交只包含当前 finding 的产品代码、可行的项目回归测试及必要配置，不包含 .review-evidence/。若无法安全区分用户已有改动，不提交并在 `state.json` 记录阻塞。
+证据即时写入独立目录。使用轮末复用时，集中在收尾阶段按项目约定单独提交审计材料，避免仅为证据提交改变被测 HEAD。实现修复提交只包含当前 finding 的产品代码、可行的项目回归测试及必要配置，不包含 .review-evidence/。若无法安全区分用户已有改动，不提交并在 `state.json` 记录阻塞。
 
-**证据与代码的历史一致性**：修复 commit 引用的证据路径在该 commit 快照中不存在（证据在独立的评审 commit 中）。这是有意的设计取舍：避免混淆审计证据与产品代码边界。在 commit message 中使用相对引用（如"证据见前一次评审 commit 的 .review-evidence/round-1/R1-F001-SEC/"）帮助定位。checkout 旧修复 commit 时，需同时参考时间上相邻的评审 commit 获取完整证据。
+**证据与代码的历史一致性**：修复 commit 引用的证据路径在该 commit 快照中不存在（证据在独立的评审 commit 中）。这是有意的设计取舍：避免混淆审计证据与产品代码边界。在 commit message 中使用相对引用（如"证据见 .review-evidence/round-1/R1-F001-SEC/"）帮助定位。checkout 旧修复 commit 时，需同时参考时间上相邻的评审 commit 获取完整证据。
 
 评审取消时保留已有证据，除非用户明确要求清理。证据目录不应被全局忽略。

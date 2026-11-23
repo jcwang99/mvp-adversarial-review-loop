@@ -123,22 +123,12 @@ test("authorization receipts reject malformed, mismatched, altered and truncated
   state.authorizations = [];
   assert.equal(wasAuthorized(state, action, ID, { [action]: receipt }), false);
 });
-test("legacy evidence fails closed after ambiguous revocation, including absent receipt entries", () => {
+test("an authorization record cannot substitute for the receipt of a completed action", () => {
   const action = ACTIONS[0];
-  const state = { authorizations: [] };
-  assert.equal(wasAuthorized(state, action, ID), false);
-  state.authorizations.push({ action, decision: "authorized", scope: ID, at: new Date().toISOString() });
-  assert.equal(wasAuthorized(state, action, ID), true);
-  assert.equal(wasAuthorized(state, action, ID, {}), true);
-  state.authorizations.push({ action, decision: "declined", scope: OTHER, at: new Date().toISOString() });
-  assert.equal(wasAuthorized(state, action, ID), true);
-  state.authorizations.push({ action, decision: "declined", scope: ID, at: new Date().toISOString() });
-  state.authorizations.push({ action, decision: "authorized", scope: ID, at: new Date().toISOString() });
+  const state = { authorizations: [{ action, decision: "authorized", scope: ID, at: new Date().toISOString() }] };
+  assert.equal(hasAuthorization(state, action, ID), true);
   assert.equal(wasAuthorized(state, action, ID), false);
   assert.equal(wasAuthorized(state, action, ID, {}), false);
-  state.authorizations.push(null);
-  assert.equal(hasAuthorization(state, action, ID), false);
-  assert.equal(wasAuthorized(state, action, ID), false);
 });
 test("CLI validation detects receipt corruption after a later revocation", (t) => {
   const project = fixture(t);

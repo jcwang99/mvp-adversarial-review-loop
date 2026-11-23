@@ -41,6 +41,9 @@ function project(t) {
     for (const file of tests) write(file, `const { test } = require('node:test'); const assert = require('node:assert/strict'); test('round ${round}', () => assert.equal(require('../../../src.js')(${round}), ${round}));\n`);
     return { id: `R${round}-F001-FUNC`, decision: "accepted", verification: "pass", adjacent_round: round, adjacent_status: "pass", adjacent_tests: tests, test_files: [] };
   });
+  state.adjacent_registry = findings.flatMap((finding) => finding.adjacent_tests.map((file) => ({
+    test_path: file, finding_id: finding.id, round: finding.adjacent_round,
+  })));
   save(state, { schema_version: 1, findings });
   const plan = (scope) => JSON.parse(cli("adjacent-plan", "--scope", scope));
   let logNumber = 0;
@@ -52,9 +55,8 @@ function project(t) {
     assert.ifError(run.error);
     const log = `.review-evidence/batch-${++logNumber}.log`;
     write(log, `COMMAND=${selected.command}\n${run.stdout}${run.stderr}\nEXIT_CODE=${run.status}\n`);
-    // Node >= 23 defaults to the spec reporter; accept TAP and spec counts alike.
-    const count = run.stdout.match(/^(?:# tests|ℹ tests) (\d+)$/m);
-    const failed = run.stdout.match(/^(?:# fail|ℹ fail) (\d+)$/m);
+    const count = run.stdout.match(/^# tests (\d+)$/m);
+    const failed = run.stdout.match(/^# fail (\d+)$/m);
     assert.ok(count && failed, `test runner did not report actual test counts: ${run.stdout}${run.stderr}`);
     return { ...selected, log, exit: run.status, testCount: Number(count[1]), failedCount: Number(failed[1]) };
   };
@@ -149,8 +151,10 @@ test("verified promotion excludes only its original test from aggregate, retaini
 test("a prior deferred finding is batched in its verification round", (t) => {
   const p = project(t);
   const data = p.readData();
+  const state = p.readState();
   data.findings[0].adjacent_round = 2;
-  p.save(p.readState(), data);
+  for (const entry of state.adjacent_registry) if (entry.finding_id === data.findings[0].id) entry.round = 2;
+  p.save(state, data);
   assert.equal(p.plan("round").test_paths.length, 4);
 });
 
@@ -158,7 +162,6 @@ test("re-adjudication cannot erase previously registered adjacent tests", (t) =>
   const p = project(t);
   const state = p.readState();
   const data = p.readData();
-  state.adjacent_registry = policy.adjacentRegistry(state, data);
   data.findings[0].verification = "pending";
   data.findings[0].adjacent_tests = [];
   p.save(state, data);

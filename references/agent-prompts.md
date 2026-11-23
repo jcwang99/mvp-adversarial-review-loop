@@ -1,6 +1,6 @@
 # 子代理提示模板与输出格式
 
-本文件是所有子代理提示模板和输出格式的唯一来源。委派子代理时，从此文件获取完整的提示模板。所有模板中的 `[skill-dir]` 必须在委派时替换为当前 harness 的实际技能目录绝对路径，并提供 `node "[skill-dir]/scripts/reviewctl.js"` 的可执行形式；子代理只读使用脚本，不得修改状态或推进阶段。
+委派前按 `SKILL.md` §0 用 `model-for` 解析角色，在 harness 调度参数中应用已指定的模型。所有模板中的 `[skill-dir]` 必须在委派时替换为当前 harness 的实际技能目录绝对路径，并提供 `node "[skill-dir]/scripts/reviewctl.js"` 的可执行形式；子代理只读使用脚本，不得修改状态或推进阶段。
 
 ## 目录
 
@@ -18,7 +18,7 @@
 
 ### 提示模板
 
-为每个代理替换 round、role-slug、范围和验收标准。倒数第 2 轮及以后（最后两轮回归检查轮）还需提供待检查的修复提交/变更路径，但不提供历史 finding 或预期结论。
+为每个代理替换 round、role-slug、范围和验收标准。按轮次策略执行回归检查时还需提供待检查的修复提交/变更路径，但不提供历史 finding 或预期结论。
 
 ````text
 你是 [role-slug] 评审员。只读检查 [MVP 范围]，依据 [验收标准/契约] 和当前 HEAD。
@@ -184,6 +184,8 @@ notes: "<简短说明，例如与原始证据的一致性>"
 ~~~
 
 ### 结果解释
+
+`exit_status` 填实测的数值。断言触发时可以非零，须在报告中保存对应断言和实际观察。运行器、依赖或环境故障按 `blocked` 处理。
 
 - `reproduced`：有效前提下观察到 claim 所述行为；是否违反承诺范围由主代理另行裁决。
 - `not-reproduced`：前提和断言有效、复现完整运行，但观察结果明确不符合 claim；记录具体反证。仅仅没有得到输出或结果模糊不算。
@@ -442,645 +444,36 @@ blockers: []
 
 ## 5. 实现代理（Implementation Agent）
 
-### 提示模板
+发送 `tdd-and-commit.md` 的“实现代理任务模板”，附上本 finding 的反例、baseline 测试策略和工作目录。若为 bounded 乐观候选，限定在指定 worktree 修改，返回候选 commit、变更路径、测试与质量检查日志。主代理负责正式提升。
 
-见 `tdd-and-commit.md` 中的"实现代理任务模板"与"RED-GREEN 循环与测试合并"章节。
+正式实现报告写入 finding 目录的 `implementation-result.md`。记录 RED、GREEN、正式测试路径和提交；按 `evidence-structure.md` 的 `Reviewctl GREEN Evidence` 格式保存机器证据。手工复现写明 Manual 步骤。与用户改动无法安全分离时，报告 `prepared` 并提供 `Manual Merge Guidance`（冲突文件、补丁、合并步骤、验证命令和风险）。
 
-实现代理的任务是按照 TDD 流程（RED-GREEN-REFACTOR）修复已 accepted 的 finding。
-
-**前置条件**：主代理已将 accepted findings 的临时测试文件从 `tests/review/candidates/` 移动到 `tests/review/reproductions/`。实现代理只处理已在 reproductions/ 目录中的测试文件。
-
-### 关键要求
-
-如果主代理提供的是乐观修复 worktree：只在该 worktree 内修改和测试；不要读取或修改主工作树的 `.review-evidence/`，不要把候选 commit 当成正式 finding commit。返回候选 commit、修改文件、测试日志和代码质量日志，候选结果只供主代理在正式 repair 入口提升后再次走 guard-commit 和独立验证。
-
-1. **RED 阶段**：
-   - 读取 `tests/review/reproductions/r{round}_f{num}_{slug}{suffix}`（主代理已移动到此）
-   - 将其测试用例复制到项目正式测试文件（如 `tests/auth.test.js`）
-   - 运行正式测试文件中新合并的测试，确认失败（RED）
-   - 如果测试通过，说明 finding 已被其他修复解决，报告 already_fixed
-
-2. **GREEN 阶段**：
-   - 实现最小修复，使测试通过
-   - 按 baseline 的 tiering mode 运行门禁：default/full-everywhere 运行 full；progressive 普通风险 P2/P3 运行 Fast test command，P0/P1 或 high 风险仍运行 full。无论使用 fast 还是 full，都必须先运行 baseline 的 Code quality command；Rust 默认是 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets --all-features -- -D warnings`，其它语言按 baseline 声明的 formatter/linter/type-check 命令执行。fast 缩放必须使用 baseline profile，并记录缩放方式、保留契约、未覆盖语义和 full 兜底；虚拟时钟不等于真实调度时间，加速真实时间不能证明无调度竞争，tmpfs 不覆盖真实磁盘持久性或故障
-   - progressive 延后 full 时，在结构化 GREEN evidence 写 `quality_checks`、`fast_suite`、`fast_profile`、`scaling_notes`、`retained_contracts`、`uncovered_semantics` 和 `risk_assessment: normal`；full、质量检查或快速测试失败都不得提交。fast 不能修改生产默认时间、删除断言或冒充 full
-   - 不要过度工程或添加 finding 范围外的功能
-
-3. **REFACTOR 阶段**（可选）：
-   - 仅在必要时进行代码清理
-   - 保持测试通过
-   - 不要引入新的抽象或模式，除非修复本身需要
-
-4. **提交**（提交规范以 tdd-and-commit.md 为准）：
-   - 每个 finding 一个独立提交
-   - 提交消息格式：`fix(review): [ID] concise behavior being corrected`
-   - 提交体包含：finding ID、影响、修复说明、测试路径
-
-### 输出格式（简短摘要）
-
-~~~yaml
-finding_id: "<标准 ID>"
-implementation_status: "fixed | already_fixed | prepared | blocked | cannot_fix"
-test_status:
-  red: "confirmed | not_confirmed"
-  green: "pass | fail"
-  green_suite: "fast_pass | full_pass | fail | not_run"
-  risk_assessment: "normal | high"
-  green_suite_command: "<实际 fast/full 命令>"
-  green_suite_exit_status: "<退出码>"
-  green_suite_tree_hash: "<测试时的 tree hash（git write-tree）>"
-  green_suite_workspace_clean: true | false
-  green_suite_run_location: "main-workspace | worktree:<path>"
-  green_suite_test_counts: { total: <数量>, passed: <数量>, failed: <数量>, skipped: <数量> }
-  green_suite_log: "<日志路径>"
-commit_sha: "<commit hash | none>"
-commit_message: "<first line>"
-modified_files: []
-test_files: []
-blockers: []
-~~~
-
-### 完整实现报告（implementation-result.md）
-
-~~~markdown
-# Implementation Result: [标准 finding ID]
-
-## Finding Summary
-- **Claim**: [claim 原文]
-- **Severity**: [P0/P1/P2/P3]
-- **Implementation Date**: [ISO 8601]
-
-## RED Phase
-### Test File
-**Path**: [测试文件路径]
-
-### RED Confirmation
-```bash
-[运行测试的命令]
-```
-
-**Exit Status**: [退出码]
-
-**Result**: confirmed | not_confirmed
-
-**Notes**: [如果 not_confirmed，说明原因，可能是 already_fixed]
-
-## already_fixed 处理（仅在 RED 阶段测试通过时填写）
-**如果 RED 阶段测试直接通过，说明 finding 已被历史修复解决，填写以下信息：**
-
-### Evidence Test File
-**Path**: [证明修复的测试文件路径，从 tests/review/reproductions/ 移动到项目正式测试文件的路径；必须已提交到 HEAD，且工作区/index 与 HEAD 一致]
-
-**Test Output**:
-```bash
-[运行测试的命令和输出]
-```
-
-**Exit Status**: [退出码，应该是 0]
-
-### Analysis
-[简要说明为什么测试通过，是否能确认 finding 确实被修复（而不是测试本身有问题）]
-
-**提供给验证代理的信息**：
-- **Test Path**: [测试文件路径]
-- **Test Command**: [运行测试的命令]
-- **Counterexample Reference**: [原始 counterexample.md 路径]
-
-**注意**：already_fixed 情况下，不需要找历史修复 commit，验证代理会检查测试覆盖度。
-
----
-
-## GREEN Phase（仅在 RED confirmed 时填写）
-### Implementation Approach
-[简要描述修复方法]
-
-### Modified Files
-- [文件路径 1]
-- [文件路径 2]
-
-### GREEN Confirmation
-```bash
-[运行测试的命令]
-```
-
-**Exit Status**: [退出码]
-
-**Result**: pass | fail
-
-### GREEN Test Gate
-```bash
-[按 baseline tiering mode 运行 fast 或 full 的命令]
-```
-
-**Exit Status**: [退出码]
-
-**Result**: pass | fail | not_run
-
-**Tree Hash**: [测试时的 tree hash；提交前 `git write-tree`，提交后与 `git rev-parse <commit>^{tree}` 一致]
-
-**Workspace Clean**: true | false（指除本次有意暂存的修复和正式测试外，没有未暂存或 untracked 的源代码/测试改动；有用户改动时必须使用独立 worktree）
-
-**Run Location**: main-workspace | worktree:<path>
-
-**Test Counts**: total / passed / failed / skipped
-
-**Log**: [.review-evidence/round-[N]/[标准 ID]/output-green-suite.log]
-
-实现代理还必须在本报告中加入 `## Reviewctl GREEN Evidence`，其中只有一个 JSON 代码块。按 baseline mode 记录 `full_suite` 或 `fast_suite`；progressive 必须同时记录 `risk_assessment`。该区块用于 `reviewctl guard-commit` 和 `record-implementation` 校验，不能用上方摘要或散文替代。
-
-## REFACTOR Phase (if any)
-[描述重构内容，如果没有则省略此节]
-
-## Commit
-**SHA**: [commit hash]
-
-**Message**:
-```
-[完整的 commit message]
-```
-
-## Blockers (if any)
-[阻塞项列表，例如：
-- 与用户代码冲突（blocked_by_user_changes）
-- 依赖项缺失
-- 测试环境问题
-]
-
-## Manual Merge Guidance (required if blocked_by_user_changes)
-**仅在 implementation_status 为 prepared 且 blockers 包含 user_changes_conflict 时填写此节，否则省略**
-
-### Conflict Files
-- [文件路径 1]
-- [文件路径 2]
-
-### Fix Diff Patch
-```diff
-[git diff 输出，仅包含修复改动，不含用户改动]
-```
-
-或者，如果 diff 不清晰，提供代码片段：
-
-```[language]
-// 修复代码片段
-```
-
-### Suggested Steps
-1. 打开 [文件路径]
-2. 找到第 [行号] 行（或搜索 [关键字]）
-3. 插入/修改以下代码：
-   ```[language]
-   [代码片段]
-   ```
-4. 运行测试验证：`[测试命令]`
-
-### Verification
-- **测试路径**：[修复测试的文件路径]
-- **预期结果**：[测试应该通过的描述]
-- **验证命令**：`[运行测试的命令]`
-
-### Risks
-[如果用户改动可能与修复冲突，明确说明冲突点和注意事项]
-~~~
-
-### 工作区冲突处理
-
-当发现修复目标文件含有用户未提交的改动时：
-
-1. 检查是否可以安全分块（见 `tdd-and-commit.md` 的"工作区冲突处理"章节）
-2. 如果不能安全分块，先让主代理用 `record-implementation --status prepared --reason "user changes conflict"` 记录已准备好的修复，再用 `record-verification --status blocked_by_user_changes` 标记手工合并；**不要**用 `record-implementation --status blocked` 代替（后者表示环境/依赖阻塞）
-3. **必须在 implementation-result.md 的 "Manual Merge Guidance" 章节提供详细的手工合并建议**（见上方模板）
-4. 输出格式中增加字段：
-
-~~~yaml
-implementation_status: "prepared"
-blockers:
-  - type: "user_changes_conflict"
-    affected_files: []
-    can_chunk: false
-    notes: "<说明冲突的性质>"
-    manual_merge_guidance_provided: true
-~~~
-
----
+返回 YAML 摘要，列出 `finding_id`、`implementation_status`、`commit_sha`、正式测试路径、报告路径和阻塞。机器证据只写一份。
 
 ## 6. 验证代理（Verification Agent）
 
-### 提示模板
-
 ~~~text
-你是验证代理。检查 [标准 finding ID] 的修复是否有效、完整、无回归。你未参与该 finding 的实现，必须独立验证。
-提供材料：
-- 原始 counterexample.md 和 reproduction 路径
-- 实现代理的修复提交 SHA 和实现报告路径（如果是 already_fixed，则没有新的修复提交）
-- 当前 HEAD（应该包含修复提交，或在 already_fixed 情况下已经包含历史修复）
-- baseline.md 的 “Test Scope / Regression Policy” 摘录：focused/impacted/full 命令、高风险路径、full 单次耗时、baseline full result
-- finding 的 severity、修复 commit 的 changed files（`git show --name-only <sha>`；already_fixed 用 counterexample 涉及的路径/模块）、baseline 的高风险路径；`risk_assessment` 由你根据 changed files 独立判断，无法判断时按 high
+独立验证 [标准 finding ID]。输入为 [原始反例、复现记录、实现报告、修复提交、正式测试路径、当前 HEAD]，以及 [severity、changed files、baseline 测试策略和缓存]。使用主代理给出的技能绝对路径。只读使用 reviewctl，主代理负责登记。
 
-## 任务
-
-### 正常修复流程（implementation_status: fixed）
-1. **按风险决定是否重放修复前状态**：仅 P0/P1、高风险，或复现证据的 commit/tree/测试哈希无法核对时，在修复前 commit 的独立 worktree 重放；其他证据可信且风险普通时跳过此步。复现证据须记录 tested commit、tree hash、实际测试文件路径与 SHA-256、命令和退出码
-2. **验证修复**（在修复后的 commit / HEAD）：确认 finding 已解决
-3. **生成相邻测试**（Adjacent Tests）：为相邻功能、边界情况、异常路径生成至少 2 个新测试用例，写入 `tests/review/verifications/`
-4. **登记相邻测试**：通过 `record-verification --adjacent-test` 记录路径；不合并正式测试文件
-5. **轮末批量执行**：主代理在 `round_decision` 运行 `reviewctl adjacent-plan --scope round` 输出的精确命令，并用 `record-adjacent-batch` 保存结果；每次终审前由主代理运行 `adjacent-plan --scope all` 的输出命令并记录 `record-final-adjacent-batch --attempt K`
-6. **发现缺陷时升级**：轮末批测失败后，先登记正式候选并经过 adjudication；确认是缺陷后按新 finding 的 TDD 流程修复，其回归测试进入正式测试文件。通过的相邻测试留在 review 专用目录
-7. **在提交后的 HEAD 上复核 full**：运行 impacted 回归；P0/P1、高风险变更、baseline 为 full-everywhere，或 full 证据缺失/不匹配时，自己重跑完整测试套件，并记录该 HEAD 的 tree hash
-8. **检查修复完整性**：是否遗漏相关场景
-
-### already_fixed 流程（implementation_status: already_fixed）
-当实现代理发现测试已经通过（finding 在评审前已被修复）时：
-1. **验证测试覆盖**：读取实现代理提供的测试文件，确认测试确实覆盖了 finding 的 claim（检查 counterexample.md 和测试代码的对应关系）
-2. **重新运行测试**：在当前 HEAD 确认测试通过，验证测试确实有效
-3. **生成相邻测试**：与正常流程相同，生成至少 2 个相邻测试用例，放入 `tests/review/verifications/`
-4. **登记并轮末批测**：由主代理统一运行 Adjacent test command；只有批测失败的场景才将测试升级到正式测试文件
-7. **在提交后的 HEAD 上运行 full**：`already_fixed` 默认必须在当前 HEAD 重跑 full（例外见 pass 规则）；P0/P1、高风险变更或 `full-everywhere` 同样必须重跑完整测试套件，并记录该 HEAD 的 tree hash
-
-**already_fixed 的关键区别**：
-- **不需要找历史修复 commit**：修复已经在代码库中，无需定位是哪个 commit 修掉的
-- **按风险决定是否重放修复前状态**：P0/P1、高风险或复现证据无法核对时必须在独立 worktree 重放；普通风险且证据可信时可跳过
-- **重点在测试覆盖度检查**：确保测试真的覆盖了 finding，而不是偶然通过
-
-## 全量证据复核（验证阶段）
-
-验证代理默认不重复运行 full，但必须复核实现阶段的 GREEN 全量证据：
-
-- 命令与 baseline 记录的 full 命令一致，且不含 `--passWithNoTests`、`|| true` 或排除性过滤器
-- 退出码为 0，日志存在且可读
-- 测试计数中 `total > 0`、`failed = 0`，`total` 与 baseline 的 Expected test count 一致（差异有解释），`skipped` 不高于 baseline（除非逐项解释）
-- `workspace_clean = true`，或在独立 worktree 中运行并记录 `run_location`；如果实现报告声明有用户改动，则必须是在独立 worktree 中运行 full，否则证据无效
-- 测试时的 tree hash 与修复 commit 的 tree 一致（`git rev-parse <commit>^{tree}`）
-- 实现报告中的 full 记录与日志一致
-- 高风险变更包括：构建/依赖清单、公共 API、共享核心模块、认证/权限、数据 schema/迁移、并发/全局状态、feature flag、序列化、测试基础设施，或跨多个 package；“测试基础设施”仅指影响多个测试的 harness、配置、fixture、helper 或测试运行器
-
-任一条件不满足时：如果实现门禁 status 为 fail，按下方失败规则处理（重新修复并重新跑相应 GREEN 门禁，或按环境/flaky 记录后判 `inconclusive`）；如果 required evidence 缺失/不匹配，finding 为 P0/P1、`risk_assessment = high`、变更触及“高风险触发 full”清单，或 baseline 设为 full-everywhere，验证代理必须自己重跑 full。P0/P1 和高风险不能复用实现证据。progressive 普通风险 P2/P3 可核对实现阶段 fast 证据并运行修复后反例与 impacted；其 full 由主代理在轮末当前 HEAD 统一执行，不得把 fast 证据当作 full。
-
-`implementation_full_suite.status = fail` 时不得判 pass；必须重新修复并重新 GREEN full，或按环境/flaky 记录后判 `inconclusive`。progressive 的 `implementation_fast_suite.status = fail` 同样不得判 pass。
-
-`already_fixed` 默认由验证代理在当前 HEAD 重跑 full。唯一例外仅适用于 severity 为 P2/P3、`risk_assessment = normal` 且 tiering mode 为 `default` 的 finding：历史修复 commit 必须是 `baseline_head` 的祖先，baseline full result 必须为 pass，并在结构化证据中记录这两个事实；P0/P1、高风险或 `full-everywhere` 时不得使用例外。
-
-`verification-result.md` 还必须包含 `## Reviewctl Verification Evidence` 和一个符合 `evidence-structure.md` schema 的 JSON 代码块。`reviewctl record-verification` 从该区块读取并校验机器证据；YAML 摘要和叙述性报告不能替代它。
-
-缺少 full 证据且无法重跑时，验证结论为 `inconclusive`，不得写 `pass`。
-
-## 相邻测试要求
-
-**最低标准**：
-- 最少 2 个用例：正常情况 + 边界情况
-- 必须覆盖原 finding 未直接测试的相邻路径
-- 必须可运行并通过
-
-**示例**（假设原 finding 是"未登录用户可访问受保护资源"）：
-- Adjacent Test 1: 已登录但无权限的用户访问（边界情况）
-- Adjacent Test 2: 已登录且有权限的用户访问（正常情况）
-- Adjacent Test 3: Token 过期的用户访问（异常情况）
-
-**失败处理**：
-- 如果无法生成有意义的相邻测试（例如：finding 的修复已覆盖所有相关路径），说明理由，verification 仍可 pass
-- 如果生成的相邻测试失败，分析失败原因：
-  - **修复不完整**（相邻路径仍有问题）：轮末登记正式候选并进入 adjudication；确认属于当前 finding 时回到 repair，独立缺陷则建立新的 finding
-  - **测试本身有问题**（断言错误、fixture 问题、环境问题）：重新生成测试或标记为 inconclusive，说明原因
-  - **发现无关的新问题**（与当前 finding 不相关的独立缺陷）：轮末登记正式候选并进入 adjudication；当前 finding 的 verification 可保持 pass，但整轮不得在该候选裁决前结束
-
-## 运行约定
-- 从项目根目录运行，使用项目自身的测试框架和依赖
-- 若需要隔离数据，放在：.review-evidence/round-[N]/_testdata/verify-[finding-id]/
-- 相邻测试写入：tests/review/verifications/r{round}_f{num}_{slug}_adjacent{suffix}
-- **复现证据**：`replay-review.md` 记录实际运行的 commit/tree、测试文件 SHA-256、命令和退出码。测试哈希必须按 tested commit 中的文件内容计算；手工复现则对已提交的 `manual-steps.md` 计算哈希
-- **测试输出先落盘**：运行测试/回归命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志（`tail`/`grep` 或 `Get-Content -Tail`/`Select-String`），不要重复运行；多个命令可用 `output-<step>.log`
-- **技能脚本（如需）**：`node "[skill-dir]/scripts/reviewctl.js"`；`[skill-dir]` 由主代理替换为当前 harness 的实际绝对路径，只读使用，不要修改状态或推进阶段
-- **编译缓存复用（按磁盘预算）**：在 baseline 记录的磁盘预算内复用预热缓存（Rust 如 `CARGO_TARGET_DIR`）；不要为每个 finding 新建 target/依赖目录。缓存超预算时按主代理指示在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
-- 若命令会改写持久数据、调用真实外部服务或无法确认副作用，停止运行并报告 blocked
-
-
-## 工作区保护（强制）
-
-**默认方案（worktree）**：
-- 不得在共享工作区直接 `git checkout` 修复前 commit
-- 用独立 worktree 复现修复前状态：
-  ```bash
-  # 创建临时 worktree
-  git worktree add <系统临时目录或仓库同级目录>/verify-[finding-id] [修复前 commit]
-  
-  # 在 worktree 中运行复现命令
-  cd <worktree-path>
-  [运行 reproduction 命令]
-  
-  # 完成后清理
-  cd <原工作区>
-  git worktree remove <worktree-path>
-  ```
-
-**兜底方案（stash + checkout）**：
-- **平台说明（Windows）**：下方命令为 POSIX shell 示例，Windows PowerShell 下需改写为等价形式：`/tmp/...` → 系统临时目录（如 `$env:TEMP\verify-...`），`var=$(...)` → `$var = ...`，`diff` → `git diff --no-index`（或 `Compare-Object`），含 `{}` 的参数如 `stash@{0}` 需加引号（`'stash@{0}'`）。
-- **触发条件**：`git worktree add` 失败（如 Git 版本不支持、文件系统限制）
-- **需要主代理批准**：验证代理遇到 worktree 失败时，必须报告 blocked，由主代理决定是否授权使用兜底方案
-- **执行步骤**：
-  1. 记录原始状态：
-     ```bash
-     original_head=$(git rev-parse HEAD)
-     original_branch=$(git rev-parse --abbrev-ref HEAD)
-     git status --short > /tmp/verify-[finding-id]-original-status.txt
-     ```
-  2. 保存工作区改动：
-     ```bash
-     git stash push --include-untracked -m "verify-[finding-id]-backup"
-     stash_ref=$(git rev-parse stash@{0})  # 记录 stash 引用
-     ```
-  3. 切换到修复前 commit：
-     ```bash
-     git checkout [修复前 commit]  # detached HEAD
-     ```
-  4. 运行复现命令并记录结果
-  5. 恢复原始状态：
-     ```bash
-     git checkout $original_branch  # 或 $original_head
-     git stash pop $stash_ref
-     ```
-  6. **错误恢复**：
-     - 若 `git stash pop` 产生冲突：
-       ```bash
-       git stash show -p <stash-ref> > /tmp/verify-[finding-id]-stash.patch
-       git stash list
-       ```
-       **不要 `git stash drop`**。`original-status.txt` 只记录文件名/状态，不记录改动内容；stash 可能是用户改动唯一完整副本。保留 stash 和 patch，报告 blocked，附原始状态文件路径和冲突详情，不要强制合并。
-     - 若验证代理在步骤 3-4 之间崩溃：主代理检测到 detached HEAD，执行：
-       ```bash
-       git checkout <baseline_head 或 original_branch>
-       git stash list  # 查找 verify-[finding-id]-backup
-       git stash pop <stash-ref>  # 若失败，保留 stash 并报告
-       ```
-  7. 验证恢复结果：
-     ```bash
-     git status --short > /tmp/verify-[finding-id]-restored-status.txt
-     diff /tmp/verify-[finding-id]-original-status.txt /tmp/verify-[finding-id]-restored-status.txt
-     ```
-     若有差异且不能确认为预期变化，报告 blocked
-
-**禁止操作**：
-- 禁止 `git checkout --force`、`git reset --hard`、`git clean`
-- 修复后状态直接在当前 HEAD 工作区验证，不要移动 HEAD
-- 除上述受控兜底流程外，验证代理不得以任何方式移动 HEAD
-
-## 输出约定
-- 完整验证报告写入：.review-evidence/round-[N]/[标准 ID]/verification-result.md
-- 必要的命令输出写入：.review-evidence/round-[N]/[标准 ID]/output.log
-- 返回 YAML 摘要：verification_status、reproduction_status（before/after）、adjacent_tests、regression_scope/regression_status、GREEN 门禁证据（progressive 时填写 `implementation_fast_suite`，否则填写 `implementation_full_suite`）、full_test_suite（如重跑）、verdict
-- 不要在回复中粘贴完整日志或测试源码
+1. 按 changed files 和 baseline 高风险路径独立判断风险，影响不明按 high。核对修复前证据的 commit、tree 和测试文件 SHA-256。P0/P1、高风险或证据无法核对时，在修复前提交的独立 worktree 重放。隔离失败则报告阻塞并保留用户工作区。
+2. 在修复后的 HEAD 重放原始反例，检查断言是否覆盖 claim。手工 finding 独立执行 manual-steps.md。already_fixed 还要核对已提交的正式测试及历史修复提交。
+3. 按 SKILL.md §1 的表运行 impacted 或 full。progressive 普通 P2/P3 核对 GREEN fast 后运行 impacted。高风险、P0/P1、full-everywhere 由你独立运行 full。already_fixed 的 baseline ancestor 例外见 tdd-and-commit.md。实现阶段应通过的门禁失败或证据无效时，将问题交回主代理。保存各次实跑的原始输出、精确命令和退出码。
+4. 为相邻路径生成至少两个用例（正常和边界），写入 tests/review/verifications/r{round}_f{num}_{slug}_adjacent{suffix}，供轮末和终审前批测。无法生成时说明原因。
+5. 在 finding 目录写 verification-result.md，包含 Final Verdict、修复前后结果、风险判断及 Reviewctl Verification Evidence JSON；精确字段见 evidence-structure.md。impacted 须说明传递反向依赖闭包，独立 full 须填写 full_test_suite 和实际 tested_commit。单次 full 使用独立日志，以便轮末核对同一次运行。
 ~~~
 
-### 输出格式（简短摘要）
+返回简短 YAML。详细命令、计数和哈希保存在上述报告。
 
 ~~~yaml
-finding_id: "<标准 ID>"
-verification_status: "complete | blocked"  # blocked 由主代理记录为 inconclusive
-reproduction_before_fix:
-  commit: "<修复前的 commit SHA>"
-  status: "observed | not_observed | blocked"
-  notes: "<简短说明>"
-reproduction_after_fix:
-  commit: "<修复后的 commit SHA / HEAD>"
-  status: "not_observed | still_observed | blocked"
-  notes: "<简短说明>"
-adjacent_tests:
-  generated: true | false
-  count: <数量>
-  file_path: "tests/review/verifications/r{round}_f{num}_{slug}_adjacent{suffix} | none"
-  status: "pass | fail | not_run"
-  notes: "<如果未生成或失败，说明理由>"
-regression_scope: "impacted | full"  # pass 的最低范围；focused 只能作补充
-regression_command: "<验证代理实际运行的回归命令>"
-regression_status: "pass | fail | not_run"
+finding_id: "[标准 ID]"
+verdict: "pass | fail | inconclusive"
 risk_assessment: "normal | high"
-risk_reason: "<命中的高风险类别或 changed files>"
-quality_checks:  # 每个 repair 提交前必须运行；无适用工具时记录 not_applicable 与原因
-  status: "pass | not_applicable | fail"
-  command: "<baseline Code quality command>"
-  exit_status: "<退出码；not_applicable 可省略>"
-  tree_hash_before: "<检查前 tree hash>"
-  tree_hash_after: "<检查后 tree hash>"
-  workspace_clean_before: true | false
-  workspace_clean_after: true | false
-  run_location: "main-workspace | worktree:<path>"
-  log: "<质量检查日志路径>"
-  reason: "<仅 not_applicable 必填>"
-implementation_full_suite:  # default/full-everywhere，或 progressive 的 P0/P1/high finding
-  status: "pass | fail | not_run"
-  command: "<实现阶段的 full 命令>"
-  exit_status: "<退出码>"
-  tree_hash: "<测试时的 tree hash>"
-  workspace_clean: true | false
-  run_location: "main-workspace | worktree:<path>"
-  test_counts: { total: <数量>, passed: <数量>, failed: <数量>, skipped: <数量> }
-  runtime_profile: "original"  # baseline 有长时测试时必填
-  long_running_test_ids: ["<baseline 中登记的稳定测试 ID>"]
-  runtime_scale: "<必须逐字匹配 baseline Full runtime scale>"
-  runtime_scale_evidence: "<实际配置/运行日志中的尺度证据>"
-  log: "<日志路径>"
-  matches_fix_commit: true | false
-implementation_fast_suite:  # progressive 普通风险 P2/P3；与 implementation_full_suite 二选一作为 GREEN 门禁
-  status: "pass | fail | not_run"
-  command: "<实现阶段的 fast 命令>"
-  fast_profile: "none | reduced-data | accelerated-time | virtual-clock | tmpfs | mixed"
-  scaling_notes: "<具体时间/数据缩放比例与方式>"
-  retained_contracts: "<仍由 fast 直接验证的行为契约>"
-  uncovered_semantics: "<fast 不能覆盖的语义，以及由哪项 full 测试兜底>"
-  exit_status: "<退出码>"
-  tree_hash: "<测试时的 tree hash>"
-  workspace_clean: true | false
-  run_location: "main-workspace | worktree:<path>"
-  test_counts: { total: <数量>, passed: <数量>, failed: <数量>, skipped: <数量> }
-  log: "<日志路径>"
-  matches_fix_commit: true | false
-full_test_suite:  # 仅在验证代理自己重跑 full 时填写；status=pass 时 regression_scope 必须为 full
-  status: "pass | fail | not_run"
-  command: "<验证代理重跑 full 的命令>"
-  exit_status: "<退出码>"
-  head_sha: "<验证时的 HEAD>"
-  tree_hash: "<验证时的 tree hash>"
-  workspace_clean: true | false
-  run_location: "main-workspace | worktree:<path>"
-  test_counts: { total: <数量>, passed: <数量>, failed: <数量>, skipped: <数量> }
-  log: "<日志路径>"
-verdict: "pass | fail | inconclusive"  # verification_status=blocked 时映射为 inconclusive
-verification_evidence_path: ".review-evidence/round-[N]/[标准 ID]/verification-result.md"
+regression_scope: "impacted | full"
+adjacent_tests: []
+adjacent_reason: ""
+verification_evidence_path: "[报告路径]"
 blockers: []
 ~~~
-
-### 完整验证报告（verification-result.md）
-
-~~~markdown
-# Verification Result: [标准 finding ID]
-
-## Finding Summary
-- **Claim**: [claim 原文]
-- **Severity**: [P0/P1/P2/P3]
-- **Implementation Status**: [fixed | already_fixed]（来自实现代理报告）
-- **Fix Commit**: [SHA]（如果是 already_fixed，填写 "N/A - already fixed in codebase"）
-- **Verification Date**: [ISO 8601]
-
-## Verification Flow
-
-### 正常修复验证（implementation_status: fixed）
-
-#### Step 1: Reproduce Before Fix
-**Commit SHA**: [修复前的 commit]
-
-**Commands Run**:
-```bash
-git worktree add <临时目录>/verify-[finding-id] [修复前 commit SHA]
-（在 worktree 中运行）[reproduction 命令]
-git worktree remove <临时目录>/verify-[finding-id]
-```
-
-**Observed Behavior**: [观察到的行为]
-
-**Result**: observed | not_observed | blocked
-
-**Notes**: [如果 not_observed，说明原始 finding 可能无效或已被其他修复解决]
-
-#### Step 2: Verify After Fix
-**Commit SHA**: [修复后的 commit / HEAD]
-
-**Commands Run**:
-```bash
-# 当前 HEAD 工作区已包含修复提交，不要移动 HEAD
-[reproduction 命令]
-```
-
-**Observed Behavior**: [观察到的行为]
-
-**Result**: not_observed | still_observed | blocked
-
-**Notes**: [如果 still_observed，说明修复无效或不完整]
-
-### already_fixed 验证（implementation_status: already_fixed）
-
-#### Step 1: Test Coverage Check
-**Test File**: [实现代理提供的测试文件路径]
-
-**Coverage Analysis**:
-- **Counterexample Claim**: [从 counterexample.md 提取的 claim]
-- **Test Assertion**: [测试中的关键断言]
-- **Coverage Assessment**: [测试是否确实覆盖了 claim 的逻辑]
-
-**Result**: covers_claim | insufficient_coverage | unclear
-
-**Notes**: [如果 insufficient_coverage，说明测试可能偶然通过，建议重新裁决]
-
-#### Step 2: Re-run Test
-**Commands Run**:
-```bash
-[运行测试的命令]
-```
-
-**Exit Status**: [退出码]
-
-**Result**: pass | fail
-
-**Notes**: [如果 fail，说明测试不稳定或环境问题]
-
-### Step 3: Adjacent Tests（两种流程共用）
-### Generated Tests
-**File Path**: [测试文件路径 | none]
-
-**Test Cases**:
-1. [测试用例 1 描述]
-2. [测试用例 2 描述]
-3. [测试用例 3 描述（可选）]
-
-### Execution
-```bash
-[运行相邻测试的命令]
-```
-
-**Exit Status**: [退出码]
-
-**Result**: pass | fail | not_run
-
-**Notes**: [如果未生成或失败，详细说明理由]
-
-## Step 4: Regression Tests
-- **Scope**: impacted | full（focused 只能作为补充）
-- **Command**:
-- **Exit Status**:
-- **Result**: pass | fail | not_run
-- **Risk Assessment**: normal | high
-- **Risk Reason**: [命中的高风险类别或 changed files]
-
-### Implementation GREEN Gate Evidence
-- **Gate**: full | fast
-- **Command**:
-- **Exit Status**:
-- **Tree Hash**:
-- **Workspace Clean**: yes | no
-- **Run Location**: main-workspace | worktree:<path>
-- **Test Counts**: total / passed / failed / skipped
-- **Log**:
-- **Matches Fix Commit**: yes | no
-
-progressive 普通风险 P2/P3 使用 fast 门禁时，以上字段对应 `implementation_fast_suite`；P0/P1、高风险或 default/full-everywhere 使用 `implementation_full_suite`。不要把轮末 full regression gate 填入 finding 的实现证据；该 gate 由主代理单独记录。
-
-### Verification Full Suite (only if rerun)
-```bash
-[验证代理自己重跑 full 时填写]
-```
-
-**Exit Status**: [退出码]
-
-**Head SHA**: [验证时的 HEAD]
-
-**Tree Hash**: [验证时的 tree hash]
-
-**Workspace Clean**: yes | no
-
-**Run Location**: main-workspace | worktree:<path>
-
-**Test Counts**: total / passed / failed / skipped
-
-**Log**: [日志路径]
-
-**Result**: pass | fail | not_run
-
-## Step 5: Completeness Check
-[检查修复是否遗漏相关场景，例如：
-- 是否只修复了一个路径，遗漏了其他类似路径？
-- 是否只处理了正常情况，遗漏了异常情况？
-- 是否引入了新的边界问题？
-]
-
-## Verdict
-**Final Verdict**: [只填写一个值：pass、fail 或 inconclusive]
-
-**Reasoning**: [综合判断依据]
-
-## Blockers (if any)
-[阻塞项列表]
-~~~
-
-### Verdict 判断规则
-
-- **Final Verdict 行只写单个字面值**：脚本去掉 Markdown 标记和句末句号后，只把大小写不敏感等于 `pass` 的值判为通过。不要写 `pass（fixed）`、`pass with caveats` 或保留模板中的多个选项；原因写在 `Reasoning`。环境阻塞写 `inconclusive`，不要写 `blocked`。
-- **full 证据有效**：`log` 存在且可读；`command` 与 baseline 的 full 命令一致，且不含 `--passWithNoTests`、`|| true` 或排除性过滤器；`exit_status = 0`；`workspace_clean = true` 或在独立 worktree 中运行；`test_counts.total > 0`、`failed = 0`、`skipped` 不高于 baseline，`total` 与 baseline 的 Expected test count 一致（差异必须有解释）；`tree_hash` 与 reference HEAD/commit 的 tree 一致。
-- **regression_scope 与 full_test_suite 一致性**：如果 `full_test_suite.status != not_run`，则 `regression_scope` 必须为 `full`，且 `regression_command` 必须等于 `full_test_suite.command`；否则 `regression_scope` 只能是 `impacted`。
-- **pass（fixed）**:
-  - reproduction_before_fix = observed，reproduction_after_fix = not_observed
-  - 相邻测试已生成并登记，或填写了合理的 adjacent_reason；其运行结果由主代理在轮末批测，不作为单个 finding 的 verification verdict
-  - `regression_scope` 为 `impacted` 或 `full`，且 `regression_status = pass`
-  - 如果 severity 为 P0/P1、`risk_assessment = high` 或 baseline 为 full-everywhere：**必须**由验证代理重跑并记录 **有效的** `full_test_suite`；`implementation_full_suite` 不能替代
-  - default：其余 finding 必须有有效的 `implementation_full_suite` 且 `matches_fix_commit = true`，或验证代理自己重跑并记录有效的 `full_test_suite`
-  - progressive 普通风险 P2/P3：有效的 `implementation_fast_suite` 且匹配修复 commit；轮末 full gate 由主代理在本轮关闭前执行
-  - `implementation_full_suite.status = fail` 时不得判 pass；必须重新修复并重新 GREEN full，或按环境/flaky 记录后判 `inconclusive`
-- **pass（already_fixed）**:
-  - 测试覆盖评估为 covers_claim，重跑测试通过
-  - 相邻测试已生成并登记，或填写了合理的 adjacent_reason；其运行结果由主代理在轮末批测，不作为单个 finding 的 verification verdict
-  - `regression_scope` 为 `impacted` 或 `full`，且 `regression_status = pass`
-  - 默认必须由验证代理在当前 HEAD 重跑并记录 **有效的** `full_test_suite`
-  - 唯一例外仅适用于 severity P2/P3、`risk_assessment = normal`、tiering mode 为 default 的 finding：历史修复 commit 是 `baseline_head` 的祖先，且 baseline full result = pass；此时记录这两个事实后，impacted 才可作为 full 证据
-- **fail**: reproduction_after_fix = still_observed，或 `regression_status = fail`，或 **无效/失败** 的 `full_test_suite`，或 `implementation_full_suite.status = fail` 且未重新修复。轮末相邻批测失败由主代理另行登记并重新进入 adjudication。
-- **inconclusive**: reproduction_before_fix = not_observed（原始 finding 无法复现），或任一步骤环境/依赖阻塞（代理可把 `verification_status: blocked` 写成 `inconclusive`），或 full 证据缺失/无法核对且验证代理无法重跑 full，或 full 证据来自脏工作区且未使用独立 worktree；需要重新评估或登记阻塞。
-
----
 
 ## 7. 最终审计代理（Final Audit Agent）
 
@@ -1170,7 +563,7 @@ uncovered_paths: []
 2. 检查修复是否引入新问题或回归
 3. 检查测试覆盖是否充分
 4. 检查是否有遗留风险或边界情况未处理
-5. 运行完整测试套件和适用的静态检查；提交前声明的代码质量命令必须在最终 HEAD 上运行并记录日志。Rust 至少执行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets --all-features -- -D warnings`，其它语言执行 baseline 中声明的 formatter/linter/type-check 命令。有长测时必须按提供的原始尺度运行，并在完整日志中记录 `RUNTIME_PROFILE=original`、`LONG_RUNNING_TESTS=<ID,...>`、`FULL_RUNTIME_SCALE=<baseline 原始尺度>`
+5. 独立运行一次完整测试套件，原始日志单独写入本 attempt 的 `output-full-suite.log`，记录唯一的 `COMMAND=<完整命令>` 和 `EXIT_CODE=<实际退出码>`；运行适用的静态检查。提交前声明的代码质量命令必须在最终 HEAD 上运行并记录日志。Rust 至少执行 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets --all-features -- -D warnings`，其它语言执行 baseline 中声明的 formatter/linter/type-check 命令。有长测时必须按提供的原始尺度运行，并在完整日志中记录 `RUNTIME_PROFILE=original`、`LONG_RUNNING_TESTS=<ID,...>`、`FULL_RUNTIME_SCALE=<baseline 原始尺度>`
 
 ## 运行约定
 - 从项目根目录运行，使用项目自身的测试框架和依赖
@@ -1255,26 +648,8 @@ blockers: []
 
 ## Overall Assessment
 
-### Test Suite
-```bash
-[运行完整测试套件的命令]
-```
-
-**Exit Status**: [退出码]
-
-**Head SHA**: [审计时的 HEAD]
-
-**Tree Hash**: [审计时的 tree hash]
-
-**Workspace Clean**: yes | no
-
-**Run Location**: main-workspace | worktree:<path>
-
-**Test Counts**: total / passed / failed / skipped
-
-**Log**: [日志路径]
-
-**Result**: pass | fail
+## Reviewctl Audit Evidence
+在此放一个 JSON 代码块，顶层为 full_suite。字段与轮末 full 一致，包含实测 tested_commit，log 指向本 attempt 的 output-full-suite.log（见 evidence-structure.md）。
 
 ### Static Checks (if applicable)
 ```bash
@@ -1328,76 +703,6 @@ blockers: []
 
 `[skill-dir]` 必须每次委派时动态解析：使用当前 harness 加载本技能时返回的目录（或 `scripts/reviewctl.js` 的实际所在目录）；无法确定时先询问用户，不要猜测路径。不要把本文件示例中的路径或主代理本机路径写进模板。
 
-### 2. 委派时机
+### 交接与日志
 
-- **评审代理**: review phase 开始时，委派至少 3 个角色
-- **复现审查代理**: adjudication phase，主代理筛查并分配标准 ID 后
-- **挑战代理**: adjudication phase，必须挑战范围内的项必须委派（见 SKILL.md “委派硬门禁”和 `phase-playbooks.md` §2.5），其余按资源选择
-- **补强代理**: adjudication phase，仅当反例思路合理但有执行瑕疵时
-- **实现代理**: repair phase，逐个修复 accepted findings
-- **验证代理**: verification phase，每个修复完成后
-- **最终审计代理**: final_audit phase，满足进入最终审计条件时
-
-### 3. 输出处理
-
-所有子代理的输出分为两部分：
-
-1. **简短摘要（YAML）**: 返回给主代理的对话中，用于决策和状态流转
-2. **完整报告（Markdown）**: 写入证据目录，用于审计和恢复
-
-主代理只在需要时读取完整报告（例如裁决时读取 counterexample.md），而不是让子代理在回复中粘贴完整内容。
-
-### 4. 证据路径规范
-
-所有证据文件路径都必须遵循 `evidence-structure.md` 中定义的结构：
-
-- 候选阶段: `.review-evidence/round-[N]/inbox/[role-slug]/[临时_id]/`
-- 标准阶段: `.review-evidence/round-[N]/[标准 ID]/`
-- 最终审计: `.review-evidence/round-[N]/final-audit/attempt-[K]/`
-
-### 5. 命令输出管理
-
-所有完整命令输出都必须保存到 `output.log`，而不是粘贴到回复或其他 Markdown 文件中。**运行测试、构建、类型检查或 lint 时，必须先重定向到日志文件再查看；不要直接运行命令后只依赖对话里保留的最后几行**——输出通常会被截断，看不到失败详情会导致重复运行，浪费时间。
-
-推荐写法（POSIX shell）：
-
-```bash
-{ npm test -- <test-path>; echo "EXIT_CODE=$?"; } > .review-evidence/round-1/R1-F001-SEC/output.log 2>&1
-tail -n 80 .review-evidence/round-1/R1-F001-SEC/output.log
-grep -nE "FAIL|Error|expected|received" .review-evidence/round-1/R1-F001-SEC/output.log
-```
-
-Windows PowerShell：
-
-```powershell
-npm test -- <test-path> *> .review-evidence\round-1\R1-F001-SEC\output.log
-Add-Content .review-evidence\round-1\R1-F001-SEC\output.log "EXIT_CODE=$LASTEXITCODE"
-Get-Content .review-evidence\round-1\R1-F001-SEC\output.log -Tail 80
-Select-String -Path .review-evidence\round-1\R1-F001-SEC\output.log -Pattern "FAIL|Error|expected|received"
-```
-
-需要同时观察实时输出时用 `2>&1 | tee <log>`；bash 下需保留测试退出码时加 `set -o pipefail` 或读取 `${PIPESTATUS[0]}`。同一命令不要因为输出被截断而重复运行。多个命令写入同一 `output.log` 时用分隔行标记命令、时间和退出码，或按步骤写成 `output-<step>.log`。这样可以：
-
-- 减少对话上下文占用
-- 保持证据文件的可读性
-- 允许独立查看和分析命令输出
-- 避免输出截断导致的重复测试
-
-### 6. 阻塞处理
-
-所有子代理在遇到无法继续的情况时，必须：
-
-1. 设置状态为 `blocked`
-2. 在 `blockers` 字段中列出具体阻塞项
-3. 不要猜测或假设结果
-4. 不要因为阻塞而跳过其他可以完成的工作
-
-### 7. 独立性要求
-
-以下代理必须独立于原始评审员：
-
-- 复现审查代理：不能是提交该候选的评审员
-- 验证代理：不能是实现该修复的代理
-- 最终审计代理：不能参与过本流程任何阶段（评审、复现审查、挑战、补强、实现、验证）
-
-主代理在委派时必须检查并确保独立性。
+按角色模板返回简短摘要，完整报告写入指定目录。每次实跑先把命令、原始输出和退出码保存到对应日志。对话输出截断时读取日志。阻塞时具体记录受影响的检查和原因，继续能独立完成的检查。委派时机与身份独立性见 `SKILL.md` §2–§3。
