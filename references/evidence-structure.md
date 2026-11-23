@@ -4,7 +4,7 @@
 
 ## 目录布局
 
-评审开始时用 `reviewctl init` 创建核心文件：
+`init` 创建顶层配置、台账、模板和生成视图。以下为运行过程中逐步形成的目录示例。
 
 ~~~
 .review-evidence/
@@ -74,7 +74,7 @@
 tests/                                      # 项目测试目录
 ├── auth.test.js                            # 项目正式测试文件
 ├── api.test.js
-└── review/                                 # 临时测试目录（评审流程结束后删除）
+└── review/                                 # 临时测试目录（清理条件见阶段手册 §7.3）
     ├── candidates/                         # 评审代理写入（测试框架忽略）
     │   └── r1_sec_001.test.js
     ├── reproductions/                      # adjudication accepted 后移动到这里
@@ -91,18 +91,9 @@ tests/                                      # 项目测试目录
   - 按代理类型和 finding ID 隔离：`[role-slug]/`、`replay-[id]/`、`challenge-[id]/`、`verify-[id]/`、`impl-[id]/`、`final-audit/attempt-[K]/`
   - 不包含项目依赖、编译环境、构建产物
   - 若项目测试本身已支持临时数据（如 SQLite `:memory:`、Jest 隔离），不需要此目录
-  - **清理规则**：
-    - **保留条件**：_testdata/ 必须保留直到该轮所有 accepted findings 验证完成
-    - **清理时机与执行者**（主代理执行）：
-      - 每轮 round_decision 或进入 final_audit 时，仅清理不再被历史相邻测试引用的 _testdata/（保留 fail/inconclusive 的）
-      - 历史相邻测试所需 fixture 保留至流程结束，或由测试可靠地重建；不得破坏跨轮聚合的可运行性
-      - 最终报告阶段，清理所有 _testdata/（如果所有 findings 已终结）
-    - **清理前检查**：
-      - 确认所有证据文件（counterexample.md、output.log、*-result.md）已保存在 inbox/ 或标准 ID 目录
-      - 确认不需要复现失败或 inconclusive 的 finding
-    - **版本控制**：_testdata/ 应列入 .gitignore，不提交到版本控制
+  - 清理前按阶段手册 §7.3 检查各项引用，待复查项保留其数据。
 
-**tests/review/ 临时测试目录**（评审流程专用，结束后删除）：
+**tests/review/ 临时测试目录**（评审流程专用，按引用清理）：
 - **candidates/**：评审代理写入，测试框架配置中忽略此目录，不会在日常测试中运行
 - **reproductions/**：adjudication accepted 后从 candidates/ 移动到这里
   - 命名规则：`r{round}_f{num}_{slug}{suffix}`（如 `r1_f001_auth_bypass.test.js`）
@@ -112,7 +103,7 @@ tests/                                      # 项目测试目录
 - **verifications/**：verification 阶段，验证代理写入相邻测试；每轮末尾执行本轮清单，每次终审前执行所有历史清单
   - 命名规则：`r{round}_f{num}_{slug}_adjacent{suffix}`（如 `r1_f001_auth_bypass_adjacent.test.js`）
   - 通过的相邻测试保留在此目录，仅由 baseline 中含 `{test_paths}` 的 Adjacent test command 执行，不进入常规 full suite，也不要求逐 finding 提交
-  - 若批测发现真实缺陷，先登记为正式 finding；修复回归测试按普通 TDD 流程加入正式测试文件并验证后，可用 `promote-adjacent-test` 显式登记替代关系。保留原临时测试和哈希用于审计，后续历史聚合不再执行它
+  - 若批测发现真实缺陷，先登记为正式 finding；修复回归测试按普通 TDD 流程加入正式测试文件并验证后，可用 `promote-adjacent-test` 显式登记替代关系。保留原临时测试、fixture 和哈希。全历史聚合按阶段手册 §5.3 核对当前替代关系
   - **保留不删除**：供最终报告统计和审计
   - 测试框架配置中忽略此目录（或仅在 `ADVERSARIAL_REVIEW=true` 时运行）
 - **整个 tests/review/ 目录在评审流程结束后删除**
@@ -166,32 +157,11 @@ required-features = ["adversarial-review"]
 ```
 评审模式运行单个目标：`cargo test --features adversarial-review --test r1_sec_001`。
 
-**运行约定**：
-- 所有命令从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
-- **测试输出先落盘**：运行测试/构建/检查命令前，把完整输出重定向到对应的 `output.log` 并记录退出码；输出被截断时读取日志（`tail`/`grep`），不要重复运行同一命令
-- **编译缓存复用（按磁盘预算）**：长编译语言在 baseline 预热并共享缓存（如 Rust `CARGO_TARGET_DIR`），预算写入 `baseline.md`；不要为每个 finding 新建 target/依赖目录。超预算或磁盘紧张时在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
-- **评审代理的 reproduction**：直接写入 `tests/review/candidates/` 目录，使用项目测试格式
-- **实现代理的测试合并**：从 `tests/review/reproductions/` 读取，复制测试用例到项目正式测试文件
-- 项目运行环境（如 Rust `target/`、Node `node_modules/`、Python `venv/`）由项目自身管理，不在 .review-evidence/ 中重复创建
-- 仅在需要避免数据冲突时使用 _testdata/，通过环境变量传递路径
-- 示例运行命令（POSIX shell 语法；Windows PowerShell 请转换为等价命令，如 `$env:ADVERSARIAL_REVIEW='true'; npm test ...`）：
-  ```bash
-  # 以下为 POSIX shell 示例
-  # Windows PowerShell 用户请转换：
-  #   ENVVAR=value cmd → $env:ENVVAR='value'; cmd
-  #   /tmp/... → $env:TEMP\...
-  #   变量赋值 var=$(cmd) → $var = cmd
-  
-  # 运行正式测试（日常测试，跳过 tests/review/）
-  npm test
-  
-  # 运行临时测试（评审流程中）
-  ADVERSARIAL_REVIEW=true npm test tests/review/reproductions/r1_f001_auth_bypass.test.js
-  
-  # 需要隔离数据时
-  TEST_DB_PATH=.review-evidence/round-1/_testdata/security/test.db \
-    npm test tests/review/candidates/r1_sec_001.test.js
-  ```
+## 实跑日志
+
+基线、RED/GREEN、验证的 focused/impacted/fast/full、轮末 full、相邻批测（含全历史聚合）和终审实跑均按同一规则留证。每条实跑命令使用独立的 UTF-8 日志，独占一行写 `COMMAND=<实际执行的完整命令>`，保存原始输出，最后独占一行写 `EXIT_CODE=<实际进程退出码>`。两个标记各出现一次，保留失败时的非零值。基线及后续质量检查使用独立质量日志，命令行标记改用 `QUALITY_COMMAND=<实际质量命令>`，退出码规则相同。
+
+命令与对应门禁声明一致，相邻批测使用 `adjacent-plan` 展开后的精确命令。在输出重定向、管道或后续写日志操作改变退出状态前，取得被测进程的退出码。报告引用对应路径，重跑保留前次日志。无法启动命令时写明阻塞原因，只有实际启动的进程才有退出码。长测的 runtime 标记、乐观候选的 tree 标记按对应门禁另行记录。
 
 **测试文件命名**：
 - **角色 token**（用于文件名）与 **role-slug**（用于目录）是两个不同概念：
@@ -217,7 +187,7 @@ required-features = ["adversarial-review"]
   | Rust | `.rs` | `r1_sec_001.rs` |
 - 终审候选测试：`r{round}_finalaudit_fa{n}{suffix}`（如 `r1_finalaudit_fa001.test.js` 或 `r1_finalaudit_fa-001.test.js`）。
 
-每个评审角色使用唯一的 role-slug 目录，例如 security、functionality、api。临时 ID 只需在该角色目录内唯一。不同角色即使都使用 SEC-001，也不会写入同一路径。
+每个常规角色的临时 ID 使用自己的代码前缀，例如 `security/SEC-001`、`functionality/FUNC-001`。同一编号可在不同角色或不同常规轮次使用。
 
 主代理记录纯偏好和明确不构成现存风险的范围/契约请求后，对剩余候选去重；只有进入 finding 生命周期的独立候选才分配标准 ID，并将其 inbox 内容平铺复制到该轮目录下的标准 ID 目录，保留原始 inbox 和 handoff。分配 ID 时同时将候选复现文件复制为标准 ID 目录中的 `reproduce.*`（accepted 的原始文件保留到流程结束；rejected/needs-evidence/deferred 的候选临时测试按 `phase-playbooks.md` §2.7 处理，若仍保留则直接复用，`reproduce.*` 始终保留在 finding 目录；手工 finding 的 manual-steps.md 同样复制）。之后即使 decision 为 rejected、deferred 或 needs-evidence，也保留 ID 和索引行。重复候选不另分配标准 ID：保留其 inbox 目录，在本轮 `screening.json` 和 `screening-log.md` 中记录 canonical ID。
 
@@ -236,7 +206,7 @@ required-features = ["adversarial-review"]
 | `confirmed_by_user` | 必须为 true |
 | `confirmed_at` | ISO 8601 |
 | `confirmation_mode` | `interactive` 或 `agent_declared` |
-| `baseline_head` | 初始 HEAD 或 `unavailable` |
+| `baseline_head` | 初始化时被评审 Git 工作树 HEAD 的完整提交 SHA。`init` 在写入证据前校验工作树根目录及该提交 |
 
 `state.json` 关键字段：
 
@@ -252,7 +222,7 @@ required-features = ["adversarial-review"]
 | `active_finding` | 当前修复/验证的 finding ID 或 null |
 | `repair_baseline_index` | 同次 repair 入口的 HEAD 和逐文件暂存 diff；用于判定分块后是否仍夹带用户改动 |
 | `optimistic_repairs` | 有限乐观修复候选记录；包含 base/candidate commit、tree、worktree、修改文件、预检日志和状态；候选不能替代正式 finding commit 或验证 |
-| `next_action` | 下一步动作 |
+| `next_action` | 当前阶段的提示，结合活动 finding 的当次结果定位断点 |
 | `blockers` / `authorizations` | 阻塞和用户授权记录 |
 | `rounds` | 每轮计数和角色 |
 | `final_audit` | 审计尝试、重入状态及每次尝试的全历史相邻测试聚合证据 |
@@ -265,16 +235,7 @@ required-features = ["adversarial-review"]
 
 `final_audit.preflight_batches` 保存各审计 attempt 的最近一次聚合结果；与 `round-[N]/final-audit/attempt-[K]/adjacent-batch.md` 的 `Reviewctl Final Adjacent Batch Evidence` JSON 一致。字段包括 `attempt`、`round`、`status`、`command`、`tested_commit`、`tree_hash`、`test_paths`、`test_hashes`、`test_count`、`failed_count`、`exit_status`、`log`、`log_sha256`、`failures`、`reason`。同一 attempt 重跑归档旧 JSON 和保留原日志；进入终审要求最新记录 pass 且 commit 为当前 HEAD。具体命令与失败处理见 phase-playbooks.md §5.3。
 
-**操作**：
-
-```bash
-node <skill-dir>/scripts/reviewctl.js status
-node <skill-dir>/scripts/reviewctl.js validate
-node <skill-dir>/scripts/reviewctl.js normalize
-node <skill-dir>/scripts/reviewctl.js render
-```
-
-状态变更只能通过 `reviewctl advance` / `record-*` / `normalize`。校验失败先运行 `normalize` 重算派生字段，仍失败再逐项修复，不要继续委派。没有 Node.js 时无法推进状态机，停止并报告阻塞。
+恢复、派生字段重算及视图重绘见技能目录的 `AGENTS.md`。
 
 ## baseline.md
 
@@ -328,11 +289,34 @@ node <skill-dir>/scripts/reviewctl.js render
 - Optimistic max active worktrees: 1
 - Optimistic eligible severities: P2,P3
 - Full test command: [项目/workspace 全量；Rust 包含 doctest]
+- Adjacent test command: [显式接收完整文件列表的命令，如 node --test {test_paths}]
 - High-risk paths: [构建/依赖清单、公共 API、认证、数据迁移、并发、feature flag 等]
 - Verification default: [impacted；P0/P1/高风险/full-everywhere 重新运行 full]
 - Notes: [小项目可直接全量，不必分级]
 
-所有 tier 都要登记长测清单；若非 `none`，必须写明 `Full runtime scale`。baseline full 日志及之后每次 full 日志都必须包含三行：`RUNTIME_PROFILE=original`、按字母排序且逗号连接的 `LONG_RUNNING_TESTS=<ID,...>`、`FULL_RUNTIME_SCALE=<与 baseline 完全相同的尺度描述>`。结构化 full 证据也必须记录 `runtime_profile: original`、匹配的 `long_running_test_ids` / `runtime_scale` 和 `runtime_scale_evidence`（指向配置或日志中的可复核证据）。这些标记不能替代主代理对原始配置和运行日志的人工核对。
+## Build Cache / Compile Prewarm
+- Slow-compile stack: [Rust / C++ / large TypeScript / none]
+- Shared cache or target directory:
+- Environment variables:
+- Disk budget / available space:
+- Prewarm commands and results:
+- Reuse rules for subagents:
+- Cleanup timing: [round boundary / final report / when budget exceeded]
+
+## Review
+- Started at:
+- Assumptions:
+- max_rounds: [见 review-config.json]
+
+## Recovery Guide Deployment
+- Target file: [AGENTS.md | CLAUDE.md | none]
+- Mode: [created | appended | skipped]
+- Marker: mvp-adversarial-review-loop-recovery-guide
+- Backup: [.review-evidence/baseline-project-instructions.bak | none]
+- Notes: [默认使用的技能恢复指南绝对路径，或部署说明]
+~~~
+
+所有 tier 都要登记长测清单。清单非 `none` 时写明 `Full runtime scale`，在基线及之后每次 full 的日志中加入三行：`RUNTIME_PROFILE=original`、按字母排序且逗号连接的 `LONG_RUNNING_TESTS=<ID,...>`、`FULL_RUNTIME_SCALE=<与 baseline 完全相同的尺度描述>`。结构化 full 证据也必须记录 `runtime_profile: original`、匹配的 `long_running_test_ids` / `runtime_scale` 和 `runtime_scale_evidence`（指向配置或日志中的可复核证据）。这些标记不能替代主代理对原始配置和运行日志的人工核对。
 
 `progressive` 的 fast command 必须与 full command 不同，并声明 `Fast test profile`。该命令只供普通风险 P2/P3 finding 的逐项 GREEN 使用；P0/P1、高风险与 `already_fixed` 不适用。fast 可以缩放时间或数据量，但不能删除关键断言、修改生产默认值或把缩短命令作为 full 证据。缩放时必须记录 `retained_contracts` 与 `uncovered_semantics`：优先使用虚拟时钟验证定时逻辑；加速真实时间不能证明未受调度竞争影响；tmpfs 只能代表文件 API 行为，不能证明真实磁盘的持久性、崩溃或介质故障语义。轮末 full 仍使用 Full test command，不得排除慢速 I/O/稳定性测试。
 
@@ -340,17 +324,15 @@ node <skill-dir>/scripts/reviewctl.js render
 
 ## Machine-validated test evidence
 
-reviewctl 读取下面两个精确标题下的单个 JSON 代码块；接受三反引号或三波浪线围栏。实现代理和验证代理仍应提供上方 YAML 摘要，但不得只写散文或摘要而漏掉机器证据。命令必须与 baseline 完全一致，数字、布尔值和 tree hash 按真实运行结果填写。
+在对应报告的精确标题下写一个 JSON 代码块，使用三反引号或三波浪线围栏。角色交接摘要另见 `agent-prompts.md`。命令必须与 baseline 完全一致，数字、布尔值和 tree hash 按真实运行结果填写。
 
 ### implementation-result.md
 
-提交 GREEN 前在报告中加入以下精确标题。默认模式填写 `full_suite`；progressive 普通风险 P2/P3 填写 `fast_suite` 和 `risk_assessment: normal`，P0/P1 或 high 必须填写 `full_suite`。测试计数差异按 baseline 填写；新增/删除测试造成 total 变化时填写 expected_test_count_delta_reason，skip 数变化时填写 expected_skipped_count_delta_reason。
+在 `guard-commit` 前将标题和紧随其后的 JSON 代码块一起写入实现报告。默认模式填写 `full_suite`；progressive 普通风险 P2/P3 填写 `fast_suite` 和 `risk_assessment: normal`，P0/P1 或 high 必须填写 `full_suite`。测试计数差异按 baseline 填写；新增/删除测试造成 total 变化时填写 expected_test_count_delta_reason，skip 数变化时填写 expected_skipped_count_delta_reason。
 
-~~~text
+~~~~markdown
 ## Reviewctl GREEN Evidence
-~~~
-
-~~~json
+```json
 {
   "full_suite": {
     "status": "pass",
@@ -387,13 +369,14 @@ reviewctl 读取下面两个精确标题下的单个 JSON 代码块；接受三�
     "log": ".review-evidence/round-1/R1-F001-SEC/output-quality.log"
   }
 }
-~~~
+```
+~~~~
 
 progressive 的 `fast_suite` 使用与 `full_suite` 相同的基础证据字段（命令必须匹配 baseline Fast test command、状态、退出码、tree hash、运行位置、clean 状态、测试计数和日志），但快速测试计数不与 baseline full 总数比较。`fast_suite` 还必须记录与 baseline 一致的 `fast_profile`；缩放 profile 需填写 `scaling_notes`、`retained_contracts` 和 `uncovered_semantics`。报告还需记录 `risk_assessment` 为 `normal` 或 `high`；high 和 P0/P1 必须提供 full。
 
 ### 轮末 progressive full gate
 
-实跑轮末 full 时，用单独的日志记录 `COMMAND=<baseline Full test command>`、原始输出以及 `EXIT_CODE=<实际退出码>`。将 `full_suite` 对象写入本轮新的 JSON 文件（例如 `.review-evidence/round-1/full-suite.json`），用 `reviewctl record-round-regression --status pass|fail --evidence FILE` 登记。无法运行用 `--status inconclusive --reason TEXT`。保留每次尝试的原始文件。
+实跑轮末 full 并按“实跑日志”落盘。将 `full_suite` 对象写入本轮新的 JSON 文件（例如 `.review-evidence/round-1/full-suite.json`），用 `reviewctl record-round-regression --status pass|fail --evidence FILE` 登记。无法运行用 `--status inconclusive --reason TEXT`。保留每次尝试的原始文件。
 
 JSON 顶层为 `full_suite`，字段沿用 GREEN full 并增加实测的完整提交 SHA `tested_commit`。同一结构也可在 baseline 实跑时写入 `.review-evidence/baseline-full.json`，使用 baseline 声明的日志路径，两个计数差值均为 0。`--reuse` 根据 `state.last_full_run` 读取原始 JSON 或验证报告，将来源记入本轮 `regression_gate.reused_from`。使用条件见 `phase-playbooks.md` §5.2。
 
@@ -401,11 +384,9 @@ JSON 顶层为 `full_suite`，字段沿用 GREEN full 并增加实测的完整�
 
 加入以下精确标题。对 impacted 回归填写完整 changed_paths、impacted_targets、impact_basis 和传递反向依赖闭包；full 回归也要提供 regression 与 full_test_suite 两个对象，且两者的命令和日志相同。fixed finding 在 default 模式必须有 `implementation_full_suite_status: pass`；progressive 普通风险 P2/P3 可为 `not_run`，但需 `implementation_fast_suite_status: pass`。高风险必须填写 risk_reason。
 
-~~~text
+~~~~markdown
 ## Reviewctl Verification Evidence
-~~~
-
-~~~json
+```json
 {
   "schema_version": 1,
   "verdict": "pass",
@@ -433,31 +414,11 @@ JSON 顶层为 `full_suite`，字段沿用 GREEN full 并增加实测的完整�
   "implementation_full_suite_status": "pass",
   "implementation_fast_suite_status": "not_run"
 }
-~~~
+```
+~~~~
 
 当 scope 为 full 时，regression.command 必须是 baseline 的 full command；regression.log 必须等于 full_test_suite.log，且 JSON 中要附加 full_test_suite 对象。该对象复用 GREEN full 的字段，并增加 tested_commit（固定提交后的 HEAD SHA）。already_fixed 默认也运行 verification full。只有 severity 为 P2/P3、risk_assessment 为 normal、tiering mode 为 default 或 progressive，且修复 commit 是 baseline_head 祖先、baseline full 为 pass 时，才可省略 verification full 并填写 already_fixed_baseline_exception，其中 baseline_head_ancestor 和 baseline_full_pass 都为 true。
 
-## Build Cache / Compile Prewarm
-- Slow-compile stack: [Rust / C++ / large TypeScript / none]
-- Shared cache or target directory:
-- Environment variables:
-- Disk budget / available space:
-- Prewarm commands and results:
-- Reuse rules for subagents:
-- Cleanup timing: [round boundary / final report / when budget exceeded]
-
-## Review
-- Started at:
-- Assumptions:
-- max_rounds: [见 review-config.json]
-
-## Recovery Guide Deployment
-- Target file: [AGENTS.md | CLAUDE.md | none]
-- Mode: [created | appended | skipped]
-- Marker: mvp-adversarial-review-loop-recovery-guide
-- Backup: [.review-evidence/baseline-project-instructions.bak | none]
-- Notes: [默认使用的技能恢复指南绝对路径，或部署说明]
-~~~
 
 先记录初始 git status，再创建审计文件。区分原有用户改动、评审证据文件和后续实现改动；任何提交都不得夹带基线中的用户改动。启动部署对项目级指令文件的改动属于本流程引入的临时改动，记录在 baseline.md 的 Recovery Guide Deployment 小节，不提交，结束时还原。
 

@@ -8,6 +8,7 @@ const {
   EVIDENCE,
   FINDING_ID,
   TEMP_ID,
+  AUDIT_TEMP_ID,
   ROLES,
   isRole,
   roleSlug,
@@ -81,50 +82,6 @@ function readHeadFile(project, file) {
   });
 }
 
-function gitFileMatchesHead(project, file) {
-  const normalized = String(file).replace(/\\/g, "/");
-  try {
-    const headEntry = execFileSync("git", ["ls-tree", "-z", "HEAD", "--", normalized], {
-      cwd: project,
-      encoding: "buffer",
-    })
-      .toString("utf8")
-      .split("\0")
-      .filter(Boolean);
-    const indexEntry = execFileSync("git", ["ls-files", "--stage", "-z", "--", normalized], {
-      cwd: project,
-      encoding: "buffer",
-    })
-      .toString("utf8")
-      .split("\0")
-      .filter(Boolean);
-    const headMode = headEntry.length === 1 ? headEntry[0].split(/\s+/, 1)[0] : "";
-    const indexMode = indexEntry.length === 1 ? indexEntry[0].split(/\s+/, 1)[0] : "";
-    if (
-      !["100644", "100755"].includes(headMode) ||
-      !["100644", "100755"].includes(indexMode) ||
-      headMode !== indexMode
-    ) {
-      return false;
-    }
-    const headBlob = execFileSync("git", ["rev-parse", `HEAD:${normalized}`], {
-      cwd: project,
-      encoding: "utf8",
-    }).trim();
-    const indexBlob = execFileSync("git", ["rev-parse", `:${normalized}`], {
-      cwd: project,
-      encoding: "utf8",
-    }).trim();
-    const worktreeBlob = execFileSync("git", ["hash-object", `--path=${normalized}`, normalized], {
-      cwd: project,
-      encoding: "utf8",
-    }).trim();
-    return headBlob === indexBlob && headBlob === worktreeBlob;
-  } catch {
-    return false;
-  }
-}
-
 function gitCommitIsAncestor(project, commit) {
   try {
     execFileSync("git", ["merge-base", "--is-ancestor", commit, "HEAD"], {
@@ -137,21 +94,61 @@ function gitCommitIsAncestor(project, commit) {
   }
 }
 
-function verdictIsPass(markdown) {
-  const lines = String(markdown).replace(/\r/g, "").split("\n");
-  let value = "";
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index].trim();
-    const heading = line.match(/^##\s+(?:final\s+)?verdict\b/i);
-    if (heading) {
-      const next = lines.slice(index + 1).find((candidate) => candidate.trim());
-      value = next ? next.trim() : "";
+// Read decision fields in the report body. Quoted output and fenced examples
+// can contain verdicts from other runs and must not decide this one.
+function reportDecisions(markdown, label) {
+  const heading = new RegExp(`^#{1,6}\\s+(?:${label})\\s*#*$`, "i");
+  const inline = new RegExp(`^(?:[-*]\\s+)?(?:${label})\\s*:\\s*(.*)$`, "i");
+  const decisions = [];
+  let fence = "";
+  let inComment = false;
+  let inSection = false;
+  let awaitingValue = false;
+  for (const raw of String(markdown).split(/\r?\n/)) {
+    const marker = raw.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (fence) {
+      if (marker && marker[1].startsWith(fence) && !marker[2].trim()) fence = "";
       continue;
     }
-    const inline = line.match(/(?:final\s+verdict|verdict)\s*\*{0,2}\s*:\s*(.*)$/i);
-    if (inline) value = inline[1];
+    if (marker && !inComment) {
+      fence = marker[1];
+      continue;
+    }
+    if (/^(?: {4}|\t| {0,3}>)/.test(raw)) continue;
+    let body = raw;
+    if (inComment) {
+      const end = body.indexOf("-->");
+      if (end < 0) continue;
+      body = body.slice(end + 3);
+      inComment = false;
+    }
+    body = body.replace(/<!--.*?(?:-->|$)/g, (comment) => {
+      inComment = !comment.endsWith("-->");
+      return "";
+    });
+    if (!body.trim()) continue;
+    const line = body.trim().replace(/\*\*|__/g, "");
+    if (/^#{1,6}\s/.test(line)) {
+      if (awaitingValue) decisions.push("");
+      inSection = heading.test(line);
+      awaitingValue = inSection;
+      if (inSection) continue;
+    }
+    const field = line.replace(/^#{1,6}\s+/, "").match(inline);
+    const status = inSection && line.match(/^Status\s*:\s*(.*)$/i);
+    if (field || status || awaitingValue || (inSection && /^(pass|fail)\.?$/i.test(line))) {
+      const text = (field || status)?.[1] ?? line;
+      decisions.push(text.trim().replace(/\.$/, "").replace(/^([*_`])(.+)\1$/, "$2").toLowerCase());
+      awaitingValue = false;
+    }
   }
-  return value.replace(/[*_`]/g, "").replace(/[.\s]+$/, "").trim().toLowerCase() === "pass";
+  if (awaitingValue) decisions.push("");
+  return decisions;
+}
+
+function verdictIsPass(markdown) {
+  const verdicts = reportDecisions(markdown, "(?:final\\s+)?verdict");
+  return verdicts.length > 0 && verdicts.every((value) => value === "pass");
 }
 
 function extractSection(markdown, heading) {
@@ -360,17 +357,16 @@ function validateTestDirectories(project, errors) {
 
 function hasReproduction(evidenceDir) {
   if (!exists(evidenceDir)) return false;
-  if (exists(path.join(evidenceDir, "manual-steps.md"))) return true;
-  return fs
-    .readdirSync(evidenceDir)
-    .some((file) => /^reproduce\..+$/i.test(file));
+  return fs.readdirSync(evidenceDir, { withFileTypes: true }).some((entry) =>
+    entry.isFile() && (entry.name === "manual-steps.md" || /^reproduce\..+$/i.test(entry.name)));
 }
 
 function hasFormalReproduction(project, round, number) {
   const dir = path.join(project, "tests/review/reproductions");
   if (!exists(dir)) return false;
   const prefix = `r${round}_f${number}_`;
-  return fs.readdirSync(dir).some((file) => file.startsWith(prefix));
+  return fs.readdirSync(dir, { withFileTypes: true }).some((entry) =>
+    entry.isFile() && entry.name.startsWith(prefix) && isReproductionTestFile(entry.name));
 }
 
 function validateReplayEvidence(project, evidenceDir, label, errors) {
@@ -443,7 +439,7 @@ function validateFindingFiles(project, finding, errors, state) {
     finding.decision === "accepted" &&
     !cleanedFinalFinding &&
     !hasFormalReproduction(project, match[1], match[2]) &&
-    !exists(path.join(evidenceDir, "manual-steps.md"))
+    !fs.statSync(path.join(evidenceDir, "manual-steps.md"), { throwIfNoEntry: false })?.isFile()
   ) {
     errors.push(`${label}: 缺少 tests/review/reproductions/r${match[1]}_f${match[2]}_* 复现测试或 manual-steps.md`);
   }
@@ -594,7 +590,10 @@ function validateFindingDirectories(project, data, errors) {
 }
 
 function validateRounds(state, errors) {
+  const ids = new Set();
   for (const round of state.rounds) {
+    if (ids.has(round.round) || round.round > state.current_round) errors.push(`轮次 ${round.round} 重复或晚于当前轮`);
+    ids.add(round.round);
     if (!Number.isInteger(round.round) || round.round < 1) {
       errors.push(`rounds: round 非法：${round.round}`);
       continue;
@@ -625,6 +624,7 @@ function validateRounds(state, errors) {
     }
   }
   const completed = completedRounds(state);
+  if (completed.some((round, index) => round.round !== index + 1)) errors.push("已完成轮次必须从 1 起连续");
   if (state.rounds_consumed !== completed.length) {
     errors.push("rounds_consumed 与已完成轮数不一致");
   }
@@ -639,11 +639,15 @@ function validateRoundCandidates(project, round, data, errors) {
   const allFindings = new Map((data.findings || []).map((finding) => [finding.id, finding]));
   const findings = (data.findings || []).filter((finding) =>
     finding.source !== "final-audit" && Number(String(finding.id).match(FINDING_ID)?.[1]) === round.round);
+  const handoffRoles = new Set();
+  const reviewedRoles = new Set();
   const readHandoff = (file, role) => {
     if (!exists(file)) return;
     const handoff = readJsonSafe(file);
     validateHandoff(project, file, round.round, role, errors, data);
     if (!Array.isArray(handoff?.findings)) return;
+    handoffRoles.add(role);
+    if (["complete", "partial"].includes(handoff.review_status)) reviewedRoles.add(role);
     const seen = new Set();
     for (const candidate of handoff.findings) {
       const id = candidate.finding_id;
@@ -668,6 +672,12 @@ function validateRoundCandidates(project, round, data, errors) {
   for (const role of listDirs(inbox)) {
     for (const tempId of listDirs(path.join(inbox, role))) {
       readHandoff(path.join(inbox, role, tempId, "handoff.json"), role);
+    }
+  }
+  if (Array.isArray(round.roles)) {
+    const recorded = round.roles.map(roleSlug).sort();
+    if (!isDeepStrictEqual(recorded, [...handoffRoles].sort()) || reviewedRoles.size < 3 || handoffRoles.size > 6) {
+      errors.push(`${label}: 角色交接与登记不符，须有 3–6 个角色且至少 3 个实际开展评审`);
     }
   }
   const screeningPath = path.join(root, "screening.json");
@@ -744,7 +754,17 @@ function auditEvidence(project, attempt, errors, requiredCommit) {
   const targeted = file("targeted-review.md");
   if (!blind || !targeted) return null;
   if (!fs.readFileSync(blind, "utf8").split(/\r?\n/).some((line) => line.trim() && !line.trim().startsWith("#"))) errors.push(label + ": blind-scan.md 缺少扫描结果");
-  const parsed = testPolicy.parseJsonSection(fs.readFileSync(targeted, "utf8"), "Reviewctl Audit Evidence", label + " full_suite");
+  const inbox = path.join(project, dir, "inbox");
+  const candidates = listDirs(inbox).filter((id) => AUDIT_TEMP_ID.test(id) &&
+    fs.statSync(path.join(inbox, id, "counterexample.md"), { throwIfNoEntry: false })?.isFile());
+  if (candidates.length > attempt.new_issues) {
+    errors.push(`${label}: new_issues=${attempt.new_issues} 小于 inbox 候选数（${candidates.join(", ")}）`);
+  }
+  const report = fs.readFileSync(targeted, "utf8");
+  const assessments = reportDecisions(report, "overall\\s+status");
+  const validAssessment = assessments.length === 1 && ["pass", "fail"].includes(assessments[0]);
+  if (!validAssessment) errors.push(`${label}: targeted-review.md 的 Overall Status 必须恰有一个明确的 pass 或 fail`);
+  const parsed = testPolicy.parseJsonSection(report, "Reviewctl Audit Evidence", label + " full_suite");
   const baseline = testPolicy.parseBaselinePolicy(project);
   errors.push(...parsed.errors, ...baseline.errors);
   const run = parsed.value?.full_suite;
@@ -768,17 +788,38 @@ function auditEvidence(project, attempt, errors, requiredCommit) {
       run.tree_hash_before !== tree || run.tree_hash_after !== tree || run.command !== baseline.policy.fullCommand) {
     errors.push(label + ": 失败的 full 必须绑定提交、命令和非零退出码并登记新问题");
   }
-  return { status: run.status, tested_commit: run.tested_commit, log_sha256: testPolicy.sha256File(log),
-    blind_sha256: testPolicy.sha256File(blind), targeted_sha256: testPolicy.sha256File(targeted) };
+  if (!validAssessment) return null;
+  return {
+    status: run.status,
+    overall_status: assessments[0],
+    tested_commit: run.tested_commit,
+    candidate_ids: candidates,
+    log_sha256: testPolicy.sha256File(log),
+    blind_sha256: testPolicy.sha256File(blind),
+    targeted_sha256: testPolicy.sha256File(targeted),
+  };
 }
 
-function validateAudits(project, state, errors) {
+function validateAudits(project, state, errors, data) {
   const auditors = new Set();
   for (const attempt of state.final_audit.attempts) {
     if (!attempt.auditor || auditors.has(attempt.auditor)) errors.push("每次终审必须登记独立的新审计代理");
     auditors.add(attempt.auditor);
-    if (attempt.status === "complete" && !isDeepStrictEqual(auditEvidence(project, attempt, errors), attempt.full_evidence)) {
-      errors.push("audit attempt " + attempt.attempt + ": 与登记时的报告或日志摘要不一致");
+    if (attempt.status === "complete") {
+      const forReport = state.current_phase === "report" && attempt.attempt === state.final_audit_attempt;
+      const evidence = auditEvidence(project, attempt, errors);
+      if (evidence && data) {
+        const findings = data.findings.filter((finding) => finding.source === "final-audit" && finding.audit_attempt === attempt.attempt);
+        const recordedIds = new Set(findings.flatMap((finding) => finding.original_ids));
+        const missing = evidence.candidate_ids.filter((id) => !recordedIds.has(id));
+        const settled = forReport || state.current_round > attempt.round || state.final_audit_attempt > attempt.attempt;
+        if (findings.length + missing.length > attempt.new_issues || (settled && findings.length !== attempt.new_issues)) {
+          errors.push(`audit attempt ${attempt.attempt}: 已登记 ${findings.length} 个 finding，new_issues=${attempt.new_issues}，未裁决 inbox 候选：${missing.join(", ") || "无"}`);
+        }
+      }
+      if (!isDeepStrictEqual(evidence, attempt.full_evidence)) {
+        errors.push("audit attempt " + attempt.attempt + ": 与登记时的报告或日志摘要不一致");
+      }
     }
     if (!["complete", "failed"].includes(attempt.status)) {
       errors.push(`audit attempt ${attempt.attempt}: status 非法`);
@@ -804,7 +845,13 @@ function validateProject(project, config, state, data) {
   validateTestDirectories(project, errors);
   validateRounds(state, errors);
   testPolicy.validateAdjacentPromotions(project, state, data, errors);
-  const baselinePolicy = testPolicy.parseBaselinePolicy(project).policy;
+  const baselinePath = path.join(project, EVIDENCE, "baseline.md");
+  const { policy: baselinePolicy, errors: policyErrors } = testPolicy.parseBaselinePolicy(project);
+  const hasBaseline = exists(baselinePath);
+  if (state.current_phase !== "baseline" || !hasBaseline) errors.push(...policyErrors);
+  if (hasBaseline && /\[TODO\]/.test(fs.readFileSync(baselinePath, "utf8"))) {
+    warnings.push("baseline.md 仍有 [TODO]");
+  }
   for (const round of state.rounds) {
     if (round.status === "completed") {
       validateRoundCandidates(project, round, data, errors);
@@ -823,14 +870,8 @@ function validateProject(project, config, state, data) {
   } else if (state.current_phase === "report" && state.final_audit_attempt > 0) {
     testPolicy.validateFinalAdjacentBatch(project, state, data, errors, state.final_audit_attempt);
   }
-  validateAudits(project, state, errors);
+  validateAudits(project, state, errors, data);
 
-  const baselinePath = path.join(project, EVIDENCE, "baseline.md");
-  if (!exists(baselinePath)) {
-    errors.push("缺少 .review-evidence/baseline.md");
-  } else if (/\[TODO\]/.test(fs.readFileSync(baselinePath, "utf8"))) {
-    warnings.push("baseline.md 仍有 [TODO]");
-  }
   for (const finding of data.findings) {
     validateFindingFiles(project, finding, errors, state);
     if (finding.verification === "pass" && finding.adjacent_tests?.some((file) => !state.adjacent_registry.some((entry) =>
@@ -971,9 +1012,9 @@ module.exports = {
   isReproductionTestFile,
   isAdjacentTestFile,
   isFormalTestFile,
+  hasFormalReproduction,
   gitTracks,
   gitCommitIsAncestor,
-  gitFileMatchesHead,
   readHeadFile,
   verdictIsPass,
   extractSection,

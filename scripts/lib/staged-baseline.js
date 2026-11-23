@@ -7,6 +7,20 @@ function git(project, args) {
   });
 }
 
+// A formal test must have the same regular-file mode and blob in HEAD and the
+// index, and its checkout must still hash to that blob after Git's filters.
+function gitFileMatchesHead(project, file) {
+  const normalized = String(file).replace(/\\/g, "/");
+  try {
+    const head = git(project, ["ls-tree", "-z", "HEAD", "--", normalized]).match(/^(100644|100755) blob ([a-f0-9]+)\t[^\0]+\0$/);
+    const index = git(project, ["ls-files", "--stage", "-z", "--", normalized]).match(/^(100644|100755) ([a-f0-9]+) 0\t[^\0]+\0$/);
+    if (!head || !index || head[1] !== index[1] || head[2] !== index[2]) return false;
+    return git(project, ["hash-object", `--path=${normalized}`, "--", normalized]).trim() === head[2];
+  } catch {
+    return false;
+  }
+}
+
 function stagedChange(project, head, file) {
   const args = ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames"];
   return {
@@ -113,4 +127,4 @@ function stagedBaselineConflict(project, file, state) {
   }
 }
 
-module.exports = { captureStagedBaseline, clearStagedBaseline, stagedBaselineConflict };
+module.exports = { gitFileMatchesHead, captureStagedBaseline, clearStagedBaseline, stagedBaselineConflict };

@@ -52,8 +52,7 @@ function writeBaseline(project) {
   ].join('\n'));
 }
 
-function fullSuite(project, evidenceDir, treeHash) {
-  const log = evidenceDir + '/output-full-suite.log';
+function fullSuite(project, evidenceDir, treeHash, log = evidenceDir + '/output-full-suite.log') {
   write(project, log, 'COMMAND=node --test\nEXIT_CODE=0\n');
   return {
     status: 'pass',
@@ -104,7 +103,6 @@ function writeVerificationEvidence(project, evidenceDir, finding, risk = 'normal
   const fullRequired = ['P0', 'P1'].includes(finding.severity) || risk === 'high' || finding.implementation_status === 'already_fixed';
   const scope = fullRequired ? 'full' : 'impacted';
   const log = evidenceDir + (fullRequired ? '/verification-full.log' : '/verification-impacted.log');
-  write(project, log, 'COMMAND=' + (fullRequired ? 'node --test' : 'node --test') + '\nEXIT_CODE=0\n');
   const regression = {
     scope,
     status: 'pass',
@@ -129,10 +127,9 @@ function writeVerificationEvidence(project, evidenceDir, finding, risk = 'normal
   };
   if (risk === 'high') evidence.risk_reason = 'synthetic high-risk fixture';
   if (fullRequired) {
-    const suite = fullSuite(project, evidenceDir, headTree);
-    suite.log = log;
+    evidence.full_test_suite = { ...fullSuite(project, evidenceDir, headTree, log), tested_commit: head };
+  } else {
     write(project, log, 'COMMAND=node --test\nEXIT_CODE=0\n');
-    evidence.full_test_suite = Object.assign(suite, { tested_commit: head });
   }
   appendReport(project, evidenceDir + '/verification-result.md', 'Reviewctl Verification Evidence', evidence);
 }
@@ -146,7 +143,8 @@ function writeAuditEvidence(project, dir, status = "pass") {
     suite.test_counts = { total: 1, passed: 0, failed: 1, skipped: 0 };
     write(project, suite.log, "COMMAND=node --test\nfixture assertion failed\nEXIT_CODE=1\n");
   }
+  write(project, dir + "/targeted-review.md", `### Overall Status\n**Status**: ${status}\n`);
   appendReport(project, dir + "/targeted-review.md", "Reviewctl Audit Evidence", { full_suite: suite });
 }
 
-module.exports = { writeAuditEvidence, writeBaseline, writeGreenEvidence, writeVerificationEvidence, git };
+module.exports = { fullSuite, appendReport, writeAuditEvidence, writeBaseline, writeGreenEvidence, writeVerificationEvidence, git };

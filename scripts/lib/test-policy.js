@@ -2,7 +2,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-const EVIDENCE = ".review-evidence";
+const { EVIDENCE } = require("./state");
+const { gitFileMatchesHead } = require("./staged-baseline");
 
 function section(markdown, title) {
   const lines = String(markdown).replace(/\r/g, "").split("\n");
@@ -98,7 +99,7 @@ function parseBaselinePolicy(project) {
   }
   if (policy.baselineLog) {
     const logPath = resolveEvidencePath(project, policy.baselineLog, errors, "Baseline full log");
-    if (logPath && !hasSuccessfulExit(logPath)) errors.push("baseline full log 缺少 EXIT_CODE=0");
+    if (logPath && !hasRunMarkers(logPath, policy.fullCommand, 0)) errors.push("baseline full log 的 COMMAND 与完整命令不符或缺少唯一的 EXIT_CODE=0");
     if (logPath && hasLongRunningTests) {
       const log = fs.readFileSync(logPath, "utf8");
       const ids = policy.longRunningTests.split(",").map((value) => value.trim()).filter(Boolean).sort().join(",");
@@ -131,10 +132,8 @@ function parseBaselinePolicy(project) {
       errors.push("Baseline code quality result=pass 时必须填写 Baseline code quality log");
     } else {
       const qualityLogPath = resolveEvidencePath(project, policy.qualityLog, errors, "Baseline code quality log");
-      if (qualityLogPath) {
-        const qualityLog = fs.readFileSync(qualityLogPath, "utf8");
-        if (!hasSuccessfulExit(qualityLogPath)) errors.push("baseline code quality log 缺少 EXIT_CODE=0");
-        if (!qualityLog.replace(/\r/g, "").split("\n").includes(`QUALITY_COMMAND=${policy.qualityCommand}`)) errors.push("baseline code quality log QUALITY_COMMAND 必须与 baseline Code quality command 完全一致");
+      if (qualityLogPath && !hasRunMarkers(qualityLogPath, policy.qualityCommand, 0, "QUALITY_COMMAND")) {
+        errors.push("baseline code quality log 必须记录唯一、精确的 QUALITY_COMMAND 和 EXIT_CODE=0");
       }
     }
   }
@@ -175,17 +174,22 @@ function parseBaselinePolicy(project) {
   if (policy.adjacentCommand && (policy.adjacentCommand.match(/\{test_paths\}/g) || []).length !== 1) {
     errors.push("Adjacent test command 必须且只能包含一个 {test_paths} 占位符");
   }
-  if (policy.adjacentCommand && (!/\{test_paths\}$/.test(policy.adjacentCommand.trim()) || /[|;&<>`]/.test(policy.adjacentCommand) || /\|\|\s*true|--passWithNoTests/i.test(policy.adjacentCommand))) {
+  if (policy.adjacentCommand && (!/\S[ \t]+\{test_paths\}$/.test(policy.adjacentCommand.trim()) || /[|;&<>`]|(?:^|\s)#/.test(policy.adjacentCommand) || /\|\|\s*true|--passWithNoTests/i.test(policy.adjacentCommand))) {
     errors.push("Adjacent test command 必须以 {test_paths} 结尾，且不得附加其他路径、shell 操作符或吞掉失败的选项");
   }
   if (/tests[/\\]review[/\\]verifications|[*?]/i.test(policy.adjacentCommand)) errors.push("Adjacent test command 不得扫描相邻测试目录或使用通配符；仅使用 {test_paths} 清单");
   return { policy, errors };
 }
 
-function expandAdjacentCommand(template, paths) {
-  if (!Array.isArray(paths) || paths.some((file) => !/^tests\/review\/verifications\/[A-Za-z0-9_./-]+$/.test(file) || file.split("/").some((part) => !part || part === "." || part === ".."))) {
+function validateAdjacentPaths(paths) {
+  if (!Array.isArray(paths) || paths.some((file) => typeof file !== "string" || !/^tests\/review\/verifications\/[A-Za-z0-9_./-]+$/.test(file) || file.split("/").some((part) => !part || part === "." || part === ".."))) {
     throw new Error("相邻测试必须是 tests/review/verifications/ 内的规范相对路径，使用字母、数字、点、下划线、斜杠或连字符");
   }
+  if (new Set(paths).size !== paths.length) throw new Error("相邻测试路径不得重复");
+}
+
+function expandAdjacentCommand(template, paths) {
+  validateAdjacentPaths(paths);
   return String(template).replace("{test_paths}", paths.join(" "));
 }
 
@@ -197,12 +201,19 @@ function roundAdjacentPaths(state, round) {
   return state.adjacent_registry.filter((entry) => entry.round === round).map((entry) => entry.test_path).sort();
 }
 
-function validateAdjacentLog(project, batch) {
+function validateAdjacentLog(project, batch, state) {
   const errors = [];
   const logPath = resolveEvidencePath(project, batch.log, errors, "adjacent batch log");
-  if (logPath) {
-    if (!hasExactCommand(fs.readFileSync(logPath, "utf8"), batch.command)) errors.push("adjacent batch log COMMAND 必须与展开后的命令完全一致");
-    if (batch.status !== "inconclusive" && (batch.exit_status === 0 ? !hasSuccessfulExit(logPath) : !hasNonzeroExit(logPath))) errors.push("adjacent batch log EXIT_CODE 与状态不一致");
+  if (!logPath) return errors;
+  if (batch.status === "inconclusive") {
+    if (!hasExactCommand(fs.readFileSync(logPath, "utf8"), batch.command)) errors.push("adjacent batch log COMMAND 与展开后的命令不一致");
+  } else if (!hasRunMarkers(logPath, batch.command, batch.exit_status)) {
+    errors.push("adjacent batch log 必须记录唯一、精确的 COMMAND 和 EXIT_CODE");
+  }
+  if (state && batch.attempt) {
+    const earlier = state.rounds.map((round) => round.adjacent_batch)
+      .concat(state.final_audit.preflight_batches.filter((prior) => prior.attempt < batch.attempt));
+    if (earlier.some((prior) => sameEvidenceFile(project, prior?.log, logPath))) errors.push("终审前聚合必须使用本次独立运行的日志，不能引用轮末或此前终审 attempt 的日志");
   }
   return errors;
 }
@@ -228,7 +239,6 @@ function validateAdjacentPromotions(project, state, data, errors) {
     try {
       require("node:child_process").execFileSync("git", ["merge-base", "--is-ancestor", promotion.commit, "HEAD"], { cwd: project, stdio: "ignore" });
       if (sha256GitFile(project, promotion.commit, promotion.formal_test) !== promotion.formal_sha256) errors.push(`相邻测试升级正式文件哈希不匹配：${promotion.test_path}`);
-      if (!fs.existsSync(path.resolve(project, promotion.formal_test))) errors.push(`相邻测试升级正式测试缺失：${promotion.formal_test}`);
     } catch (error) {
       errors.push(`相邻测试升级提交无效：${error.message}`);
     }
@@ -262,28 +272,24 @@ function resolveEvidencePath(project, filename, errors, label) {
   return absolute;
 }
 
-function hasRunMarkers(logPath, command, exitStatus) {
-  const lines = fs.readFileSync(logPath, "utf8").replace(/\r/g, "").split("\n");
-  const commands = lines.filter((line) => /^\s*COMMAND\s*=/.test(line));
+function sameEvidenceFile(project, first, second) {
+  if (typeof first !== "string" || typeof second !== "string") return false;
+  try {
+    const left = fs.statSync(path.resolve(project, first), { bigint: true });
+    const right = fs.statSync(path.resolve(project, second), { bigint: true });
+    return left.dev === right.dev && left.ino === right.ino;
+  } catch {
+    return false; // Missing evidence is reported by resolveEvidencePath.
+  }
+}
+
+function hasRunMarkers(logPath, command, exitStatus, commandKey = "COMMAND") {
+  const lines = fs.readFileSync(logPath, "utf8").split(/\r?\n/);
+  const commandMarker = commandKey === "QUALITY_COMMAND" ? /^\s*QUALITY_COMMAND\s*=/ : /^\s*COMMAND\s*=/;
+  const commands = lines.filter((line) => commandMarker.test(line));
   const exits = lines.filter((line) => /^\s*EXIT_CODE\s*=/.test(line));
-  return commands.length === 1 && commands[0] === "COMMAND=" + command &&
-    exits.length === 1 && exits[0] === "EXIT_CODE=" + exitStatus;
-}
-
-function hasSuccessfulExit(logPath) {
-  try {
-    return /(?:^|\n)\s*EXIT_CODE\s*=\s*0\s*(?:\r?$|\n)/m.test(fs.readFileSync(logPath, "utf8"));
-  } catch {
-    return false;
-  }
-}
-
-function hasNonzeroExit(logPath) {
-  try {
-    return /(?:^|\n)\s*EXIT_CODE\s*=\s*[1-9]\d*\s*(?:\r?$|\n)/m.test(fs.readFileSync(logPath, "utf8"));
-  } catch {
-    return false;
-  }
+  return commands.length === 1 && commands[0] === `${commandKey}=${command}` &&
+    exits.length === 1 && exits[0] === `EXIT_CODE=${exitStatus}`;
 }
 
 function parseJsonSection(markdown, heading, label) {
@@ -385,7 +391,7 @@ function validateFullRun(project, run, policy, label, expectedTreeHash = null) {
   }
 
   const logPath = resolveEvidencePath(project, run.log, errors, `${label} log`);
-  if (logPath && !hasSuccessfulExit(logPath)) errors.push(`${label} log 缺少 EXIT_CODE=0`);
+  if (logPath && !hasRunMarkers(logPath, policy.fullCommand, 0)) errors.push(`${label} log 的 COMMAND 与完整命令不符或缺少唯一的 EXIT_CODE=0`);
   if (logPath && policy.longRunningTests && policy.longRunningTests.toLowerCase() !== "none") {
     const log = fs.readFileSync(logPath, "utf8").replace(/\r/g, "").split("\n");
     const ids = policy.longRunningTests.split(",").map((value) => value.trim()).filter(Boolean).sort().join(",");
@@ -422,10 +428,8 @@ function validateQualityRun(project, run, policy, label, expectedTreeHash = null
     errors.push(`${label} 必须证明检查前后工作区均 clean`);
   }
   const logPath = resolveEvidencePath(project, run.log, errors, `${label} log`);
-  if (logPath) {
-    const log = fs.readFileSync(logPath, "utf8");
-    if (!hasSuccessfulExit(logPath)) errors.push(`${label} log 缺少 EXIT_CODE=0`);
-    if (!log.replace(/\r/g, "").split("\n").includes(`QUALITY_COMMAND=${policy.qualityCommand}`)) errors.push(`${label} log QUALITY_COMMAND 必须与 baseline Code quality command 完全一致`);
+  if (logPath && !hasRunMarkers(logPath, policy.qualityCommand, 0, "QUALITY_COMMAND")) {
+    errors.push(`${label} log 必须记录唯一、精确的 QUALITY_COMMAND 和 EXIT_CODE=0`);
   }
   return errors;
 }
@@ -451,11 +455,11 @@ function validateFastRun(project, run, policy, label, expectedTreeHash = null) {
   if (!(run.run_location === "main-workspace" || (typeof run.run_location === "string" && /^worktree:.+/.test(run.run_location.trim())))) errors.push(`${label} run_location 无效`);
   if (run.workspace_clean_before !== true || run.workspace_clean_after !== true) errors.push(`${label} 必须证明测试前后被测工作区均 clean`);
   const counts = run.test_counts;
-  if (!counts || !["total", "passed", "failed", "skipped"].every((key) => Number.isSafeInteger(counts[key]) && counts[key] >= 0) || counts.total < 1 || counts.failed !== 0 || counts.passed + counts.failed + counts.skipped !== counts.total) {
+  if (!counts || !["total", "passed", "failed", "skipped"].every((key) => Number.isSafeInteger(counts[key]) && counts[key] >= 0) || counts.passed < 1 || counts.failed !== 0 || counts.passed + counts.failed + counts.skipped !== counts.total) {
     errors.push(`${label} test_counts 必须有效、至少运行一个测试且零失败`);
   }
   const logPath = resolveEvidencePath(project, run.log, errors, `${label} log`);
-  if (logPath && (!hasSuccessfulExit(logPath) || !hasExactCommand(fs.readFileSync(logPath, "utf8"), run.command))) errors.push(`${label} log 必须记录精确命令和 EXIT_CODE=0`);
+  if (logPath && !hasRunMarkers(logPath, run.command, 0)) errors.push(`${label} log 必须记录精确命令和 EXIT_CODE=0`);
   return errors;
 }
 
@@ -545,10 +549,12 @@ function validateAdjacentBatch(project, round, state, data, errors) {
     if (batch.exit_status !== 0 || !isTreeHash(batch.tree_hash)) {
       errors.push(`round ${round.round}: adjacent batch 退出码或 tree hash 无效`);
     }
-    const batchLog = resolveEvidencePath(project, batch.log, errors, `round ${round.round} adjacent batch log`);
-    if (batchLog && !hasSuccessfulExit(batchLog)) errors.push(`round ${round.round}: adjacent batch log 缺少 EXIT_CODE=0`);
-    if (!Number.isSafeInteger(batch.test_count) || batch.test_count < 2 || !Number.isSafeInteger(batch.failed_count) || batch.failed_count !== 0) {
-      errors.push(`round ${round.round}: adjacent batch 通过时必须记录至少 2 个测试和 failed_count=0`);
+    if (!Number.isSafeInteger(batch.test_count) || batch.test_count < expectedPaths.length || batch.failed_count !== 0) {
+      errors.push(`round ${round.round}: adjacent batch 通过时计数必须覆盖全部登记文件且 failed_count=0`);
+    }
+    if (round.round === state.current_round && state.current_phase === "round_decision") {
+      const head = require("node:child_process").execFileSync("git", ["rev-parse", "HEAD"], { cwd: project, encoding: "utf8" }).trim();
+      if (batch.tested_commit !== head) errors.push(`round ${round.round}: 相邻批测已过期，必须在当前 HEAD 重跑`);
     }
   }
   if (batch.status === "fail" && !(batch.failures?.length)) {
@@ -563,12 +569,8 @@ function validateAdjacentBatch(project, round, state, data, errors) {
   if (batch.status !== "inconclusive") {
     const logPath = resolveEvidencePath(project, batch.log, errors, `round ${round.round} adjacent batch log`);
     if (logPath) {
-      const log = fs.readFileSync(logPath, "utf8");
-      if (batch.log_sha256 && sha256File(logPath).toLowerCase() !== batch.log_sha256.toLowerCase()) errors.push(`round ${round.round}: adjacent batch 原始日志哈希不匹配`);
-      if (!hasExactCommand(log, batch.command)) errors.push(`round ${round.round}: adjacent batch log COMMAND 与结构化命令不一致`);
-      if (batch.exit_status === 0 ? !hasSuccessfulExit(logPath) : !hasNonzeroExit(logPath)) {
-        errors.push(`round ${round.round}: adjacent batch log 的 EXIT_CODE 与结构化状态不一致`);
-      }
+      if (sha256File(logPath) !== batch.log_sha256) errors.push(`round ${round.round}: adjacent batch 原始日志哈希不匹配`);
+      if (!hasRunMarkers(logPath, batch.command, batch.exit_status)) errors.push(`round ${round.round}: adjacent batch log 的 COMMAND 或 EXIT_CODE 与记录不一致`);
     }
   }
   if (batch.status === "inconclusive" && !(typeof batch.reason === "string" && batch.reason.trim())) {
@@ -607,7 +609,7 @@ function validateRoundRegression(project, round, errors, { requireCurrentHead = 
   if (gate.status !== "inconclusive" && (!isTreeHash(gate.tree_hash) || gate.tree_hash !== gate.run.tree_hash_after || gate.run.tree_hash_before !== gate.tree_hash)) {
     errors.push(`round ${round.round}: regression gate tree hash 不一致`);
   }
-  if (gate.run.tested_commit && gate.run.tested_commit !== gate.tested_commit) errors.push(`round ${round.round}: regression gate tested_commit 不一致`);
+  if ((gate.status !== "inconclusive" || gate.run.tested_commit) && gate.run.tested_commit !== gate.tested_commit) errors.push(`round ${round.round}: regression gate tested_commit 不一致`);
   if (gate.status !== "inconclusive" || gate.run.tested_commit) {
     try {
       if (gitTree(project, gate.tested_commit).toLowerCase() !== String(gate.tree_hash || "").toLowerCase()) errors.push(`round ${round.round}: regression gate tree hash 与 tested_commit 不一致`);
@@ -623,12 +625,10 @@ function validateRoundRegression(project, round, errors, { requireCurrentHead = 
     errors.push(...validateFullRun(project, gate.run, baseline.policy, `round ${round.round} full regression`, gate.tree_hash));
     const log = resolveEvidencePath(project, gate.run.log, errors, "full regression log");
     if (log && sha256File(log) !== gate.log_sha256) errors.push("full regression log hash 不匹配");
+    if (!gate.reused_from && sameEvidenceFile(project, gate.run.log, baseline.policy.baselineLog)) {
+      errors.push("轮末实跑 full 必须有独立的日志，引用基线运行请使用 --reuse");
+    }
     if (gate.reused_from) {
-      if (log) {
-        if (!hasRunMarkers(log, gate.command, 0)) {
-          errors.push("复用要求单次 full 的精确 COMMAND 和 EXIT_CODE=0 日志");
-        }
-      }
       if (requireCurrentHead) {
         if (sha256File(path.join(project, EVIDENCE, "baseline.md")) !== gate.baseline_sha256) errors.push("baseline 已变更，必须重新运行 full");
         const dirty = require("node:child_process").execFileSync("git", ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none", "--", ".", ":(exclude).review-evidence", ":(exclude)tests/review"], { cwd: project, encoding: "utf8" });
@@ -638,7 +638,7 @@ function validateRoundRegression(project, round, errors, { requireCurrentHead = 
   } else if (gate.status === "fail") {
     if (!Number.isSafeInteger(gate.run.exit_status) || gate.run.exit_status === 0) errors.push(`round ${round.round}: fail regression gate 必须记录非零退出码`);
     const logPath = resolveEvidencePath(project, gate.run.log, errors, `round ${round.round} regression log`);
-    if (logPath && (!hasNonzeroExit(logPath) || !hasExactCommand(fs.readFileSync(logPath, "utf8"), gate.command))) errors.push(`round ${round.round}: fail regression log 必须记录精确命令和非零退出码`);
+    if (logPath && !hasRunMarkers(logPath, gate.command, gate.run.exit_status)) errors.push(`round ${round.round}: fail regression log 必须记录精确命令和非零退出码`);
     if (logPath && sha256File(logPath).toLowerCase() !== String(gate.log_sha256 || "").toLowerCase()) errors.push(`round ${round.round}: fail regression log hash 不匹配`);
   } else {
     if (!(typeof gate.reason === "string" && gate.reason.trim())) errors.push(`round ${round.round}: inconclusive regression gate 必须说明原因`);
@@ -650,15 +650,25 @@ function validateRoundRegression(project, round, errors, { requireCurrentHead = 
   }
 }
 
-function adjacentTestPaths(state) {
-  const promoted = new Set(state.adjacent_promotions.map((item) => item.test_path));
+function adjacentTestPaths(state, project) {
+  const promoted = new Set();
+  for (const promotion of state.adjacent_promotions) {
+    // Keep the historical promotion. Select the original whenever its formal
+    // replacement cannot be confirmed against both HEAD and the checkout.
+    if (!gitFileMatchesHead(project, promotion.formal_test)) continue;
+    try {
+      if (sha256GitFile(project, "HEAD", promotion.formal_test) === promotion.formal_sha256) promoted.add(promotion.test_path);
+    } catch {
+      // A file that disappears during planning still needs its original test.
+    }
+  }
   return state.adjacent_registry.filter((entry) => !promoted.has(entry.test_path)).map((entry) => entry.test_path).sort();
 }
 
 function validateFinalAdjacentBatch(project, state, data, errors, attempt = state.final_audit_attempt + 1) {
   const batches = state.final_audit?.preflight_batches;
   const batch = (Array.isArray(batches) ? batches : []).find((item) => item?.attempt === attempt);
-  const paths = adjacentTestPaths(state);
+  const paths = adjacentTestPaths(state, project);
   if (!paths.length) return;
   if (!batch) {
     errors.push(`final audit attempt ${attempt}: 缺少终审前全历史相邻测试批测`);
@@ -704,13 +714,7 @@ function validateFinalAdjacentBatch(project, state, data, errors, attempt = stat
   }
   const logPath = resolveEvidencePath(project, batch.log, errors, `final audit attempt ${attempt} adjacent batch log`);
   if (logPath && sha256File(logPath) !== batch.log_sha256) errors.push(`final audit attempt ${attempt}: 原始日志哈希不匹配`);
-  if (logPath && batch.status !== "inconclusive") {
-    const log = fs.readFileSync(logPath, "utf8");
-    if (!hasExactCommand(log, batch.command)) errors.push(`final audit attempt ${attempt}: 日志 COMMAND 与结构化命令不一致`);
-    if (batch.status === "pass" ? !hasSuccessfulExit(logPath) : !hasNonzeroExit(logPath)) {
-      errors.push(`final audit attempt ${attempt}: 日志退出码与状态不一致`);
-    }
-  }
+  if (logPath) errors.push(...validateAdjacentLog(project, batch, state));
   if (batch.status === "inconclusive" && !(typeof batch.reason === "string" && batch.reason.trim())) {
     errors.push(`final audit attempt ${attempt}: inconclusive 必须说明原因`);
   }
@@ -811,11 +815,11 @@ function validateVerificationEvidence(project, finding, config, filename, expect
       validateTestedCommit(project, regression.tested_commit, expectedHeadTree, "impacted regression", errors);
       const counts = regression.test_counts;
       if (!counts || !["total", "passed", "failed", "skipped"].every((key) => Number.isSafeInteger(counts[key]) && counts[key] >= 0) ||
-          counts.total < 1 || counts.failed !== 0 || counts.passed + counts.failed + counts.skipped !== counts.total) {
+          counts.passed < 1 || counts.failed !== 0 || counts.passed + counts.failed + counts.skipped !== counts.total) {
         errors.push("impacted test_counts 无效或包含失败/零测试");
       }
       const regressionLog = resolveEvidencePath(project, regression.log, errors, "impacted regression log");
-      if (regressionLog && !hasSuccessfulExit(regressionLog)) errors.push("impacted regression log 缺少 EXIT_CODE=0");
+      if (regressionLog && !hasRunMarkers(regressionLog, baseline.policy.impactedCommand, 0)) errors.push("impacted regression log 的 COMMAND 与命令不符或缺少唯一的 EXIT_CODE=0");
     }
     if (regression.scope === "full" && regression.command?.trim() !== baseline.policy.fullCommand.trim()) {
       errors.push("full regression.command 必须与 baseline Full test command 一致");
@@ -843,6 +847,9 @@ function validateVerificationEvidence(project, finding, config, filename, expect
         errors.push(`verification full tested_commit 无效或不在 HEAD 历史中：${error.message}`);
       }
     }
+    if (sameEvidenceFile(project, verificationFull.log, baseline.policy.baselineLog)) {
+      errors.push("verification full 必须有独立运行的日志，不能引用 baseline full 日志");
+    }
     if (regression?.log !== verificationFull.log) errors.push("regression.log 必须与 verification full log 一致");
   }
   if (baseline.policy.tieringMode === "full-everywhere" && regression?.scope !== "full") {
@@ -866,6 +873,9 @@ function validateVerificationEvidence(project, finding, config, filename, expect
         const implementationPath = path.join(path.dirname(filename), "implementation-result.md");
         const impl = parseImplementationEvidence(project, implementationPath, fixTree, { finding, baseline });
         errors.push(...impl.errors);
+        if (sameEvidenceFile(project, verificationFull?.log, impl.run?.log)) {
+          errors.push("verification full 必须有独立运行的日志，不能引用实现者的 GREEN full 日志");
+        }
         highRisk ||= impl.evidence?.risk_assessment === "high";
         if (baseline.policy.tieringMode === "progressive" && !impl.run) {
           if (!["P2", "P3"].includes(finding.severity) || highRisk) errors.push("只有普通风险 P2/P3 可延后 GREEN full 至轮末");
@@ -929,6 +939,7 @@ module.exports = {
   validateRoundRegression,
   validateFinalAdjacentBatch,
   adjacentTestPaths,
+  validateAdjacentPaths,
   expandAdjacentCommand,
   roundAdjacentPaths,
   hasExactCommand,

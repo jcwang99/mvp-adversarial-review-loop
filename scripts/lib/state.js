@@ -22,7 +22,7 @@ const TRANSITIONS = {
   review: ["adjudication"],
   adjudication: ["repair", "round_decision"],
   repair: ["verification", "round_decision", "adjudication"],
-  verification: ["repair", "round_decision", "adjudication"],
+  verification: ["verification", "repair", "round_decision", "adjudication"],
   round_decision: ["review", "final_audit", "adjudication", "report"],
   final_audit: ["adjudication", "report"],
   report: [],
@@ -273,7 +273,7 @@ function validateConfig(config) {
   if (!config.confirmed_at || !/^\d{4}-\d{2}-\d{2}T/.test(config.confirmed_at)) {
     errors.push("confirmed_at 必须是 ISO 8601");
   }
-  if (!config.baseline_head) errors.push("baseline_head 不能为空");
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(config.baseline_head)) errors.push("baseline_head 必须是有效的 Git HEAD；请从已有提交的项目根目录启动");
   return errors;
 }
 
@@ -675,6 +675,7 @@ function convergenceReasons(state, config, data, target, options = {}) {
   if (!audit || audit.status !== "complete") {
     reasons.push("最终审计未完成");
   } else {
+    if (audit.full_evidence?.overall_status === "fail") reasons.push("最终审计 Overall Status 未通过");
     if (audit.full_evidence?.status === "fail") reasons.push("最终审计 full 未通过");
     const auditFindings = findings.filter(
       (finding) => finding.source === "final-audit" && finding.audit_attempt === audit.attempt
@@ -750,6 +751,7 @@ module.exports = {
   validateConfig,
   validateState,
   validateFindings,
+  originalScope,
   isTerminal,
   coverage,
   convergenceReasons,

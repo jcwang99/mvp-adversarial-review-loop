@@ -4,13 +4,7 @@
 
 ## 实现代理串行约束
 
-**主代理一次只启动一个实现代理，处理一个 finding 的完整 RED-GREEN-REFACTOR 循环并提交。** 默认串行执行（原因：减少上下文管理复杂度、避免 git 工作区冲突、降低 token 消耗），除非用户明确授权并行且有独立的 git worktree 隔离机制。实现代理完成提交后，主代理再启动下一个实现代理处理下一个 finding。
-
-### 有限乐观修复旁路
-
-当 baseline 声明 `Optimistic repair policy: bounded` 时，主代理可以为已 accepted、已确认 RED 且 severity 为 P2/P3 的后续 finding 提前创建独立 worktree。使用 `reviewctl optimistic-start`、`optimistic-record`、`optimistic-promote` 和 `optimistic-discard` 管理生命周期；默认最多一个活动 worktree。候选 worktree 必须从没有源代码用户改动的 HEAD 创建（允许已有评审临时文件），并指定 `risk-assessment=normal`；不能写入主状态或正式证据。
-
-候选通过测试和代码质量检查只代表预检成功。只有在主 HEAD 仍等于 `base_commit`、主工作树干净且补丁无冲突时才能提升；提升后仍按本文件执行正式 RED/GREEN 证据、`guard-commit`、正式提交和独立验证。候选 commit 不得直接作为 finding 的正式 `commit`，也不得替代验证代理对正式 commit 的测试。主 HEAD 变化、用户改动、候选包含禁止路径或 worktree 有未提交改动时，标记 stale/conflict 或 discard，不得强制合并。
+正式修复一次处理一个 `active_finding`。实现代理返回结果后由主代理登记，完成该项验证或处置阻塞后再选下一项。若 baseline 开启 bounded，候选 worktree 的资格、预检与提升按阶段手册 §3.0 处理。
 
 ## 实现代理任务模板
 
@@ -28,9 +22,7 @@
 - 从项目根目录运行，使用项目自身的测试框架、依赖、构建环境
 - 项目测试套件使用项目本身的测试配置和数据机制
 - 若需要验证修复前后状态对比的临时数据，可放在：.review-evidence/round-[N]/_testdata/impl-[finding-id]/
-- **测试输出先落盘**：运行 RED/GREEN/full 命令前，把完整输出重定向到 .review-evidence/round-[N]/[标准 ID]/output.log 并记录退出码（POSIX：`{ <command>; echo "EXIT_CODE=$?"; } > <output.log> 2>&1`；PowerShell：`<command> *> <output.log>; Add-Content <output.log> "EXIT_CODE=$LASTEXITCODE"`）。输出被截断时读取该日志，不要重复运行；RED、GREEN、full 可分别写入 `output-red.log`、`output-green-suite.log`、`output-full-suite.log`。
-- **技能脚本（如需）**：`node "[skill-dir]/scripts/reviewctl.js"`；`[skill-dir]` 由主代理替换为当前 harness 的实际绝对路径；用于 `guard-commit` 或状态查看，不要修改状态或推进阶段
-- **编译缓存复用（按磁盘预算）**：在 baseline 记录的磁盘预算内复用缓存（Rust 如 `CARGO_TARGET_DIR`）；focused 优先 `cargo test --test <target> <filter>` 或 `cargo nextest run -p <crate> -E 'test(<filter>)'`，impacted 用 `cargo nextest run -p <crate> -p <dependent>`，GREEN 按已选模式运行 fast 或 full；不要为每个 finding 新建 target 目录。缓存超预算时按主代理指示在轮次边界集中清理（如 `cargo clean`），不要每个 finding 都清理重建
+- RED、GREEN 和质量检查各保存到本 finding 的独立日志，遵循通用交接中的实跑日志规则。
 
 ## 输出约定
 - 完整实现报告写入：.review-evidence/round-[N]/[标准 ID]/implementation-result.md
@@ -55,7 +47,6 @@
 | `already_fixed` | 允许 `not_run` | 默认在当前 HEAD 重跑 full；普通风险 P2/P3 在 default/progressive 下，历史修复是已通过 full 的 baseline HEAD 的祖先且例外证据齐全时，可运行修复后反例和 impacted |
 | `prepared` | 允许 `not_run` | 不走 pass，按 `blocked_by_user_changes` 记录 |
 | `blocked` / `cannot_fix` | 允许 `not_run` | 不 pass，登记 unresolved |
-| `blocked_by_user_changes` | 允许 `not_run` | 不 pass；报告披露无 full 证据 |
 
 ## RED-GREEN 循环与正式回归测试
 
@@ -136,7 +127,7 @@
    - **能安全分块**：
      - 主代理执行 `git add -p <冲突文件>`，在交互模式中只暂存修复改动
      - 运行 `git diff --cached` 确认暂存内容不包含用户改动
-     - 提交修复，更新 finding 状态为 `verification: pending`
+     - 通过相同的 GREEN、质量检查和 `guard-commit` 后提交，由主代理登记 `fixed`
      - 在 implementation-result.md 记录："工作区冲突已通过分块暂存解决"
    - **不能安全分块**：
      - 先用 `reviewctl record-implementation --id [ID] --status prepared --reason "user changes conflict"` 记录准备好的修复
@@ -154,7 +145,7 @@
    - **风险提示**：如果用户改动可能与修复冲突，明确说明冲突点
 
 5. **最终报告处理**：
-   - 如果有任何 `blocked_by_user_changes` 的 finding，收敛状态为 `CONVERGED_WITH_MANUAL_MERGE`（而非 `CONVERGED`）
+   - 存在 `blocked_by_user_changes` 且满足 `SKILL.md` §5 其余门禁时，报告 `CONVERGED_WITH_MANUAL_MERGE`
    - 单独章节（"需要手工合并的修复"）列出所有 `blocked_by_user_changes` 的 findings
    - 每个 finding 包含完整的手工合并建议（从 implementation-result.md 提取）
    - 章节开头警告："在完成手工合并前，不要部署此版本"
@@ -163,7 +154,7 @@
 提交前至少执行：
 
 ```text
-node <skill-dir>/scripts/reviewctl.js guard-commit --finding [ID] --test [PATH]
+node "<skill-dir>/scripts/reviewctl.js" guard-commit --finding [ID] --test [PATH]
 git diff --check
 git diff --cached --stat
 git diff --cached
@@ -183,9 +174,9 @@ fix(review): [ID] concise behavior being corrected
 **tests/review/ 临时目录不提交到本次修复 commit**：
 - 临时测试文件（`tests/review/reproductions/`）保留在工作区，供 verification 阶段使用
 - 修复 commit 只包含源代码和正式测试文件的修改
-- 整个评审流程结束后，`tests/review/` 目录会被删除
+- 收尾按阶段手册 §7.3 清理，保留仍被引用的测试及数据
 
-提交成功后运行 `reviewctl record-implementation --id [ID] --status fixed --commit [SHA] --test [PATH]`，由脚本更新 `state.json` / `findings.json` 和生成视图。若提交钩子失败，修复钩子报告的问题并重新检查差异；不要绕过钩子。本流程要求 Git（commit、worktree、guard-commit）；仓库没有 Git 时停止并报告阻塞，不要启动实现阶段。
+提交成功后由主代理运行 `reviewctl record-implementation --id [ID] --status fixed --commit [SHA] --test [PATH]`，由脚本更新 `state.json` / `findings.json` 和生成视图。若提交钩子失败，修复钩子报告的问题并重新检查差异；不要绕过钩子。
 
 ## 失败处理
 

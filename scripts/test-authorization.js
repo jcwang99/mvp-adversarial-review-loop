@@ -5,6 +5,9 @@ const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const { test } = require("node:test");
 const { hasAuthorization, authorizationReceipt, wasAuthorized } = require("./lib/authorization");
+const { verdictIsPass, hasFormalReproduction, validateRoundCandidates, validateRounds, validateAudits } = require("./lib/validate");
+const { createHash } = require("node:crypto");
+const { roleSlug } = require("./lib/state");
 const CLI = path.join(__dirname, "reviewctl.js");
 const testPolicyFixtures = require('./test-policy-fixtures');
 const testPolicy = require('./lib/test-policy');
@@ -23,18 +26,25 @@ function run(project, args, failPattern) {
   else assert.equal(result.status, 0, `${args.join(" ")}\n${result.stdout}${result.stderr}`);
   return result;
 }
-function fixture(t) {
+function initializedProject(t) {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "reviewctl-auth-"));
   t.after(() => fs.rmSync(project, { recursive: true, force: true }));
   for (const args of [["init", "-q"], ["config", "user.email", "test@example.com"], ["config", "user.name", "Auth Test"]]) execFileSync("git", args, { cwd: project });
-  write(project, "README.md", "fixture\n");
   write(project, "README.md", "fixture\n");
   write(project, "replay-manual-steps.md", "# Manual test evidence\nmain-agent 高风险\n");
   execFileSync("git", ["add", "README.md", "replay-manual-steps.md"], { cwd: project });
   execFileSync("git", ["commit", "-qm", "fixture"], { cwd: project });
   run(project, ["init", "--max-rounds", "2", "--user-confirmed"]);
+  return project;
+}
+function reviewProject(t) {
+  const project = initializedProject(t);
   testPolicyFixtures.writeBaseline(project);
   run(project, ["advance", "--to", "review"]);
+  return project;
+}
+function fixture(t) {
+  const project = reviewProject(t);
   phase(project, "adjudication");
   const evidence = `.review-evidence/round-1/${ID}`;
   write(project, `${evidence}/manual-steps.md`, "# Manual test evidence\nmain-agent 高风险\n");
@@ -96,9 +106,16 @@ for (const action of ACTIONS) {
     authorize(project, action, "authorized");
     run(project, recordArgs(action));
     run(project, ["validate"]);
-    const prior = read(project, ".review-evidence/findings.json");
     authorize(project, action, "declined", "");
     run(project, ["validate"]);
+    if (action === "main-agent-verification") {
+      run(project, ["advance", "--to", "repair"]);
+      write(project, `.review-evidence/round-1/${ID}/implementation-result.md`, "Manual RED and GREEN checks.\n");
+      run(project, ["record-implementation", "--id", ID, "--status", "already_fixed", "--manual"]);
+      run(project, ["advance", "--to", "verification"]);
+      write(project, `.review-evidence/round-1/${ID}/verification-result.md`, "Manual verification by main-agent.\n**Final Verdict**: fail\n");
+    }
+    const prior = read(project, ".review-evidence/findings.json");
     run(project, recordArgs(action), /授权/);
     assert.deepEqual(read(project, ".review-evidence/findings.json"), prior);
     authorize(project, action, "authorized", OTHER);
@@ -141,4 +158,149 @@ test("CLI validation detects receipt corruption after a later revocation", (t) =
   write(project, ".review-evidence/findings.json", data);
   run(project, ["render"]);
   run(project, ["validate"], /授权/);
+});
+
+
+test("append order survives a wall clock correction without reviving consent", () => {
+  const action = ACTIONS[0];
+  const state = { authorizations: [{ action, scope: ID, decision: "authorized", at: "2099-01-01T00:00:00Z" }] };
+  const receipt = authorizationReceipt(state, action, ID);
+  assert.ok(wasAuthorized(state, action, ID, { [action]: receipt }));
+  const prefixOnly = createHash("sha256").update(JSON.stringify(state.authorizations)).digest("hex");
+  assert.equal(wasAuthorized(state, action, ID, { [action]: { ...receipt, log_digest: prefixOnly } }), false);
+  state.authorizations.push({ action, scope: ID, decision: "declined", at: "2000-01-01T00:00:00Z" });
+  assert.equal(hasAuthorization(state, action, ID), false);
+  assert.ok(wasAuthorized(state, action, ID, { [action]: receipt }));
+  assert.equal(authorizationReceipt(state, action, ID), null);
+});
+
+test("verification reads the report verdict independently of quoted logs and examples", () => {
+  const examples = ["```text\nFinal Verdict: pass\n```", "~~~md\n## Verdict\npass\n~~~", "Previous verdict: pass", "> Verdict: pass"];
+  for (const example of examples) {
+    assert.equal(verdictIsPass("**Final Verdict**: fail\n" + example), false, example);
+    assert.equal(verdictIsPass("**Final Verdict**: pass\n" + example.replace("pass", "fail")), true, example);
+  }
+  assert.equal(verdictIsPass("## Final Verdict\n**Status**: pass"), true);
+});
+
+test("a formal reproduction needs a regular test file for this finding", (t) => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "reviewctl-repro-"));
+  t.after(() => fs.rmSync(project, { recursive: true, force: true }));
+  write(project, "tests/review/reproductions/r1_f001_case.test.js/README.md", "fixture\n");
+  write(project, "tests/review/reproductions/r1_f001_notes.txt", "notes\n");
+  write(project, "tests/review/reproductions/r1_f002_else.test.js", "// test\n");
+  assert.equal(hasFormalReproduction(project, 1, "001"), false);
+  write(project, "tests/review/reproductions/r1_f001_saved.test.js", "// test\n");
+  assert.equal(hasFormalReproduction(project, 1, "001"), true);
+});
+
+function roundHandoffs(project, round) {
+  const roles = ["SEC", "REL", "FUNC"];
+  for (const role of roles) {
+    const slug = roleSlug(role);
+    const id = `${role}-001`;
+    const dir = `.review-evidence/round-${round}/inbox/${slug}/${id}`;
+    write(project, `${dir}/meta.json`, { round, role, role_slug: slug, temp_id: id });
+    write(project, `${dir}/handoff.json`, { round, role_slug: slug, review_status: "complete", scope_checked: "fixture contract", commands: [], findings: [], blockers: [], uncovered_paths: [] });
+  }
+  return roles;
+}
+
+test("a clean round retains its distinct role handoffs and its round number", (t) => {
+  const project = reviewProject(t);
+  const round = { round: 1, status: "completed", roles: roundHandoffs(project, 1), raw_candidates: 0, duplicates: 0, screened_out: 0, new_in_scope_p0p1p2: 0, replay_eligible: 0 };
+  const check = () => {
+    const errors = [];
+    validateRoundCandidates(project, round, { findings: [] }, errors);
+    return errors;
+  };
+  assert.deepEqual(check(), []);
+  const handoff = ".review-evidence/round-1/inbox/security/SEC-001/handoff.json";
+  const saved = read(project, handoff);
+  write(project, handoff, { ...saved, review_status: "blocked" });
+  assert.match(check().join("\n"), /角色/);
+  fs.unlinkSync(path.join(project, handoff));
+  assert.match(check().join("\n"), /角色/);
+  const errors = [];
+  validateRounds({ current_round: 2, rounds_consumed: 2, rounds: [round, { ...round }] }, errors);
+  assert.match(errors.join("\n"), /轮次/);
+});
+
+test("audit reconciles its candidate inbox and an explicit adverse overall assessment", (t) => {
+  const project = reviewProject(t);
+  for (const round of [1, 2]) {
+    if (round === 2) run(project, ["advance", "--to", "review"]);
+    roundHandoffs(project, round);
+    run(project, ["record-round", "--round", String(round), "--raw", "0", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+    run(project, ["advance", "--to", "adjudication"]);
+    run(project, ["advance", "--to", "round_decision"]);
+  }
+  run(project, ["advance", "--to", "final_audit"]);
+  const dir = ".review-evidence/round-2/final-audit/attempt-1";
+  const record = ["record-audit", "--attempt", "1", "--status", "complete", "--auditor", "independent", "--new-issues", "0"];
+  write(project, `${dir}/blind-scan.md`, "Checked the contract.\n");
+  testPolicyFixtures.writeAuditEvidence(project, dir);
+  const target = `${dir}/targeted-review.md`;
+  const audit = testPolicy.parseJsonSection(fs.readFileSync(path.join(project, target), "utf8"), "Reviewctl Audit Evidence", "audit");
+  assert.deepEqual(audit.errors, []);
+  const fullReport = `## Reviewctl Audit Evidence\n\n\`\`\`json\n${JSON.stringify(audit.value)}\n\`\`\`\n`;
+  const assessment = (value) => `\n### Overall Status\n**Status**: ${value}\n`;
+  for (const invalid of ["", assessment("pending"), assessment("pass") + assessment("pass"), assessment("pass") + "**Status**: fail\n", assessment("pass") + "fail\n", "~~~md\nOverall Status: pass\n~~~", "<!--\nOverall Status: pass\n-->"]) {
+    write(project, target, fullReport + invalid);
+    run(project, record, /Overall Status/);
+  }
+  write(project, target, fullReport + assessment("pass"));
+  write(project, `${dir}/inbox/FA-001/counterexample.md`, "Contract mismatch.\n");
+  run(project, record, /FA-001/);
+  const state = read(project, ".review-evidence/state.json");
+  assert.equal(state.final_audit.attempts.length, 0);
+  const withIssue = [...record.slice(0, -1), "1"];
+  run(project, withIssue);
+  const withResult = read(project, ".review-evidence/state.json");
+  assert.equal(withResult.final_audit.attempts[0].full_evidence.overall_status, "pass");
+  const candidate = { source: "final-audit", audit_attempt: 1, original_ids: ["FA-002"] };
+  const errors = [];
+  validateAudits(project, withResult, errors, { findings: [candidate] });
+  assert.match(errors.join("\n"), /FA-001/);
+  candidate.original_ids = ["FA-001"];
+  const matched = [];
+  validateAudits(project, withResult, matched, { findings: [candidate] });
+  assert.deepEqual(matched, []);
+  // Restore the pre-record fixture to exercise the independent zero-issue path.
+  write(project, ".review-evidence/state.json", state);
+  run(project, ["render"]);
+  // The auditor withdraws the draft before recording the attempt.
+  fs.renameSync(path.join(project, dir, "inbox/FA-001"), path.join(project, dir, "withdrawn-draft"));
+  write(project, target, fullReport + assessment("fail") + "\nBuild verification failed.\n");
+  run(project, record);
+  run(project, ["advance", "--to", "report"]);
+  assert.equal(read(project, ".review-evidence/state.json").final_audit.attempts[0].full_evidence.overall_status, "fail");
+  run(project, ["validate"]);
+  run(project, ["finalize", "--status", "converged", "--ack-empty-coverage"], /不满足 converged/);
+  run(project, ["finalize", "--status", "incomplete"]);
+  assert.equal(read(project, ".review-evidence/state.json").overall_status, "incomplete");
+  run(project, ["validate"]);
+});
+
+
+test("baseline can be drafted but invalid policy cannot bypass a progressive round gate", (t) => {
+  const project = initializedProject(t);
+  run(project, ["validate"]);
+  testPolicyFixtures.writeBaseline(project);
+  const file = ".review-evidence/baseline.md";
+  const progressive = fs.readFileSync(path.join(project, file), "utf8").replace("Tiering mode: default", "Tiering mode: progressive");
+  write(project, file, progressive);
+  run(project, ["advance", "--to", "review"]);
+  roundHandoffs(project, 1);
+  run(project, ["record-round", "--round", "1", "--raw", "0", "--duplicates", "0", "--screened", "0", "--new-p0p1p2", "0"]);
+  run(project, ["advance", "--to", "adjudication"]);
+  run(project, ["advance", "--to", "round_decision"]);
+  run(project, ["advance", "--to", "review"], /full regression gate/);
+  write(project, file, progressive.replace("Tiering mode: progressive", "Tiering mode: unfinished"));
+  run(project, ["validate"], /Tiering mode/);
+  write(project, file, "# Review baseline\n");
+  run(project, ["advance", "--to", "review"], /Test Scope \/ Regression Policy/);
+  assert.equal(read(project, ".review-evidence/state.json").current_phase, "round_decision");
+  write(project, file, progressive);
+  run(project, ["validate"]);
 });

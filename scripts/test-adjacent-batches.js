@@ -35,7 +35,7 @@ function project(t) {
   state.current_phase = "round_decision";
   state.current_round = 2;
   state.rounds_consumed = 2;
-  state.rounds = [1, 2].map((round) => ({ round, status: "completed", roles: [], raw_candidates: 0, duplicates: 0, screened_out: 0, replay_eligible: 0, new_in_scope_p0p1p2: 0 }));
+  state.rounds = [1, 2].map((round) => ({ round, status: "completed", roles: [], regression_gate_attempts: [], raw_candidates: 0, duplicates: 0, screened_out: 0, replay_eligible: 0, new_in_scope_p0p1p2: 0 }));
   const findings = [1, 2].map((round) => {
     const tests = ["normal", "edge"].map((suffix) => `tests/review/verifications/r${round}_f001_func_adjacent_${suffix}.test.js`);
     for (const file of tests) write(file, `const { test } = require('node:test'); const assert = require('node:assert/strict'); test('round ${round}', () => assert.equal(require('../../../src.js')(${round}), ${round}));\n`);
@@ -51,7 +51,9 @@ function project(t) {
     const selected = plan(scope);
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;
-    const run = spawnSync(process.execPath, ["--test", ...selected.test_paths], { cwd: root, encoding: "utf8", env });
+    const [executable, ...args] = selected.command.split(" ");
+    assert.equal(executable, "node");
+    const run = spawnSync(process.execPath, args, { cwd: root, encoding: "utf8", env });
     assert.ifError(run.error);
     const log = `.review-evidence/batch-${++logNumber}.log`;
     write(log, `COMMAND=${selected.command}\n${run.stdout}${run.stderr}\nEXIT_CODE=${run.status}\n`);
@@ -62,12 +64,21 @@ function project(t) {
     return { ...selected, log, exit: run.status, testCount: Number(count[1]), failedCount: Number(failed[1]) };
   };
   const record = (run, attempt = 1, commit = git("rev-parse", "HEAD")) => cli("record-final-adjacent-batch", "--attempt", String(attempt), "--status", run.exit ? "fail" : "pass", "--command", run.command, "--exit-status", String(run.exit), "--tree-hash", policy.gitTree(root, commit), "--tested-commit", commit, "--log", run.log, "--test-count", String(run.testCount), "--failed-count", String(run.failedCount), ...(run.exit ? ["--failed-finding", "R1-F001-FUNC"] : []));
+  const recordRound = (run) => cli("record-adjacent-batch", "--status", "pass", "--command", run.command,
+    "--exit-status", "0", "--tree-hash", policy.gitTree(root, "HEAD"), "--tested-commit", git("rev-parse", "HEAD"),
+    "--log", run.log, "--test-count", String(run.testCount), "--failed-count", "0");
+  const roundErrors = (number) => {
+    const state = readState();
+    const result = [];
+    policy.validateAdjacentBatch(root, state.rounds.find((round) => round.round === number), state, readData(), result);
+    return result.join("; ");
+  };
   const errors = (attempt = 1) => {
     const result = [];
     policy.validateFinalAdjacentBatch(root, readState(), readData(), result, attempt);
     return result.join("; ");
   };
-  return { root, cli, git, write, readState, readData, save, plan, execute, record, errors };
+  return { root, cli, git, write, readState, readData, save, plan, execute, record, recordRound, errors, roundErrors };
 }
 
 test("round plan runs only that round; aggregate detects a regression in an earlier round", (t) => {
@@ -127,7 +138,7 @@ test("verified promotion excludes only its original test from aggregate, retaini
   state.current_round = 1;
   p.save(state, p.readData());
   const round = p.execute("round");
-  p.cli("record-adjacent-batch", "--status", "pass", "--command", round.command, "--exit-status", "0", "--tree-hash", policy.gitTree(p.root, "HEAD"), "--tested-commit", p.git("rev-parse", "HEAD"), "--log", round.log, "--test-count", String(round.testCount), "--failed-count", "0");
+  p.recordRound(round);
   const updatedState = p.readState();
   updatedState.current_round = 2;
   p.save(updatedState, p.readData());
@@ -147,6 +158,19 @@ test("verified promotion excludes only its original test from aggregate, retaini
   p.record(p.execute("all"));
   assert.equal(p.errors(), "");
   assert.throws(() => p.cli("promote-adjacent-test", "--test", testPath, "--finding", "R2-F001-FUNC", "--formal-test", "tests/formal.test.js", "--reason", "again"), /已经升级/);
+  const originalFormal = fs.readFileSync(path.join(p.root, "tests/formal.test.js"), "utf8");
+  p.write("tests/formal.test.js", "require('node:test')('regression', () => {});\n");
+  assert.ok(p.plan("all").test_paths.includes(testPath));
+  p.git("add", "tests/formal.test.js"); p.git("commit", "-qm", "drop formal assertion");
+  assert.ok(p.plan("all").test_paths.includes(testPath));
+  assert.match(p.errors(), /test_paths/);
+  p.record(p.execute("all"));
+  assert.equal(p.errors(), "");
+  assert.equal(p.readState().adjacent_promotions.length, 1);
+  p.write("tests/formal.test.js", originalFormal);
+  assert.ok(p.plan("all").test_paths.includes(testPath));
+  p.git("add", "tests/formal.test.js"); p.git("commit", "-qm", "restore formal assertion");
+  assert.equal(p.plan("all").test_paths.includes(testPath), false);
 });
 
 test("a prior deferred finding is batched in its verification round", (t) => {
@@ -181,8 +205,181 @@ test("baseline rejects extra paths and shell failure suppression after the place
   const p = project(t);
   const file = path.join(p.root, ".review-evidence/baseline.md");
   const baseline = fs.readFileSync(file, "utf8");
-  for (const command of ["node --test {test_paths} tests/extra.test.js", "node --test {test_paths} || true", "node --test tests/review/verifications {test_paths}"]) {
+  for (const command of ["node --test {test_paths} tests/extra.test.js", "node --test {test_paths} || true", "node --test tests/review/verifications {test_paths}", "node --test # {test_paths}", "node --test{test_paths}"]) {
     fs.writeFileSync(file, baseline.replace("node --test {test_paths}", command));
     assert.throws(() => p.cli("adjacent-plan", "--scope", "all"), /Adjacent test command/);
+  }
+});
+
+test("round count follows the registered paths when a finding supplies one test and a reason", (t) => {
+  const p = project(t);
+  const state = p.readState();
+  const data = p.readData();
+  const finding = data.findings[1];
+  const file = finding.adjacent_tests[0];
+  const dir = ".review-evidence/round-2/" + finding.id;
+  const formal = "tests/formal.test.js";
+  p.write(formal, "require('node:test')('regression', () => {});\n");
+  p.git("add", formal); p.git("commit", "-qm", "formal regression");
+  Object.assign(finding, { severity: "P2", evidence_dir: dir, verification: "pending", implementation_status: "already_fixed",
+    commit: p.git("rev-parse", "HEAD"), test_files: [formal], adjacent_tests: [] });
+  state.current_phase = "verification";
+  state.active_finding = finding.id;
+  state.adjacent_registry = state.adjacent_registry.filter((entry) => entry.finding_id !== finding.id);
+  p.save(state, data);
+  p.write(dir + "/verification-result.md", "# Verification\n\n**Final Verdict**: pass\n");
+  fixtures.writeVerificationEvidence(p.root, dir, finding);
+  p.cli("record-verification", "--id", finding.id, "--status", "pass", "--adjacent-test", file,
+    "--adjacent-reason", "Only one independently executable boundary case is available");
+  const decision = p.readState();
+  decision.current_phase = "round_decision";
+  p.save(decision, p.readData());
+  const run = p.execute("round");
+  assert.equal(run.exit, 0);
+  assert.equal(run.testCount, 1);
+  p.recordRound(run);
+  assert.equal(p.roundErrors(2), "");
+  p.git("commit", "--allow-empty", "-qm", "next HEAD");
+  assert.match(p.roundErrors(2), /HEAD/);
+  const next = p.readState();
+  next.current_round = 3;
+  next.current_phase = "review";
+  p.save(next, p.readData());
+  assert.equal(p.roundErrors(2), "");
+});
+
+test("a batch log describes one command and its actual exit status", (t) => {
+  const p = project(t);
+  const run = p.execute("all");
+  const original = fs.readFileSync(path.join(p.root, run.log), "utf8");
+  for (const marker of ["EXIT_CODE=1", "COMMAND=node --test unrelated.test.js"]) {
+    p.write(run.log, original + marker + "\n");
+    assert.throws(() => p.record(run), /COMMAND|EXIT_CODE/);
+  }
+  p.write(run.log, original.replace("EXIT_CODE=0", "EXIT_CODE=2"));
+  assert.throws(() => p.record({ ...run, exit: 1, failedCount: 1 }), /EXIT_CODE/);
+});
+
+test("round full evidence rejects a fast command log before the result can be reused", (t) => {
+  const p = project(t);
+  const baselinePath = path.join(p.root, ".review-evidence/baseline.md");
+  fs.writeFileSync(baselinePath, fs.readFileSync(baselinePath, "utf8").replace("Tiering mode: default", "Tiering mode: progressive"));
+  const suite = fixtures.fullSuite(p.root, ".review-evidence/round-2", policy.gitTree(p.root, "HEAD"));
+  suite.tested_commit = p.git("rev-parse", "HEAD");
+  const file = ".review-evidence/round-2/full-suite.json";
+  p.write(file, JSON.stringify({ full_suite: suite }));
+  const record = () => p.cli("record-round-regression", "--status", "pass", "--evidence", file);
+  p.write(suite.log, "COMMAND=node --test --test-name-pattern=fast\nEXIT_CODE=0\n");
+  assert.throws(record, /COMMAND/);
+  p.write(suite.log, "EXIT_CODE=0\n");
+  assert.throws(record, /COMMAND/);
+  p.write(suite.log, "COMMAND=node --test\nEXIT_CODE=0\n");
+  p.write(file, JSON.stringify({ full_suite: { ...suite, tested_commit: "" } }));
+  assert.throws(record, /tested_commit/);
+  p.write(file, JSON.stringify({ full_suite: { ...suite, log: ".review-evidence/baseline-full.log" } }));
+  assert.throws(record, /独立.*日志/);
+  p.write(file, JSON.stringify({ full_suite: suite }));
+  record();
+  p.cli("record-round-regression", "--reuse");
+  assert.equal(p.readState().rounds[1].regression_gate.reused_from, "round-2");
+});
+
+test("baseline requires one full command and one successful exit", (t) => {
+  const p = project(t);
+  const log = ".review-evidence/baseline-full.log";
+  for (const text of ["COMMAND=node --test --test-name-pattern=fast\nEXIT_CODE=0\n", "EXIT_CODE=0\nEXIT_CODE=1\n"]) {
+    p.write(log, text);
+    assert.throws(() => p.plan("round"), /COMMAND|EXIT_CODE/);
+  }
+  p.write(log, "EXIT_CODE=0\n");
+  assert.throws(() => p.plan("round"), /COMMAND/);
+});
+
+test("fast and impacted evidence require at least one test to pass", (t) => {
+  const p = project(t);
+  const tree = policy.gitTree(p.root, "HEAD");
+  const dir = ".review-evidence/round-2/R2-F001-FUNC";
+  const suite = fixtures.fullSuite(p.root, dir, tree);
+  const baseline = policy.parseBaselinePolicy(p.root).policy;
+  suite.command = baseline.fastCommand;
+  suite.fast_profile = baseline.fastProfile;
+  suite.test_counts = { total: 1, passed: 0, failed: 0, skipped: 1 };
+  p.write(suite.log, `COMMAND=${suite.command}\nEXIT_CODE=0\n`);
+  assert.match(policy.validateFastRun(p.root, suite, baseline, "fast", tree).join("; "), /test_counts/);
+
+  const finding = { severity: "P2", implementation_status: "fixed", commit: p.git("rev-parse", "HEAD") };
+  fixtures.writeGreenEvidence(p.root, dir, tree);
+  fixtures.writeVerificationEvidence(p.root, dir, finding);
+  const report = path.join(p.root, dir, "verification-result.md");
+  const original = fs.readFileSync(report, "utf8");
+  const evidence = policy.parseJsonSection(original, "Reviewctl Verification Evidence", "verification").value;
+  evidence.regression.test_counts = suite.test_counts;
+  fixtures.appendReport(p.root, path.relative(p.root, report), "Reviewctl Verification Evidence", evidence);
+  assert.match(policy.validateVerificationEvidence(p.root, finding, {}, report, tree).join("; "), /impacted test_counts/);
+});
+
+test("verification and command expansion share the canonical adjacent path check", () => {
+  const file = "tests/review/verifications/round-1/normal.test.js";
+  policy.validateAdjacentPaths([]);
+  assert.equal(policy.expandAdjacentCommand("runner {test_paths}", [file]), `runner ${file}`);
+  for (const paths of [[file, file], [file.replace("round-1", "..")], [file.replace("/normal", "//normal")], [null], null]) {
+    assert.throws(() => policy.validateAdjacentPaths(paths), /相邻测试/);
+    assert.throws(() => policy.expandAdjacentCommand("runner {test_paths}", paths), /相邻测试/);
+  }
+});
+
+test("quality logs bind a single quality command to a single successful exit", (t) => {
+  const p = project(t);
+  const rel = ".review-evidence/quality.log";
+  const log = path.join(p.root, rel);
+  const command = "node --check src.js";
+  const valid = `QUALITY_COMMAND=${command}\r\nEXIT_CODE=0\r\n`;
+  p.write(rel, valid);
+  assert.equal(policy.hasRunMarkers(log, command, 0, "QUALITY_COMMAND"), true);
+  for (const extra of ["EXIT_CODE=1", `QUALITY_COMMAND=${command}`, " QUALITY_COMMAND = other"]) {
+    p.write(rel, valid + extra + "\r\n");
+    assert.equal(policy.hasRunMarkers(log, command, 0, "QUALITY_COMMAND"), false);
+  }
+});
+
+test("a final aggregate needs its own run even if the round had the same paths and HEAD", (t) => {
+  const p = project(t);
+  const state = p.readState();
+  const data = p.readData();
+  for (const entry of state.adjacent_registry) entry.round = 2;
+  for (const finding of data.findings) finding.adjacent_round = 2;
+  p.save(state, data);
+  const round = p.execute("round");
+  p.recordRound(round);
+  assert.throws(() => p.record(round), /独立.*日志/);
+  assert.equal(p.readState().final_audit.preflight_batches.length, 0);
+  const final = p.execute("all");
+  p.record(final);
+  assert.equal(p.errors(), "");
+  // Replay validation of persisted evidence that cites the earlier round run.
+  const recorded = p.readState();
+  const batch = recorded.final_audit.preflight_batches[0];
+  batch.log = round.log;
+  batch.log_sha256 = policy.sha256File(path.join(p.root, round.log));
+  fixtures.appendReport(p.root, ".review-evidence/round-2/final-audit/attempt-1/adjacent-batch.md", "Reviewctl Final Adjacent Batch Evidence", batch);
+  p.save(recorded, p.readData());
+  assert.match(p.errors(), /独立.*日志/);
+});
+
+test("independent full verification cannot use its baseline or GREEN log", (t) => {
+  const p = project(t);
+  const tree = policy.gitTree(p.root, "HEAD");
+  const dir = ".review-evidence/round-2/R2-F001-FUNC";
+  const finding = { severity: "P1", implementation_status: "fixed", commit: p.git("rev-parse", "HEAD") };
+  fixtures.writeGreenEvidence(p.root, dir, tree);
+  fixtures.writeVerificationEvidence(p.root, dir, finding);
+  const report = path.join(p.root, dir, "verification-result.md");
+  const check = () => policy.validateVerificationEvidence(p.root, finding, {}, report, tree);
+  assert.deepEqual(check(), []);
+  const evidence = policy.parseJsonSection(fs.readFileSync(report, "utf8"), "Reviewctl Verification Evidence", "verification").value;
+  for (const log of [".review-evidence/baseline-full.log", dir + "/output-full-suite.log"]) {
+    evidence.regression.log = evidence.full_test_suite.log = log;
+    fixtures.appendReport(p.root, path.relative(p.root, report), "Reviewctl Verification Evidence", evidence);
+    assert.match(check().join("; "), /独立.*日志/);
   }
 });

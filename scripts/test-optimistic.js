@@ -33,7 +33,7 @@ const baseline = [
   "- Adjacent test command: node --test {test_paths}", "- High-risk paths: none", "- Verification default: impacted",
 ].join("\n") + "\n";
 write(project, ".review-evidence/baseline.md", baseline);
-write(project, ".review-evidence/baseline-full.log", "EXIT_CODE=0\n");
+write(project, ".review-evidence/baseline-full.log", "COMMAND=node test.js\nEXIT_CODE=0\n");
 write(project, ".review-evidence/baseline-quality.log", "QUALITY_COMMAND=node --check src.js\nEXIT_CODE=0\n");
 write(project, "test.js", "process.exit(0);\n");
 execFileSync("git", ["add", "test.js"], { cwd: project });
@@ -60,14 +60,28 @@ const worktree = path.join(path.dirname(project), `${path.basename(project)}-can
 write(project, "tests/review/reproductions/r1_f001_fix.test.js", "test\n");
 write(project, ".review-evidence/round-1/R1-F001-FUNC/replay-review.md", "replayed\n");
 run(project, ["optimistic-start", "--id", "R1-F001-FUNC", "--worktree", worktree, "--risk-assessment", "normal"]);
+// Promotion applies the entire base-to-candidate diff, including earlier commits.
+const transientFile = "tests/review/candidates/temporary.test.js";
+write(worktree, transientFile, "// transient review artifact\n");
+git(worktree, ["add", transientFile]);
+git(worktree, ["commit", "-qm", "add earlier candidate file"]);
 write(worktree, "src.js", "module.exports = 2;\n");
 execFileSync("git", ["add", "src.js"], { cwd: worktree });
 execFileSync("git", ["commit", "-qm", "fix(review): candidate"], { cwd: worktree });
-const candidate = git(worktree, ["rev-parse", "HEAD"]);
-const candidateTree = git(worktree, ["rev-parse", `${candidate}^{tree}`]);
-write(worktree, ".review-evidence/candidate-test.log", `COMMAND=node test.js --impacted\nTREE_HASH=${candidateTree}\nEXIT_CODE=0\n`);
-write(worktree, ".review-evidence/candidate-quality.log", `QUALITY_COMMAND=node --check src.js\nQUALITY_TREE_HASH=${candidateTree}\nEXIT_CODE=0\n`);
-run(project, ["optimistic-record", "--id", "R1-F001-FUNC", "--candidate-commit", candidate, "--test-status", "pass", "--quality-status", "pass", "--test-log", ".review-evidence/candidate-test.log", "--quality-log", ".review-evidence/candidate-quality.log"]);
+function recordCandidate() {
+  const candidate = git(worktree, ["rev-parse", "HEAD"]);
+  const tree = git(worktree, ["rev-parse", "HEAD^{tree}"]);
+  write(worktree, ".review-evidence/candidate-test.log", `COMMAND=node test.js --impacted\nTREE_HASH=${tree}\nEXIT_CODE=0\n`);
+  write(worktree, ".review-evidence/candidate-quality.log", `QUALITY_COMMAND=node --check src.js\nQUALITY_TREE_HASH=${tree}\nEXIT_CODE=0\n`);
+  return run(project, ["optimistic-record", "--id", "R1-F001-FUNC", "--candidate-commit", candidate,
+    "--test-status", "pass", "--quality-status", "pass", "--test-log", ".review-evidence/candidate-test.log",
+    "--quality-log", ".review-evidence/candidate-quality.log"]);
+}
+assert.throws(recordCandidate, /禁止文件/);
+git(worktree, ["rm", "--", transientFile]);
+git(worktree, ["commit", "-qm", "remove temporary artifact"]);
+recordCandidate();
+assert.deepEqual(JSON.parse(fs.readFileSync(statePath)).optimistic_repairs[0].touched_files, ["src.js"]);
 run(project, ["optimistic-promote", "--id", "R1-F001-FUNC"]);
 assert.equal(fs.readFileSync(path.join(project, "src.js"), "utf8").replace(/\r/g, ""), "module.exports = 2;\n");
 run(project, ["optimistic-discard", "--id", "R1-F001-FUNC"]);

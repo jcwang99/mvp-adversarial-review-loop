@@ -1,0 +1,7 @@
+interface:
+  display_name: "MVP Adversarial Review Loop"
+  short_description: "Bounded counterexample review and TDD repair loop"
+  default_prompt: "使用 $mvp-adversarial-review-loop 启动或恢复 MVP 评审，应用角色模型配置，独立复现、修复并验证问题，按两阶段终审结果报告结论。"
+
+policy:
+  allow_implicit_invocation: true

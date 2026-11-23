@@ -43,13 +43,13 @@ function run(project, args, { expectFail = false } = {}) {
         if (adjacent.length) {
           const paths = [...new Set(adjacent.flatMap((finding) => finding.adjacent_tests))].sort();
           const command = testPolicy.expandAdjacentCommand("node --test {test_paths}", paths);
-          const log = `.review-evidence/round-${state.current_round}/adjacent-auto.log`;
+          const log = `.review-evidence/round-${state.current_round}/adjacent-auto-${Date.now()}.log`;
           write(project, log, `COMMAND=${command}\nEXIT_CODE=0\n`);
           const tree = testPolicyFixtures.git(project, ["rev-parse", "HEAD^{tree}"]);
           const testedCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: project, encoding: "utf8" }).trim();
           execFileSync(process.execPath, [CLI, "record-adjacent-batch", "--status", "pass", "--command", command, "--exit-status", "0", "--tree-hash", tree, "--tested-commit", testedCommit, "--log", log, "--test-count", String(paths.length), "--failed-count", "0", "--project", project], { cwd: project, stdio: "ignore" });
         }
-        const allPaths = testPolicy.adjacentTestPaths(state);
+        const allPaths = testPolicy.adjacentTestPaths(state, project);
         if (args[args.indexOf("--to") + 1] === "final_audit" && allPaths.length) {
           const command = testPolicy.expandAdjacentCommand("node --test {test_paths}", allPaths);
           const log = `.review-evidence/final-adjacent-${state.final_audit_attempt + 1}-${Date.now()}.log`;
@@ -592,6 +592,7 @@ test("FUNC-002 preserves the repair limit through re-adjudication", () => {
     run(project, ["record-implementation", "--id", id, "--status", "already_fixed", "--manual"]);
     run(project, ["advance", "--to", "verification"]);
     run(project, ["record-verification", "--id", id, "--status", "fail"]);
+    run(project, ["record-verification", "--id", id, "--status", "fail"], { expectFail: true });
   }
   run(project, ["advance", "--to", "repair"], { expectFail: true });
   run(project, ["advance", "--to", "adjudication"]);
@@ -602,6 +603,26 @@ test("FUNC-002 preserves the repair limit through re-adjudication", () => {
   assert.equal(finding.verification_attempts, 2);
   run(project, ["advance", "--to", "repair"], { expectFail: true });
   run(project, ["mark-unresolved", "--id", id, "--reason", "Two attempts exhausted"]);
+  run(project, ["advance", "--to", "round_decision"]);
+});
+
+test("an inconclusive verification can be reassigned once without another repair", () => {
+  const project = makeProject();
+  init(project);
+  const id = "R1-F001-FUNC";
+  const evidence = setupAcceptedFinding(project, { id, role: "FUNC", original: "FUNC-001", severity: "P2", slug: "r1_f001_retry" });
+  write(project, `${evidence}/implementation-result.md`, "# Manual implementation\nRED GREEN\n");
+  write(project, `${evidence}/verification-result.md`, "# Manual verification\n**Final Verdict**: inconclusive\n");
+  run(project, ["advance", "--to", "repair"]);
+  run(project, ["record-implementation", "--id", id, "--status", "already_fixed", "--manual"]);
+  run(project, ["advance", "--to", "verification"]);
+  const check = ["record-verification", "--id", id, "--status", "inconclusive"];
+  run(project, check);
+  run(project, check, { expectFail: true });
+  run(project, ["advance", "--to", "verification"]);
+  run(project, check);
+  run(project, ["advance", "--to", "verification"], { expectFail: true });
+  run(project, ["mark-unresolved", "--id", id, "--reason", "environment unavailable"]);
   run(project, ["advance", "--to", "round_decision"]);
 });
 
@@ -726,6 +747,18 @@ test("init refuses missing user confirmation or invalid max_rounds", () => {
   });
 });
 
+test("init requires a Git worktree root with a committed baseline", () => {
+  const project = makeProject();
+  const nested = path.join(project, "nested");
+  fs.mkdirSync(nested);
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), "reviewctl-unborn-"));
+  execFileSync("git", ["init", "-q"], { cwd: empty });
+  for (const dir of [nested, empty]) {
+    run(dir, ["init", "--max-rounds", "2", "--user-confirmed"], { expectFail: true });
+    assert.ok(!fs.existsSync(path.join(dir, ".review-evidence")));
+  }
+});
+
 test("illegal phase transition is rejected", () => {
   const project = makeProject();
   init(project);
@@ -780,6 +813,11 @@ test("review to adjudication needs three role handoffs", () => {
     "--new-p0p1p2",
     "1",
   ]);
+  const file = ".review-evidence/round-1/inbox/security/SEC-001/handoff.json";
+  const handoff = JSON.parse(fs.readFileSync(path.join(project, file)));
+  writeJson(project, file, { ...handoff, review_status: "blocked" });
+  assert.match(String(run(project, ["advance", "--to", "adjudication"], { expectFail: true }).stderr), /实际开展评审/);
+  writeJson(project, file, { ...handoff, review_status: "partial" });
   run(project, ["advance", "--to", "adjudication"]);
 });
 
@@ -1079,6 +1117,13 @@ test("full happy path reaches converged", () => {
     "--adjacent-test",
     "tests/review/verifications/r1_f001_auth_adjacent_edge.test.js",
   ], { expectFail: true });
+  const adjacent = "tests/review/verifications/r1_f001_auth_adjacent.test.js";
+  const finding = JSON.parse(fs.readFileSync(path.join(project, ".review-evidence/findings.json"))).findings[0];
+  testPolicyFixtures.writeVerificationEvidence(project, evidence, finding);
+  for (const invalid of [adjacent, adjacent.replace("verifications/", "verifications/./")]) {
+    run(project, ["record-verification", "--id", finding.id, "--status", "pass",
+      "--adjacent-test", adjacent, "--adjacent-test", invalid], { expectFail: true });
+  }
   run(project, [
     "record-verification",
     "--id",
@@ -1533,7 +1578,7 @@ test("two unchanged progressive rounds reach a report with two real full-suite i
   const dir = ".review-evidence/round-2/final-audit/attempt-1";
   write(project, dir + "/blind-scan.md", "Checked the project contract. No findings.\n");
   const evidence = runFull(dir + "/output-full-suite.log");
-  write(project, dir + "/targeted-review.md", "## Reviewctl Audit Evidence\n~~~json\n" + JSON.stringify(evidence) + "\n~~~\n");
+  write(project, dir + "/targeted-review.md", "### Overall Status\n**Status**: pass\n\n## Reviewctl Audit Evidence\n~~~json\n" + JSON.stringify(evidence) + "\n~~~\n");
   run(project, ["record-audit", "--attempt", "1", "--status", "complete", "--new-issues", "0", "--auditor", "audit-1"]);
   run(project, ["advance", "--to", "report"]);
   run(project, ["finalize", "--status", "converged", "--ack-empty-coverage"]);
@@ -2023,10 +2068,12 @@ test("normalize repairs derived state fields", () => {
   const statePath = path.join(project, ".review-evidence/state.json");
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   state.can_trigger_new_round = false;
+  state.current_round = 2;
   state.rounds_consumed = 99;
   fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
   run(project, ["normalize"]);
   const repaired = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(repaired.current_round, 1);
   assert.equal(repaired.rounds_consumed, 0);
   assert.equal(repaired.can_trigger_new_round, true);
   run(project, ["validate"]);
