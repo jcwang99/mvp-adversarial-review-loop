@@ -80,14 +80,20 @@ git(worktree, ["commit", "-qm", "add earlier candidate file"]);
 write(worktree, "src.js", "module.exports = 2;\n");
 execFileSync("git", ["add", "src.js"], { cwd: worktree });
 execFileSync("git", ["commit", "-qm", "fix(review): candidate"], { cwd: worktree });
-function recordCandidate(id, dir) {
+function precheck(dir) {
   const candidate = git(dir, ["rev-parse", "HEAD"]);
-  const tree = git(dir, ["rev-parse", "HEAD^{tree}"]);
-  write(dir, ".review-evidence/candidate-test.log", `COMMAND=node test.js --impacted\nTREE_HASH=${tree}\nEXIT_CODE=0\n`);
-  write(dir, ".review-evidence/candidate-quality.log", `QUALITY_COMMAND=node --check src.js\nQUALITY_TREE_HASH=${tree}\nEXIT_CODE=0\n`);
+  const testLog = ".review-evidence/" + candidate + "-test.log";
+  const qualityLog = ".review-evidence/" + candidate + "-quality.log";
+  run(dir, ["run-logged", "--candidate", "--command", "node test.js --impacted", "--log", testLog]);
+  run(dir, ["run-logged", "--candidate", "--quality", "--command", "node --check src.js", "--log", qualityLog]);
+  return { candidate, testLog, qualityLog };
+}
+function record(id, { candidate, testLog, qualityLog }) {
   return run(project, ["optimistic-record", "--id", id, "--candidate-commit", candidate,
-    "--test-status", "pass", "--quality-status", "pass", "--test-log", ".review-evidence/candidate-test.log",
-    "--quality-log", ".review-evidence/candidate-quality.log"]);
+    "--test-status", "pass", "--quality-status", "pass", "--test-log", testLog, "--quality-log", qualityLog]);
+}
+function recordCandidate(id, dir) {
+  record(id, precheck(dir));
 }
 assert.throws(() => recordCandidate(first, worktree), /禁止文件/);
 git(worktree, ["rm", "--", transientFile]);
@@ -100,6 +106,44 @@ function commitFile(dir, file, contents) {
 }
 commitFile(otherWorktree, "other.js", "module.exports = 3;\n");
 recordCandidate(second, otherWorktree);
+// Retry the identical commit, so only the attempt can distinguish the two runs.
+const old = entry(second);
+const testArchive = path.join(project, old.test_log);
+const qualityArchive = path.join(project, old.quality_log);
+const firstTest = fs.readFileSync(testArchive);
+const firstQuality = fs.readFileSync(qualityArchive);
+discard(second);
+start(second, otherWorktree);
+const pending = entry(second);
+assert.equal(pending.status, "started");
+assert.equal(pending.test_status, "not_run");
+assert.equal(pending.quality_status, "not_run");
+assert.equal(pending.test_log, null);
+assert.equal(pending.quality_log, null);
+assert.equal(pending.attempt, old.attempt + 1);
+git(otherWorktree, ["merge", "--ff-only", old.candidate_commit]);
+const fresh = precheck(otherWorktree);
+assert.equal(fresh.candidate, old.candidate_commit);
+assert.throws(() => record(second, { ...fresh, testLog: testArchive }), /候选分支/);
+assert.throws(() => record(second, { ...fresh, qualityLog: qualityArchive }), /候选分支/);
+assert.equal(entry(second).status, "started");
+// Resume after the first copy, without overwriting a different archive on retry.
+const archiveDir = path.join(project, ".review-evidence", "optimistic", second, "attempt-" + pending.attempt);
+fs.mkdirSync(archiveDir, { recursive: true });
+fs.copyFileSync(path.join(otherWorktree, fresh.testLog), path.join(archiveDir, "test.log"));
+const conflictingLog = path.join(archiveDir, "quality.log");
+fs.writeFileSync(conflictingLog, "existing evidence");
+assert.throws(() => record(second, fresh), /不同的归档日志/);
+assert.equal(fs.readFileSync(conflictingLog, "utf8"), "existing evidence");
+assert.equal(entry(second).test_log, null);
+fs.unlinkSync(conflictingLog);
+record(second, fresh);
+for (const [key, source] of [["test_log", fresh.testLog], ["quality_log", fresh.qualityLog]]) {
+  assert.notEqual(entry(second)[key], old[key]);
+  assert.deepEqual(fs.readFileSync(path.join(project, entry(second)[key])), fs.readFileSync(path.join(otherWorktree, source)));
+}
+assert.deepEqual(fs.readFileSync(testArchive), firstTest);
+assert.deepEqual(fs.readFileSync(qualityArchive), firstQuality);
 assert.equal(entry(first).base_commit, entry(second).base_commit);
 assert.deepEqual(entry(first).touched_files, ["src.js"]);
 assert.throws(() => promote(second), /active_finding/);

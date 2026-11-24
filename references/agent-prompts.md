@@ -422,7 +422,7 @@ blockers: []
 
 ## 5. 实现代理（Implementation Agent）
 
-发送 `tdd-and-commit.md` 的“实现代理任务模板”，附上本 finding 的反例、baseline 测试策略和工作目录。若为 bounded 乐观候选，限定在指定 worktree 修改，返回候选 commit、变更路径、测试与质量检查日志。主代理负责正式提升。
+发送 `tdd-and-commit.md` 的“实现代理任务模板”，附上本 finding 的反例、baseline 测试策略和工作目录。若为 bounded 乐观候选，分配当前 attempt 的 worktree 和分支，两条预检命令均加 `--candidate`，返回候选 commit、变更路径及本次两份日志。主代理负责正式提升。
 
 正式实现报告写入 finding 目录的 `implementation-result.md`。记录 RED、GREEN、正式测试路径和提交；按 `evidence-structure.md` 的 `Reviewctl GREEN Evidence` 格式保存机器证据。手工复现写明 Manual 步骤。与用户改动无法安全分离时，报告 `prepared` 并提供 `Manual Merge Guidance`（冲突文件、补丁、合并步骤、验证命令和风险）。
 

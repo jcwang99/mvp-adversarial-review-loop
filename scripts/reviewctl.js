@@ -1000,13 +1000,13 @@ function commandOptimisticStart(flags) {
   if (fs.existsSync(worktree)) fail(`worktree 路径已存在：${worktree}`);
   const baseCommit = gitOutput(project, ["rev-parse", "HEAD"]);
   const baseTree = gitOutput(project, ["rev-parse", "HEAD^{tree}"]);
+  const attempt = (previous?.attempt ?? 0) + 1;
+  if (!Number.isSafeInteger(attempt) || attempt < 1) fail("乐观候选 attempt 非法");
   const branch = `review/optimistic/${id.toLowerCase()}-${Date.now()}`;
   execFileSync("git", ["worktree", "add", "-b", branch, worktree, baseCommit], { cwd: project, stdio: "inherit" });
-  const optimistic = previous || {};
-  delete optimistic.formal_commit;
-  delete optimistic.promoted_at;
-  Object.assign(optimistic, {
+  const optimistic = {
     finding_id: id,
+    attempt,
     base_commit: baseCommit,
     base_tree: baseTree,
     promotion_head: null,
@@ -1017,12 +1017,15 @@ function commandOptimisticStart(flags) {
     touched_files: [],
     test_status: "not_run",
     quality_status: "not_run",
+    test_log: null,
+    quality_log: null,
     risk_assessment: risk,
     status: "started",
     created_at: now(),
     updated_at: now(),
-  });
-  if (!previous) state.optimistic_repairs.push(optimistic);
+  };
+  if (previous) state.optimistic_repairs[state.optimistic_repairs.indexOf(previous)] = optimistic;
+  else state.optimistic_repairs.push(optimistic);
   persist(project, config, state, data);
   console.log(`started optimistic repair for ${id}: ${worktree}`);
 }
@@ -1045,8 +1048,8 @@ function commandOptimisticRecord(flags) {
   if (testStatus !== "pass" || qualityStatus !== "pass") fail("乐观候选必须同时通过测试和代码质量检查");
   const testLog = stringFlag(flags, "test-log", { required: true });
   const qualityLog = stringFlag(flags, "quality-log", { required: true });
-  const optimisticEvidenceDir = path.join(project, EVIDENCE, "optimistic", id);
-  ensureDir(optimisticEvidenceDir);
+  if (!Number.isSafeInteger(entry.attempt) || entry.attempt < 1) fail("乐观候选 attempt 非法");
+  const optimisticEvidenceDir = path.join(project, EVIDENCE, "optimistic", id, `attempt-${entry.attempt}`);
   const candidateTree = gitOutput(entry.worktree, ["rev-parse", `${candidate}^{tree}`]);
   const testCommand = { progressive: policy.fastCommand, default: policy.impactedCommand, "full-everywhere": policy.fullCommand }[policy.tieringMode];
   const logs = [
@@ -1058,13 +1061,22 @@ function commandOptimisticRecord(flags) {
     if (!fs.existsSync(file)) fail(`候选日志不存在：${log}`);
     const treeMarker = `${prefix}TREE_HASH=${candidateTree}`;
     const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
-    if (!lines.includes(treeMarker) || !testPolicy.hasRunMarkers(file, command, 0, `${prefix}COMMAND`)) {
+    if (lines[2] !== `CANDIDATE_REF=refs/heads/${entry.branch}`) fail(`日志不属于本次候选分支：${log}`);
+    if (lines[1] !== treeMarker || !testPolicy.hasRunMarkers(file, command, 0, `${prefix}COMMAND`)) {
       fail(`候选日志必须记录 ${treeMarker}、匹配的 ${prefix}COMMAND 和唯一的 EXIT_CODE=0：${log}`);
     }
   }
+  ensureDir(optimisticEvidenceDir);
   const copiedLogs = logs.map(([name, log]) => {
+    const source = path.resolve(entry.worktree, log);
     const destination = path.join(optimisticEvidenceDir, name);
-    fs.copyFileSync(path.resolve(entry.worktree, log), destination);
+    try {
+      fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      // A retry can finish a partial archive using the same precheck results.
+      if (testPolicy.sha256File(source) !== testPolicy.sha256File(destination)) fail(`本次候选已有不同的归档日志：${destination}`);
+    }
     return path.relative(project, destination).replace(/\\/g, "/");
   });
   entry.candidate_commit = candidate;
@@ -2011,6 +2023,7 @@ function commandRunLogged(flags, positionals) {
   const prefix = boolFlag(flags.quality, "quality") ? "QUALITY_" : "";
   const candidate = boolFlag(flags.candidate, "candidate");
   const tree = candidate ? gitOutput(project, ["rev-parse", "HEAD^{tree}"]) : null;
+  const candidateRef = candidate ? gitOutput(project, ["symbolic-ref", "HEAD"]) : null;
   ensureDir(path.dirname(log));
   let fd;
   try {
@@ -2021,7 +2034,7 @@ function commandRunLogged(flags, positionals) {
   }
   try {
     fs.writeSync(fd, prefix + "COMMAND=" + command + "\n");
-    if (tree) fs.writeSync(fd, prefix + "TREE_HASH=" + tree + "\n");
+    if (candidate) fs.writeSync(fd, `${prefix}TREE_HASH=${tree}\nCANDIDATE_REF=${candidateRef}\n`);
     console.log("LOG=" + log);
     const spawnOptions = { cwd: project, stdio: ["inherit", fd, fd] };
     let result;

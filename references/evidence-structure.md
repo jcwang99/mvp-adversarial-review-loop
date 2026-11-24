@@ -165,7 +165,7 @@ required-features = ["adversarial-review"]
 reviewctl run-logged --log ".review-evidence/baseline-full.log" --command "npm test"
 ~~~
 
-将实际项目命令作为一个完整参数传给 `--command`，使用门禁声明的原命令（相邻批测取 `adjacent-plan` 的展开值）。项目命令须在前台完成测试，输出 UTF-8 并传递失败状态。Windows 默认使用 cmd，POSIX 默认使用 `/bin/sh`。若原命令依赖特定 shell 的语法，用 `--shell pwsh` 或 `--shell bash` 指定解释器，保持 `--command` 原文。从其他目录调用时用 `--project DIR` 指定测试工作目录。质量检查加 `--quality`，乐观候选加 `--candidate` 以记录该 worktree 的 HEAD tree。长测 runtime 标记由实际测试环境输出。
+将实际项目命令作为一个完整参数传给 `--command`，使用门禁声明的原命令（相邻批测取 `adjacent-plan` 的展开值）。项目命令须在前台完成测试，输出 UTF-8 并传递失败状态。Windows 默认使用 cmd，POSIX 默认使用 `/bin/sh`。若原命令依赖特定 shell 的语法，用 `--shell pwsh` 或 `--shell bash` 指定解释器，保持 `--command` 原文。从其他目录调用时用 `--project DIR` 指定测试工作目录。质量检查加 `--quality`，乐观候选加 `--candidate` 以记录该 worktree 的 HEAD tree 和本次候选分支 `CANDIDATE_REF`。长测 runtime 标记由实际测试环境输出。
 
 运行器先独占创建日志，写入 `COMMAND=`（质量检查为 `QUALITY_COMMAND=`），从启动起将 stdout 和 stderr 直接写入文件。取得退出码后在末行写 `EXIT_CODE=` 并返回相同状态。报告引用这次日志。命令和退出码标记各占一行、各出现一次。
 
@@ -229,7 +229,7 @@ reviewctl run-logged --log ".review-evidence/baseline-full.log" --command "npm t
 | `final_audit_attempt` | 0..3 |
 | `active_finding` | 当前修复/验证的 finding ID 或 null |
 | `repair_baseline_index` | 同次 repair 入口的 HEAD 和逐文件暂存 diff；用于判定分块后是否仍夹带用户改动 |
-| `optimistic_repairs` | 有限乐观修复候选记录；包含 base/candidate commit、tree、worktree、修改文件、预检日志、实际提升时的 `promotion_head` 和状态；候选不能替代正式 finding commit 或验证 |
+| `optimistic_repairs` | 每个 finding 的当前 `attempt`、状态、base/candidate commit、tree、worktree、修改文件、预检日志和 `promotion_head`。各次已登记的预检日志分目录保留。正式提交和验证记录在 finding 中 |
 | `next_action` | 当前阶段的提示，结合活动 finding 的当次结果定位断点 |
 | `blockers` / `authorizations` | 阻塞和用户授权记录 |
 | `rounds` | 每轮计数和角色 |

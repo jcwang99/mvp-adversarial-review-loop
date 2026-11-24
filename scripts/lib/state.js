@@ -358,6 +358,10 @@ function validateState(state, config) {
       if (!FINDING_ID.test(String(entry.finding_id || ""))) errors.push("optimistic repair finding_id 非法");
       if (optimisticIds.has(entry.finding_id)) errors.push(`optimistic repair 重复：${entry.finding_id}`);
       optimisticIds.add(entry.finding_id);
+      if (!Number.isSafeInteger(entry.attempt) || entry.attempt < 1) errors.push(`${entry.finding_id}: 候选 attempt 必须是正整数`);
+      if (entry.status === "started" && (entry.test_log != null || entry.quality_log != null)) {
+        errors.push(`${entry.finding_id}: started 候选不能引用预检日志`);
+      }
       if (!["started", "candidate_green", "promote_pending_commit", "promoted", "discarded", "stale", "conflict"].includes(entry.status)) {
         errors.push(`${entry.finding_id}: optimistic repair status 非法`);
       }

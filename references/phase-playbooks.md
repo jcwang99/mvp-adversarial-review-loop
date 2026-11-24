@@ -237,7 +237,7 @@ reviewctl optimistic-start --id ID --worktree <仓库外路径> --risk-assessmen
 reviewctl optimistic-record --id ID --candidate-commit SHA --test-status pass --quality-status pass --test-log PATH --quality-log PATH
 ```
 
-候选预检在 `progressive` 模式下运行 fast，在 `default` 下运行 impacted，在 `full-everywhere` 下运行 full。测试和质量日志分别记录 `TREE_HASH=<candidate tree>` 和 `QUALITY_TREE_HASH=<candidate tree>`，遵循证据手册的“实跑日志”。两项通过后登记，CLI 将日志复制到主工作树的 `.review-evidence/optimistic/`。
+候选预检在 `progressive` 模式下运行 fast，在 `default` 下运行 impacted，在 `full-everywhere` 下运行 full。在分配的候选分支上用 `run-logged --candidate` 运行，质量检查另加 `--quality`。两项通过后登记，CLI 核对本次分支、tree、命令和退出码，再归档到 `.review-evidence/optimistic/<finding>/attempt-<N>/`。重开会递增 `attempt` 并清空当前日志引用。查看预检结果时取当前记录的 `test_log` 和 `quality_log`。
 
 轮到该 finding 成为 `repair` 的 `active_finding` 时，若主 HEAD 已前进，先在新 HEAD 重放 focused 反例（手工项依原步骤）并复核风险。若反例已通过，按 §3.1 核实 `already_fixed`。风险升高时走正式修复。仍属普通风险且 RED 时运行以下命令。
 
